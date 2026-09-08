@@ -1,0 +1,45 @@
+# RuptureGrid v1.0 — .gitignore
+# Phase 0: documentation only. Entries are forward-looking for later phases;
+# nothing here implies those artifacts exist yet.
+
+# Freebuff/Codebuff client-local tooling state
+.freebuff/
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Builds & output
+dist/
+build/
+next/
+out/
+.turbo/
+
+# Environment & secrets — never commit real values
+.env
+.env.*
+!.env.example
+
+# Databases (local volumes, never source of truth)
+*.sqlite
+*.db
+pgdata/
+data/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Test artifacts
+coverage/
+test-results/
+playwright-report/
+blob-report/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

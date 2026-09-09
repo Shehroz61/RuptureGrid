@@ -1,17 +1,22 @@
 // =====================================================================
-// RuptureGrid v1.0 — Demo Fintech target (Phase 1 shell)
+// RuptureGrid v1.0 — Demo Fintech target (Phase 2)
 // =====================================================================
 // A genuinely separate application boundary (ADR-0002): own HTTP
 // process, own configuration, own structured logging, OWN PostgreSQL.
 // RuptureGrid holds no credentials to this database and this app holds
-// no RuptureGrid credentials. No wallet/payment/provider business logic
-// exists yet (Phase 2).
+// no RuptureGrid credentials. Phase 2 adds the Incident Zero business
+// core: wallets, provider payments/events, webhook processing with
+// vulnerable/secure idempotency scopes, provider simulator, and the
+// read-only inspection API.
 
 import { loadDemoConfig } from '@rupturegrid/config';
 import { createDemoDb } from '@rupturegrid/demo-db';
 import { createLogger } from '@rupturegrid/logger';
-import { SERVICE_NAMES } from '@rupturegrid/shared';
-import express from 'express';
+import { createApp } from './app.js';
+import { createDemoAdminService } from './admin-service.js';
+import { createProviderSimulatorService } from './provider-simulator-service.js';
+import { createWebhookProcessingService } from './webhook-processing-service.js';
+import { createDemoInspectionService } from './inspection-service.js';
 
 async function main(): Promise<void> {
   const config = loadDemoConfig();
@@ -22,29 +27,27 @@ async function main(): Promise<void> {
   });
 
   const db = createDemoDb(config.DEMO_DATABASE_URL);
-  const app = express();
-  app.disable('x-powered-by');
-  app.use(express.json({ limit: '256kb' }));
-
-  app.get('/health/live', (_req, res) => {
-    res.status(200).json({ status: 'live', service: SERVICE_NAMES.demoFintech });
+  const admin = createDemoAdminService(db);
+  const simulator = createProviderSimulatorService({
+    db,
+    signingSecret: config.DEMO_PROVIDER_SIGNING_SECRET,
   });
+  const webhook = createWebhookProcessingService({
+    db,
+    signingSecret: config.DEMO_PROVIDER_SIGNING_SECRET,
+    modeProvider: () => admin.getProcessingMode(),
+  });
+  const inspection = createDemoInspectionService(db);
 
-  app.get('/health/ready', async (_req, res) => {
-    try {
-      await db.ping();
-      res.status(200).json({
-        status: 'ready',
-        service: SERVICE_NAMES.demoFintech,
-        checks: { demoPostgres: 'ok' },
-      });
-    } catch {
-      res.status(503).json({
-        status: 'not_ready',
-        service: SERVICE_NAMES.demoFintech,
-        checks: { demoPostgres: 'unavailable' },
-      });
-    }
+  const app = createApp({
+    db,
+    admin,
+    simulator,
+    webhook,
+    inspection,
+    adminToken: config.DEMO_ADMIN_TOKEN,
+    inspectionToken: config.DEMO_INSPECTION_TOKEN,
+    logger,
   });
 
   const server = app.listen(config.DEMO_PORT, config.DEMO_HOST, () => {

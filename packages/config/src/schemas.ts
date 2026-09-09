@@ -71,9 +71,21 @@ export const workerConfigSchema = z.object({
 });
 
 /**
+ * A Demo Fintech bearer credential (admin / inspection / provider
+ * signing secret). Development-only values; never logged, never
+ * persisted (AGENTS R-13).
+ */
+const demoSecret = z
+  .string()
+  .min(16, 'must be at least 16 characters')
+  .max(256)
+  .refine((value) => value.trim().length >= 16, 'must not be whitespace-padded');
+
+/**
  * Demo Fintech target (apps/demo-fintech).
- * Owns ONLY its own PostgreSQL. Must never receive CONTROL_* or REDIS_*
- * variables — the target is external to RuptureGrid (ADR-0002).
+ * Owns ONLY its own PostgreSQL plus its own demo credentials. Must
+ * never receive CONTROL_* or REDIS_* variables — the target is external
+ * to RuptureGrid (ADR-0002).
  */
 export const demoConfigSchema = z.object({
   NODE_ENV: nodeEnv,
@@ -81,6 +93,12 @@ export const demoConfigSchema = z.object({
   DEMO_HOST: z.string().min(1).default('127.0.0.1'),
   DEMO_PORT: tcpPort.default(3002),
   DEMO_DATABASE_URL: databaseUrl,
+  /** Admin credential for target-owned reset/mode/simulator routes. */
+  DEMO_ADMIN_TOKEN: demoSecret,
+  /** Read-only credential for the inspection API. */
+  DEMO_INSPECTION_TOKEN: demoSecret,
+  /** HMAC-SHA256 secret binding provider webhooks to their payload bytes. */
+  DEMO_PROVIDER_SIGNING_SECRET: demoSecret,
 });
 
 export type ApiConfig = z.infer<typeof apiConfigSchema>;

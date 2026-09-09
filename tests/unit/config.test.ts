@@ -27,6 +27,9 @@ const VALID_DEMO_ENV = {
   DEMO_HOST: '127.0.0.1',
   DEMO_PORT: '3002',
   DEMO_DATABASE_URL: 'postgresql://u:p@127.0.0.1:5444/demo',
+  DEMO_ADMIN_TOKEN: 'demo-admin-dev-token-0001',
+  DEMO_INSPECTION_TOKEN: 'demo-inspection-dev-token-0001',
+  DEMO_PROVIDER_SIGNING_SECRET: 'demo-provider-signing-secret-0001',
 };
 
 describe('config validation — success', () => {
@@ -98,6 +101,27 @@ describe('config validation — failure (fail fast)', () => {
     ).toThrow(ConfigValidationError);
   });
 
+  it('rejects a Demo environment missing the admin token', () => {
+    const env: Record<string, string> = { ...VALID_DEMO_ENV };
+    delete env.DEMO_ADMIN_TOKEN;
+    expect(() => loadConfig(demoConfigSchema, env)).toThrow(ConfigValidationError);
+  });
+
+  it('rejects a too-short Demo credential', () => {
+    expect(() =>
+      loadConfig(demoConfigSchema, { ...VALID_DEMO_ENV, DEMO_ADMIN_TOKEN: 'short' }),
+    ).toThrow(ConfigValidationError);
+  });
+
+  it('rejects a whitespace-padded Demo credential', () => {
+    expect(() =>
+      loadConfig(demoConfigSchema, {
+        ...VALID_DEMO_ENV,
+        DEMO_INSPECTION_TOKEN: '        padded       ',
+      }),
+    ).toThrow(ConfigValidationError);
+  });
+
   it('reports all issues together (fail-fast clarity)', () => {
     try {
       loadConfig(apiConfigSchema, { LOG_LEVEL: 'verbose' });
@@ -154,6 +178,8 @@ describe('config ownership boundaries (contract tests)', () => {
     >;
     expect(config).not.toHaveProperty('DEMO_DATABASE_URL');
     expect(config).not.toHaveProperty('DEMO_POSTGRES_PASSWORD');
+    expect(config).not.toHaveProperty('DEMO_ADMIN_TOKEN');
+    expect(config).not.toHaveProperty('DEMO_PROVIDER_SIGNING_SECRET');
   });
 
   it('compose-service variables never leak into any app config', () => {

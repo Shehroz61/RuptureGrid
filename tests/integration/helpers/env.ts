@@ -12,6 +12,19 @@ export interface TestEnv {
   readonly demoDatabaseUrl: string;
   readonly redisUrl: string;
   readonly queuePrefix: string;
+  /** Demo-target credentials (Phase 2 suites). */
+  readonly demoAdminToken: string;
+  readonly demoInspectionToken: string;
+  readonly demoProviderSigningSecret: string;
+}
+
+function requireValue(name: string, missing: string[]): string {
+  const value = process.env[name];
+  if (value === undefined || value === '') {
+    missing.push(name);
+    return '';
+  }
+  return value;
 }
 
 /**
@@ -21,15 +34,15 @@ export interface TestEnv {
  */
 export function loadTestEnv(): TestEnv {
   loadEnvironment();
-  const control = process.env.CONTROL_DATABASE_URL;
-  const demo = process.env.DEMO_DATABASE_URL;
-  const redis = process.env.REDIS_URL;
-  const prefix = process.env.QUEUE_PREFIX ?? 'rupturegrid';
-
   const missing: string[] = [];
-  if (control === undefined || control === '') missing.push('CONTROL_DATABASE_URL');
-  if (demo === undefined || demo === '') missing.push('DEMO_DATABASE_URL');
-  if (redis === undefined || redis === '') missing.push('REDIS_URL');
+  const controlDatabaseUrl = requireValue('CONTROL_DATABASE_URL', missing);
+  const demoDatabaseUrl = requireValue('DEMO_DATABASE_URL', missing);
+  const redisUrl = requireValue('REDIS_URL', missing);
+  const demoAdminToken = requireValue('DEMO_ADMIN_TOKEN', missing);
+  const demoInspectionToken = requireValue('DEMO_INSPECTION_TOKEN', missing);
+  const demoProviderSigningSecret = requireValue('DEMO_PROVIDER_SIGNING_SECRET', missing);
+  const queuePrefix = process.env.QUEUE_PREFIX ?? 'rupturegrid';
+
   if (missing.length > 0) {
     throw new Error(
       `Integration tests require environment variables: ${missing.join(', ')}. ` +
@@ -38,9 +51,12 @@ export function loadTestEnv(): TestEnv {
   }
 
   return {
-    controlDatabaseUrl: control,
-    demoDatabaseUrl: demo,
-    redisUrl: redis,
-    queuePrefix: prefix,
+    controlDatabaseUrl,
+    demoDatabaseUrl,
+    redisUrl,
+    queuePrefix,
+    demoAdminToken,
+    demoInspectionToken,
+    demoProviderSigningSecret,
   };
 }

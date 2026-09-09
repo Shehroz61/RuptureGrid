@@ -1,10 +1,30 @@
 // =====================================================================
-// Demo Fintech PostgreSQL schema — Phase 1 infrastructure only
+// Demo Fintech PostgreSQL schema — Phase 2 domain model
 // =====================================================================
-// Phase 1 deliberately creates NO target domain tables (no customers,
-// wallets, payments, ledger entries — those arrive in Phase 2). The
-// migration below only establishes the target-owned schema and proves
-// the migration workflow against the real Demo PostgreSQL.
+// Target-owned business schema (ADR-0002, AGENTS R-05): customers,
+// wallets, provider payments/events, webhook deliveries, processing
+// attempts, financial effects, ledger entries, and the durable demo
+// processing mode. RuptureGrid NEVER receives credentials to this
+// database and holds no models here.
+//
+// Design rules implemented here:
+// - Money is ALWAYS an integer amount of minor units (paisa for PKR)
+//   stored as PostgreSQL bigint — never a float (AGENTS R-06, ADR-0004).
+// - The five business identities (providerPaymentId, providerEventId,
+//   deliveryAttemptId, processingAttemptId, financialEffectId) are
+//   explicit unique columns — never collapsed into generic primary
+//   keys (docs/product-spec.md §7).
+// - Causal relationships are real foreign keys, never timestamp
+//   inference (docs/evidence-model.md §6).
+// - The secure idempotency scope is DB-ENFORCED via a unique index on
+//   ledger_entries.idempotency_key (docs/incident-zero.md §5, §19 of
+//   the Phase 2 contract). Nullable unique: PostgreSQL treats NULLs as
+//   distinct, so entry kinds without an idempotency scope may coexist;
+//   this behavior is verified against real PostgreSQL by integration
+//   tests (not assumed).
+// - No RuptureGrid concepts (organizations, experiments, evidence,
+//   findings) exist in this schema — this is the TARGET's business data
+//   only (Phase 2 hard non-scope).
 
 generator client {
   provider = "prisma-client"
@@ -13,4 +33,218 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------
+// Processing mode — one durable settings row ("default"). The Demo
+// Target owns this state; experiments switch it through the target's
+// own admin API, never by editing rows behind its back.
+// ---------------------------------------------------------------------
+
+enum ProcessingMode {
+  VULNERABLE
+  SECURE
+}
+
+model DemoSettings {
+  id             String         @id @default("default")
+  processingMode ProcessingMode @default(VULNERABLE)
+  updatedAt      DateTime       @updatedAt @db.Timestamptz(3)
+
+  @@map("demo_settings")
+}
+
+// ---------------------------------------------------------------------
+// Customers and wallets
+// ---------------------------------------------------------------------
+
+model Customer {
+  id                String   @id @default(uuid()) @db.Uuid
+  customerReference String   @unique
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  wallets           Wallet[]
+
+  @@map("customers")
+}
+
+model Wallet {
+  id           String   @id @default(uuid()) @db.Uuid
+  customerId   String   @db.Uuid
+  customer     Customer @relation(fields: [customerId], references: [id])
+  currency     String   @db.Char(3)
+  // Integer minor units (paisa). Never a float. CHECK constraint in the
+  // migration forbids negative balances.
+  balanceMinor BigInt
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @default(now()) @updatedAt @db.Timestamptz(3)
+
+  payments         ProviderPayment[]
+  financialEffects FinancialEffect[]
+  ledgerEntries    LedgerEntry[]
+
+  @@index([customerId])
+  @@map("wallets")
+}
+
+// ---------------------------------------------------------------------
+// Provider side: logical payments and logical events
+// ---------------------------------------------------------------------
+
+enum ProviderPaymentStatus {
+  CONFIRMED
+}
+
+enum ProviderEventType {
+  PAYMENT_CONFIRMED
+  PAYMENT_SETTLED
+}
+
+/// ONE logical provider-confirmed payment — the highest-level financial
+/// identity and the subject of the flagship invariant INV-IZ-1.
+model ProviderPayment {
+  id                String               @id @default(uuid()) @db.Uuid
+  providerPaymentId String               @unique
+  walletId          String               @db.Uuid
+  wallet            Wallet               @relation(fields: [walletId], references: [id])
+  currency          String               @db.Char(3)
+  amountMinor       BigInt
+  status            ProviderPaymentStatus
+  createdAt         DateTime             @default(now()) @db.Timestamptz(3)
+  confirmedAt       DateTime             @db.Timestamptz(3)
+
+  events           ProviderEvent[]
+  financialEffects FinancialEffect[]
+
+  @@index([walletId])
+  @@map("provider_payments")
+}
+
+/// ONE logical provider event about one logical payment. A payment MAY
+/// legitimately have several events (e.g. confirmed + settled) — the
+/// business fact they all describe is the same logical payment.
+model ProviderEvent {
+  id              String           @id @default(uuid()) @db.Uuid
+  paymentId       String           @db.Uuid
+  payment         ProviderPayment  @relation(fields: [paymentId], references: [id])
+  providerEventId String           @unique
+  eventType       ProviderEventType
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+
+  deliveries WebhookDelivery[]
+
+  @@index([paymentId])
+  @@map("provider_events")
+}
+
+// ---------------------------------------------------------------------
+// Physical deliveries, processing attempts, business effects
+// ---------------------------------------------------------------------
+
+enum DeliveryStatus {
+  /// Valid, authenticated delivery persisted; processing completed.
+  ACCEPTED
+  /// Valid delivery persisted but synchronous processing threw.
+  FAILED_PROCESSING
+}
+
+/// ONE physical webhook/network delivery. deliveryAttemptId is assigned
+/// by the caller (executor/test harness), carried in a header, and is
+/// DB-unique: two physical requests claiming one delivery identity are
+/// malformed for this contract.
+model WebhookDelivery {
+  id                String         @id @default(uuid()) @db.Uuid
+  eventId           String         @db.Uuid
+  event             ProviderEvent  @relation(fields: [eventId], references: [id])
+  deliveryAttemptId String         @unique
+  receivedAt        DateTime       @default(now()) @db.Timestamptz(3)
+  status            DeliveryStatus
+  sourceIp          String?
+
+  processingAttempt ProcessingAttempt?
+
+  @@index([eventId])
+  @@map("webhook_deliveries")
+}
+
+enum ProcessingOutcome {
+  /// Processing created one accepted financial effect.
+  APPLIED
+  /// Processing ran, the idempotency scope matched an existing effect,
+  /// and no new equivalent effect was accepted.
+  IDEMPOTENT_DUPLICATE
+  /// Processing failed; no partial financial mutation survived.
+  FAILED
+}
+
+/// ONE application processing attempt — exactly one per valid delivery
+/// (synchronous processing). Outcome is finalized after the financial
+/// transaction. Suppressed attempts remain persisted and inspectable.
+model ProcessingAttempt {
+  id           String            @id @default(uuid()) @db.Uuid
+  deliveryId   String            @unique @db.Uuid
+  delivery     WebhookDelivery   @relation(fields: [deliveryId], references: [id])
+  startedAt    DateTime          @default(now()) @db.Timestamptz(3)
+  finishedAt   DateTime?         @db.Timestamptz(3)
+  outcome      ProcessingOutcome?
+  failureReason String?
+
+  financialEffect FinancialEffect?
+
+  @@map("processing_attempts")
+}
+
+enum FinancialEffectType {
+  WALLET_CREDIT
+}
+
+/// ONE accepted business effect — the unit the flagship invariant
+/// counts. Created only inside the financial transaction together with
+/// its ledger entry and the wallet increment.
+model FinancialEffect {
+  id                  String             @id @default(uuid()) @db.Uuid
+  financialEffectId   String             @unique
+  paymentId           String             @db.Uuid
+  payment             ProviderPayment    @relation(fields: [paymentId], references: [id])
+  processingAttemptId String             @unique @db.Uuid
+  processingAttempt   ProcessingAttempt  @relation(fields: [processingAttemptId], references: [id])
+  walletId            String             @db.Uuid
+  wallet              Wallet             @relation(fields: [walletId], references: [id])
+  effectType          FinancialEffectType
+  amountMinor         BigInt
+  currency            String             @db.Char(3)
+  createdAt           DateTime           @default(now()) @db.Timestamptz(3)
+
+  ledgerEntry LedgerEntry?
+
+  @@index([paymentId])
+  @@index([walletId])
+  @@map("financial_effects")
+}
+
+enum LedgerEntryType {
+  WALLET_CREDIT
+}
+
+/// Durable accounting representation of the wallet mutation. The unique
+/// idempotency_key IS the database-enforced business idempotency scope:
+/// vulnerable mode keys by provider event, secure mode keys by logical
+/// payment. Duplicate inserts lose the race via PostgreSQL uniqueness —
+/// never via application locks.
+model LedgerEntry {
+  id                String          @id @default(uuid()) @db.Uuid
+  walletId          String          @db.Uuid
+  wallet            Wallet          @relation(fields: [walletId], references: [id])
+  financialEffectId String          @unique @db.Uuid
+  financialEffect   FinancialEffect @relation(fields: [financialEffectId], references: [id])
+  entryType         LedgerEntryType
+  amountMinor       BigInt
+  currency          String          @db.Char(3)
+  /// Nullable unique: PostgreSQL treats NULLs as distinct (verified by
+  /// integration test against real PostgreSQL). Every Phase 2 accepted
+  /// credit carries a non-null key.
+  idempotencyKey    String?         @unique
+  createdAt         DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@index([walletId])
+  @@map("ledger_entries")
 }

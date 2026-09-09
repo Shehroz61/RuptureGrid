@@ -1,6 +1,6 @@
 # RuptureGrid v1.0
 
-**Status: PHASE 1 — foundation implemented on branch `phase-1-foundation`, uncommitted, awaiting independent audit.** The Phase 1 branch adds the pnpm/TypeScript monorepo, four application shells (API, worker, web, Demo Fintech), physically separate Control/Demo PostgreSQL services, Redis/BullMQ coordination foundation, real infrastructure tests, and migration workflow. No product domain behavior exists yet — no wallets, payments, experiments, evidence, or Incident Zero execution. See `docs/reports/phase-1-self-audit.md`.
+**Status: PHASE 2 — Demo Fintech target implemented on branch `phase-2-demo-fintech`, uncommitted, awaiting independent audit.** Phase 1 delivered the pnpm/TypeScript monorepo, four application shells, physically separate Control/Demo PostgreSQL services, Redis/BullMQ coordination foundation, real infrastructure tests, and migration workflow. Phase 2 turns the Demo Target into a real, deliberately small distributed fintech application: durable wallets/payments/events/deliveries/attempts/effects/ledger in its own PostgreSQL, a real signed webhook endpoint, deterministic VULNERABLE and SECURE processing modes switchable through the target's own admin API, a provider simulator, and a read-only inspection API. RuptureGrid's experiment machinery (execution engine, evidence, invariants, findings, UI) does not exist yet — Phase 3+. See `docs/reports/phase-2-self-audit.md`.
 
 ---
 
@@ -31,7 +31,7 @@ Full boundary list: [docs/product-spec.md](docs/product-spec.md) §8.
 
 A provider confirms a legitimate payment of **PKR 5,000 = 500000 paisa** (integer minor units). The correct target credits the wallet with **exactly one credit**. A deliberately vulnerable processing mode credits it **twice under duplicate delivery** (PKR 10,000); a fixed, idempotent implementation stays at PKR 5,000 under the same experiment. RuptureGrid drives the duplicate delivery through the target's legitimate webhook interface, evaluates the invariant **"at most one accepted credit effect per confirmed logical payment"** deterministically from real evidence, and replays the scenario after the fix — permanently, as automated tests.
 
-Details: [docs/incident-zero.md](docs/incident-zero.md).
+**Phase 2 status:** the target implements both modes and the canonical scenario is a committed black-box suite (`tests/integration/demo-incident-zero.test.ts`): under 20 concurrent duplicate deliveries (two logical events, concurrency 8) VULNERABLE deterministically yields 2 accepted credits / balance 1000000 paisa, SECURE deterministically yields 1 accepted credit / balance 500000 paisa with 19 suppressed attempts recorded as `IDEMPOTENT_DUPLICATE`. RuptureGrid's own executor/evidence/invariant layers arrive in Phase 3+. Details: [docs/incident-zero.md](docs/incident-zero.md), [docs/reports/phase-2-self-audit.md](docs/reports/phase-2-self-audit.md).
 
 ## Architecture at a high level
 
@@ -58,9 +58,9 @@ Phase 0 (this) → 1 Monorepo foundation → 2 Demo Target → 3 Execution engin
 
 ## Current phase status
 
-**Phase 0 — complete and accepted (tag `phase-0-accepted`). Phase 1 — implemented on `phase-1-foundation`, not yet independently audited.** Phase 0 deliverables: documentation set, 13 ADRs, requirements matrix, self-audit. Phase 1 deliverables: monorepo + core infrastructure foundation per [docs/phase-roadmap.md](docs/phase-roadmap.md). No Phase 1 commit/tag exists yet by design — the builder session leaves all changes uncommitted for independent audit.
+**Phase 0 — complete and accepted (tag `phase-0-accepted`). Phase 1 — complete and accepted (tag `phase-1-accepted`). Phase 2 — implemented on `phase-2-demo-fintech`, not yet independently audited.** Phase 2 deliverables: Demo Fintech domain model + migrations, vulnerable/secure webhook processing, provider simulator, admin (reset/mode) API, read-only inspection API, permanent black-box regression suites per [docs/phase-roadmap.md](docs/phase-roadmap.md). No Phase 2 commit/tag exists yet by design — the builder session leaves all changes uncommitted for independent audit.
 
-## Running the Phase 1 foundation locally
+## Running the stack locally
 
 Requirements: Node 22, pnpm 11 (Corepack-managed), Docker with Compose.
 
@@ -74,6 +74,25 @@ pnpm dev              # run API (3001), worker, Demo Fintech (3002), web (3000)
 
 Quality gates: `pnpm verify` (format, lint, typecheck, unit tests, build). Real-infrastructure integration tests: `pnpm test:integration` (requires `pnpm infra:up`). Ports are defaults; every host port is environment-configurable — see `.env.example`.
 
+## Demo Fintech target (Phase 2)
+
+A genuinely separate application (`apps/demo-fintech`, default port 3002) owning its own PostgreSQL (`packages/demo-db`, migrations `0001_init_demo_database`, `20260909093622_phase2_domain_models`, `20260909093718_phase2_domain_constraints`). Money is always an **integer minor-unit string** on HTTP (e.g. `"amountMinor": "500000"` for PKR 5,000 = 500000 paisa); fractional, signed, exponent, and unsafe-magnitude values are rejected, never coerced. RuptureGrid apps hold no Demo DB credentials and never import `@rupturegrid/demo-db` (lint-enforced).
+
+Routes (trust boundaries are distinct):
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `GET /health/live`, `GET /health/ready` | none | liveness; readiness checks Demo PostgreSQL only |
+| `POST /demo/admin/reset` | `DEMO_ADMIN_TOKEN` | DEMO ONLY — reset business records, recreate canonical customer + zero-balance PKR wallet, mode → VULNERABLE |
+| `PUT /demo/admin/mode` | `DEMO_ADMIN_TOKEN` | DEMO ONLY — body `{"mode":"VULNERABLE"\|"SECURE"}`; durable DB-backed state |
+| `GET /demo/admin/status` | `DEMO_ADMIN_TOKEN` | current processing mode |
+| `POST /demo/provider/payments` | `DEMO_ADMIN_TOKEN` | DEMO ONLY — provider simulator: creates the canonical 500000-paisa CONFIRMED payment + its PAYMENT_CONFIRMED/PAYMENT_SETTLED events, returns per-event signed delivery envelopes (no `deliveryAttemptId` — callers assign one per physical delivery) |
+| `POST /webhooks/provider` | HMAC-SHA256 of the exact raw body in `x-rupturegrid-provider-signature` | webhook ingestion; requires `x-rupturegrid-delivery-attempt-id` header; returns `outcome: APPLIED \| IDEMPOTENT_DUPLICATE` (2xx) or a stable error (401/404/409/400/500) |
+| `GET /inspection/provider-payments/:providerPaymentId` | `DEMO_INSPECTION_TOKEN` | read-only full lineage: payment → events → deliveries → processing attempts → financial effects → ledger entries + wallet state (entities, not just counts) |
+| `GET /inspection/wallets/:walletId/reconciliation` | `DEMO_INSPECTION_TOKEN` | read-only exact balance-vs-ledger reconciliation |
+
+Environment variables owned by Demo Fintech only (documented non-production examples in `.env.example`): `DEMO_HOST`, `DEMO_PORT`, `DEMO_DATABASE_URL`, `DEMO_ADMIN_TOKEN`, `DEMO_INSPECTION_TOKEN`, `DEMO_PROVIDER_SIGNING_SECRET`.
+
 ## Repository layout
 
 ```
@@ -86,17 +105,18 @@ apps/
   api/            Control Plane HTTP shell (NestJS): health/live, health/ready
   worker/         execution worker shell (BullMQ consumer lifecycle, no HTTP)
   web/            product shell (Next.js): identity page + /health, no dashboard
-  demo-fintech/   independent Demo Target shell: owns only the Demo DB
+  demo-fintech/   independent Demo Target (Express): wallets/payments/events/deliveries/
+                  attempts/effects/ledger, webhook + admin + simulator + inspection APIs
 packages/
   config/         per-app environment schemas, fail-fast validation, env ownership
   logger/         pino-based structured logging with mandatory redaction
   control-db/     RuptureGrid Control PostgreSQL client + migrations (Prisma)
-  demo-db/        Demo Fintech PostgreSQL client + migrations (Prisma, separate)
+  demo-db/        Demo Fintech PostgreSQL client + migrations + domain primitives (Prisma, separate)
   queue/          Redis/BullMQ coordination foundation (smoke queue, connections)
   shared/         service names, money types, redaction utilities
 tests/
-  unit/           config validation + redaction unit tests (vitest)
-  integration/    real PostgreSQL / Redis / HTTP / process tests (vitest)
+  unit/           config validation + redaction + demo money/keys/signature/payload unit tests (vitest)
+  integration/    real PostgreSQL / Redis / HTTP / process tests incl. Incident Zero black-box suites (vitest)
 docs/             Phase 0 architecture, 13 ADRs, roadmap, reports
 ```
 

@@ -1,0 +1,25 @@
+{
+  "name": "@rupturegrid/web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RuptureGrid product web shell — Phase 1 foundation only, no product UI",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "typegen": "next typegen",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "next": "^16.3.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.9.3"
+  }
+}

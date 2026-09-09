@@ -1,0 +1,42 @@
+{
+  "name": "rupturegrid-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RuptureGrid v1.0 — business-correctness failure testing platform (Phase 1 foundation)",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.12.0",
+    "pnpm": ">=11.0.0"
+  },
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "dev": "pnpm build && pnpm -r --parallel --filter \"./apps/*\" run dev",
+    "build": "pnpm db:generate && pnpm build:packages && pnpm build:apps",
+    "build:packages": "pnpm -r --filter \"./packages/*\" run build",
+    "build:apps": "pnpm --filter @rupturegrid/api run build && pnpm --filter @rupturegrid/demo-fintech run build && pnpm --filter @rupturegrid/worker run build && pnpm --filter @rupturegrid/web run build",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm db:generate && pnpm build:packages && pnpm web:typegen && pnpm -r run typecheck",
+    "web:typegen": "pnpm --filter @rupturegrid/web run typegen",
+    "test": "pnpm test:unit",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:integration": "pnpm build && vitest run --config tests/integration/vitest.config.ts",
+    "format": "prettier --write \"**/*.{ts,tsx,mjs,cjs,json,md,yml,yaml,css}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,mjs,cjs,json,md,yml,yaml,css}\"",
+    "infra:up": "docker compose up -d --wait",
+    "infra:down": "docker compose down",
+    "infra:status": "docker compose ps",
+    "db:generate": "pnpm --filter @rupturegrid/shared run build && pnpm --filter @rupturegrid/config run build && pnpm --filter @rupturegrid/control-db run generate && pnpm --filter @rupturegrid/demo-db run generate",
+    "db:migrate": "pnpm db:generate && pnpm --filter @rupturegrid/control-db run migrate:deploy && pnpm --filter @rupturegrid/demo-db run migrate:deploy",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:unit && pnpm build",
+    "verify:integration": "pnpm infra:up && pnpm db:migrate && pnpm test:integration"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "eslint": "^10.0.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.11"
+  }
+}

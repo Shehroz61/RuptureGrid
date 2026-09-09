@@ -1,0 +1,31 @@
+{
+  "name": "@rupturegrid/queue",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RuptureGrid Redis/BullMQ coordination boundary (coordination-only, ADR-0003)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@rupturegrid/shared": "workspace:*",
+    "bullmq": "^6.3.4",
+    "ioredis": "^6.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

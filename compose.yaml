@@ -1,0 +1,76 @@
+# =====================================================================
+# RuptureGrid v1.0 — local development infrastructure
+# =====================================================================
+# Two PHYSICALLY SEPARATE PostgreSQL services (RuptureGrid Control vs
+# Demo Fintech target) plus Redis (coordination-only) — per ADR-0002.
+# Named volumes, no host-path mounts, healthchecks on every service.
+# Ports are environment-configurable (see .env.example).
+#
+# NOTE (documented local default deviation): this machine already has
+# unrelated containers bound to 5433/5434, so the documented defaults
+# here are 5443/5444. Override via CONTROL_POSTGRES_PORT / DEMO_POSTGRES_PORT.
+
+name: rupturegrid
+
+services:
+  control-postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: ${CONTROL_POSTGRES_USER:-rupturegrid}
+      POSTGRES_PASSWORD: ${CONTROL_POSTGRES_PASSWORD:-rupturegrid_dev_password}
+      POSTGRES_DB: ${CONTROL_POSTGRES_DB:-rupturegrid}
+    ports:
+      - '${CONTROL_POSTGRES_PORT:-5443}:5432'
+    volumes:
+      # PostgreSQL 18+ images use a version-specific PGDATA directory.
+      - control-pgdata:/var/lib/postgresql/18/docker
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U ${CONTROL_POSTGRES_USER:-rupturegrid} -d ${CONTROL_POSTGRES_DB:-rupturegrid}',
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  demo-postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: ${DEMO_POSTGRES_USER:-demo}
+      POSTGRES_PASSWORD: ${DEMO_POSTGRES_PASSWORD:-demo_dev_password}
+      POSTGRES_DB: ${DEMO_POSTGRES_DB:-demo_fintech}
+    ports:
+      - '${DEMO_POSTGRES_PORT:-5444}:5432'
+    volumes:
+      - demo-pgdata:/var/lib/postgresql/18/docker
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U ${DEMO_POSTGRES_USER:-demo} -d ${DEMO_POSTGRES_DB:-demo_fintech}',
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.4
+    command: ['redis-server', '--maxmemory-policy', 'noeviction', '--appendonly', 'yes']
+    ports:
+      - '${REDIS_PORT:-6380}:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  control-pgdata:
+  demo-pgdata:
+  redis-data:

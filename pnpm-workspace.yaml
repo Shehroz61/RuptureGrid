@@ -1,0 +1,12 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# Dependencies whose postinstall build scripts are required:
+# prisma + @prisma/engines (schema engine binaries), esbuild (native
+# binary), msgpackr-extract (native optimization used by pino).
+allowBuilds:
+  '@prisma/engines': true
+  esbuild: true
+  msgpackr-extract: true
+  prisma: true

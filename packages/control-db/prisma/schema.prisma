@@ -1,0 +1,18 @@
+// =====================================================================
+// RuptureGrid Control PostgreSQL schema — Phase 1 infrastructure only
+// =====================================================================
+// This phase deliberately creates NO domain tables (no users, targets,
+// experiments, runs, evidence, findings — those arrive in Phases 3–5).
+// The migration below exists solely to establish the schema ownership
+// boundaries (control / evidence / analysis) and to prove the migration
+// workflow against real PostgreSQL.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/client"
+}
+
+datasource db {
+  provider  = "postgresql"
+  schemas   = ["control", "evidence", "analysis"]
+}

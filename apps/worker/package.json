@@ -1,0 +1,26 @@
+{
+  "name": "@rupturegrid/worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RuptureGrid execution worker process shell (Phase 1)",
+  "type": "module",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "dev": "node --watch dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@rupturegrid/config": "workspace:*",
+    "@rupturegrid/control-db": "workspace:*",
+    "@rupturegrid/logger": "workspace:*",
+    "@rupturegrid/queue": "workspace:*",
+    "@rupturegrid/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,6 +1,6 @@
 # RuptureGrid v1.0
 
-**Status: PHASE 0 — definition and architecture only. PHASE 0 HAS NO RUNTIME IMPLEMENTATION.** No source code, no dependencies, no database schemas, no builds exist yet. This repository currently contains documentation and ADRs exclusively.
+**Status: PHASE 1 — foundation implemented on branch `phase-1-foundation`, uncommitted, awaiting independent audit.** The Phase 1 branch adds the pnpm/TypeScript monorepo, four application shells (API, worker, web, Demo Fintech), physically separate Control/Demo PostgreSQL services, Redis/BullMQ coordination foundation, real infrastructure tests, and migration workflow. No product domain behavior exists yet — no wallets, payments, experiments, evidence, or Incident Zero execution. See `docs/reports/phase-1-self-audit.md`.
 
 ---
 
@@ -58,27 +58,46 @@ Phase 0 (this) → 1 Monorepo foundation → 2 Demo Target → 3 Execution engin
 
 ## Current phase status
 
-**Phase 0 — Product Definition + Architecture + Engineering Constitution.** Deliverables: the documentation set, 13 ADRs, requirements matrix, self-audit. Verdict: **PHASE 0 READY FOR INDEPENDENT AUDIT** (builder's verdict; independent acceptance is deliberately not the builder's to give). Next: independent audit, then Phase 1 per the roadmap.
+**Phase 0 — complete and accepted (tag `phase-0-accepted`). Phase 1 — implemented on `phase-1-foundation`, not yet independently audited.** Phase 0 deliverables: documentation set, 13 ADRs, requirements matrix, self-audit. Phase 1 deliverables: monorepo + core infrastructure foundation per [docs/phase-roadmap.md](docs/phase-roadmap.md). No Phase 1 commit/tag exists yet by design — the builder session leaves all changes uncommitted for independent audit.
+
+## Running the Phase 1 foundation locally
+
+Requirements: Node 22, pnpm 11 (Corepack-managed), Docker with Compose.
+
+```
+pnpm install          # install workspace dependencies
+cp .env.example .env  # local, gitignored environment (non-production values)
+pnpm infra:up         # start control-postgres (5443), demo-postgres (5444), redis (6380)
+pnpm db:migrate       # apply Prisma migrations to both databases
+pnpm dev              # run API (3001), worker, Demo Fintech (3002), web (3000)
+```
+
+Quality gates: `pnpm verify` (format, lint, typecheck, unit tests, build). Real-infrastructure integration tests: `pnpm test:integration` (requires `pnpm infra:up`). Ports are defaults; every host port is environment-configurable — see `.env.example`.
 
 ## Repository layout
 
 ```
 README.md                        this file
 AGENTS.md                        engineering constitution for all contributors
-docs/
-  product-spec.md                product definition, identity model, money, non-goals
-  architecture.md                contexts, topology, ownership, execution semantics
-  engineering-rules.md           phase flow, definitions of done, git/migration rules
-  testing-strategy.md            testing constitution, adversarial catalog
-  security-boundaries.md         authorization, SSRF/DNS/redirects, redaction, limits
-  evidence-model.md              evidence terminology, integrity, causality, findings
-  incident-zero.md               flagship scenario design
-  incident-replay.md             reproduction & snapshot contracts
-  product-design.md              UI philosophy, IA, quality gate
-  phase-roadmap.md               phases 0–11 with acceptance criteria
-  phase-0-requirements.md        traceability matrix
-  decisions/                     ADRs 0001–0013
-  reports/                       phase self-audit reports
+compose.yaml                     local infrastructure (control/demo postgres, redis)
+.env.example                     documented non-production environment template
+eslint.config.mjs / .prettierrc.json / vitest.config.ts   root quality tooling
+apps/
+  api/            Control Plane HTTP shell (NestJS): health/live, health/ready
+  worker/         execution worker shell (BullMQ consumer lifecycle, no HTTP)
+  web/            product shell (Next.js): identity page + /health, no dashboard
+  demo-fintech/   independent Demo Target shell: owns only the Demo DB
+packages/
+  config/         per-app environment schemas, fail-fast validation, env ownership
+  logger/         pino-based structured logging with mandatory redaction
+  control-db/     RuptureGrid Control PostgreSQL client + migrations (Prisma)
+  demo-db/        Demo Fintech PostgreSQL client + migrations (Prisma, separate)
+  queue/          Redis/BullMQ coordination foundation (smoke queue, connections)
+  shared/         service names, money types, redaction utilities
+tests/
+  unit/           config validation + redaction unit tests (vitest)
+  integration/    real PostgreSQL / Redis / HTTP / process tests (vitest)
+docs/             Phase 0 architecture, 13 ADRs, roadmap, reports
 ```
 
 ## For contributors (human and AI)

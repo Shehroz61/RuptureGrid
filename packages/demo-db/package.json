@@ -1,0 +1,36 @@
+{
+  "name": "@rupturegrid/demo-db",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Demo Fintech PostgreSQL ownership boundary (target-owned; RuptureGrid never receives these credentials)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "prisma"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "generate": "prisma generate --config prisma.config.ts",
+    "migrate:deploy": "prisma migrate deploy --config prisma.config.ts",
+    "migrate:dev": "prisma migrate dev --config prisma.config.ts",
+    "migrate:diff": "prisma migrate diff --config prisma.config.ts"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0"
+  },
+  "devDependencies": {
+    "prisma": "^7.10.0",
+    "typescript": "^5.9.3"
+  }
+}

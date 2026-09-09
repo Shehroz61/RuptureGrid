@@ -1,0 +1,16 @@
+// =====================================================================
+// Demo Fintech PostgreSQL schema — Phase 1 infrastructure only
+// =====================================================================
+// Phase 1 deliberately creates NO target domain tables (no customers,
+// wallets, payments, ledger entries — those arrive in Phase 2). The
+// migration below only establishes the target-owned schema and proves
+// the migration workflow against the real Demo PostgreSQL.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}

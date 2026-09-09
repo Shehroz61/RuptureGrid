@@ -1,0 +1,22 @@
+// =====================================================================
+// RuptureGrid Control — Prisma configuration
+// =====================================================================
+// The connection URL comes from the environment (CONTROL_DATABASE_URL),
+// loaded from the repository-root .env by the config package.
+// RuptureGrid PostgreSQL owns the control/evidence/analysis schemas;
+// the Demo Fintech database is a SEPARATE instance (ADR-0002).
+
+import { loadEnvironment } from '@rupturegrid/config';
+import { defineConfig, env } from 'prisma/config';
+
+loadEnvironment();
+
+export default defineConfig({
+  schema: 'prisma/schema.prisma',
+  migrations: {
+    path: 'prisma/migrations',
+  },
+  datasource: {
+    url: env('CONTROL_DATABASE_URL'),
+  },
+});

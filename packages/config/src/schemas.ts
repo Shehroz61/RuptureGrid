@@ -61,14 +61,57 @@ export const apiConfigSchema = z.object({
     ),
 });
 
-/** RuptureGrid worker (apps/worker). Same ownership family as the API. */
-export const workerConfigSchema = z.object({
-  NODE_ENV: nodeEnv,
-  LOG_LEVEL: logLevel,
-  CONTROL_DATABASE_URL: databaseUrl,
-  REDIS_URL: redisUrl,
-  QUEUE_PREFIX: queuePrefix,
-});
+const positiveIntMs = z.coerce.number().int().min(250).max(600_000);
+
+/**
+ * A Demo Fintech credential the executor may resolve at execution time.
+ * Optional: only targets that declare the corresponding reference name
+ * need the value present. Never logged, never persisted (ADR-0012).
+ */
+const demoSecretOptional = z
+  .string()
+  .min(16, 'must be at least 16 characters when present')
+  .max(256)
+  .optional();
+
+/**
+ * RuptureGrid worker (apps/worker) — the Phase 3 execution worker.
+ * Same ownership family as the API: Control PostgreSQL + Redis.
+ *
+ * Credential references: the worker is the EXECUTOR, so it legitimately
+ * holds the target-credential VALUES for the credential reference names
+ * experiments may declare (ADR-0012; security-boundaries §7). Values are
+ * resolved at execution time only, never logged, never persisted. The
+ * Demo Fintech DATABASE URL is deliberately NOT declared here — the
+ * worker reaches the Demo target over HTTP only (ADR-0002, Phase 3 §7).
+ */
+export const workerConfigSchema = z
+  .object({
+    NODE_ENV: nodeEnv,
+    LOG_LEVEL: logLevel,
+    CONTROL_DATABASE_URL: databaseUrl,
+    REDIS_URL: redisUrl,
+    QUEUE_PREFIX: queuePrefix,
+    /** Durable lease duration for a claimed step (PostgreSQL time). */
+    WORKER_LEASE_DURATION_MS: positiveIntMs.default(30_000),
+    /** Heartbeat interval; must be well inside the lease window. */
+    WORKER_HEARTBEAT_INTERVAL_MS: positiveIntMs.default(10_000),
+    /** Bounded reconciliation sweep interval. */
+    WORKER_RECONCILE_INTERVAL_MS: positiveIntMs.default(10_000),
+    /** BullMQ worker concurrency (in-flight step jobs per process). */
+    WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(4),
+    // ---- Executor credential values, keyed by credential REF NAME ----
+    // Target registrations declare which of these names their steps may
+    // use. A missing value fails that step's execution fast, with no
+    // secret material in the error.
+    DEMO_ADMIN_TOKEN: demoSecretOptional,
+    DEMO_INSPECTION_TOKEN: demoSecretOptional,
+    DEMO_PROVIDER_SIGNING_SECRET: demoSecretOptional,
+  })
+  .refine((config) => config.WORKER_HEARTBEAT_INTERVAL_MS * 2 <= config.WORKER_LEASE_DURATION_MS, {
+    message: 'WORKER_HEARTBEAT_INTERVAL_MS must be at most half of WORKER_LEASE_DURATION_MS',
+    path: ['WORKER_HEARTBEAT_INTERVAL_MS'],
+  });
 
 /**
  * A Demo Fintech bearer credential (admin / inspection / provider
@@ -104,3 +147,15 @@ export const demoConfigSchema = z.object({
 export type ApiConfig = z.infer<typeof apiConfigSchema>;
 export type WorkerConfig = z.infer<typeof workerConfigSchema>;
 export type DemoConfig = z.infer<typeof demoConfigSchema>;
+
+/**
+ * Credential reference names the Phase 3 executor can resolve from its
+ * validated environment. Target registrations may only declare refs
+ * from this list (server-side allowlist, security-boundaries §7).
+ */
+export const EXECUTOR_CREDENTIAL_REFS = [
+  'DEMO_ADMIN_TOKEN',
+  'DEMO_INSPECTION_TOKEN',
+  'DEMO_PROVIDER_SIGNING_SECRET',
+] as const;
+export type ExecutorCredentialRef = (typeof EXECUTOR_CREDENTIAL_REFS)[number];

@@ -3,8 +3,13 @@ import { apiConfigSchema, demoConfigSchema, workerConfigSchema } from './schemas
 import type { ApiConfig, DemoConfig, WorkerConfig } from './schemas.js';
 
 export { ConfigValidationError, loadConfig, loadEnvironment, pickRuptureGridEnv } from './load.js';
-export { apiConfigSchema, demoConfigSchema, workerConfigSchema } from './schemas.js';
-export type { ApiConfig, DemoConfig, WorkerConfig } from './schemas.js';
+export {
+  apiConfigSchema,
+  demoConfigSchema,
+  workerConfigSchema,
+  EXECUTOR_CREDENTIAL_REFS,
+} from './schemas.js';
+export type { ApiConfig, DemoConfig, WorkerConfig, ExecutorCredentialRef } from './schemas.js';
 
 /** Loads the repo-root `.env` and validates the API environment. */
 export function loadApiConfig(): ApiConfig {

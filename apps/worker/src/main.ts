@@ -1,18 +1,19 @@
 // =====================================================================
-// RuptureGrid v1.0 — worker process (Phase 1 shell)
+// RuptureGrid v1.0 — worker process (Phase 3 execution worker)
 // =====================================================================
 // No HTTP server: the worker validates configuration, connects to its
-// owned dependencies (Control PostgreSQL, Redis/BullMQ), and emits a
-// structured ready event only after successful startup (Phase 1 §25).
-// The real start/shutdown sequence lives in lifecycle.ts so tests can
-// exercise the genuine graceful-shutdown path in-process (Windows
-// cannot deliver SIGTERM to a process killed from outside).
+// owned dependencies (Control PostgreSQL, Redis/BullMQ), consumes the
+// experiment-execution queue, and runs the reconciler loop. The start/
+// shutdown sequence lives in execution-worker.ts so tests exercise the
+// genuine graceful path in-process (Windows cannot deliver SIGTERM to
+// a process killed from outside).
 
-import { startWorker } from './lifecycle.js';
+import { startExecutionWorkerRuntime } from './execution-worker.js';
 
 async function main(): Promise<void> {
-  const runtime = await startWorker();
+  const runtime = await startExecutionWorkerRuntime();
   await runtime.ready;
+  console.log(`[rupturegrid-worker] ready (owner=${runtime.workerId})`);
 
   let shuttingDown = false;
   const shutdown = (): void => {

@@ -18,5 +18,9 @@ export default defineConfig({
   },
   datasource: {
     url: env('CONTROL_DATABASE_URL'),
+    // Prisma 7 requires a shadow database for `migrate dev` and for
+    // `migrate diff --from-migrations` (migration verification).
+    // RuptureGrid PostgreSQL owns it; created alongside the main DB.
+    shadowDatabaseUrl: env('CONTROL_SHADOW_DATABASE_URL'),
   },
 });

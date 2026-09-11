@@ -8,6 +8,8 @@ const aliases = {
   '@rupturegrid/control-db': resolve('packages/control-db/src/index.ts'),
   '@rupturegrid/demo-db': resolve('packages/demo-db/src/index.ts'),
   '@rupturegrid/queue': resolve('packages/queue/src/index.ts'),
+  '@rupturegrid/engine': resolve('packages/engine/src/index.ts'),
+  '@rupturegrid/control-db/client': resolve('packages/control-db/src/generated/client/client.ts'),
 };
 
 export default defineConfig({

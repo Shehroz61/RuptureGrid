@@ -35,7 +35,8 @@ export class ConfigValidationError extends Error {
 /**
  * Environment variable families RuptureGrid owns. Everything else in
  * the process environment (PATH, system variables, …) is ignored.
- */ const RUPTUREGRID_ENV_PREFIX = /^(CONTROL_|DEMO_|REDIS_|QUEUE_|API_|LOG_|NODE_ENV|CORS_)/;
+ */ const RUPTUREGRID_ENV_PREFIX =
+  /^(CONTROL_|DEMO_|REDIS_|QUEUE_|API_|WORKER_|LOG_|NODE_ENV|CORS_)/;
 
 /** Returns only the RuptureGrid-owned variables from an environment. */
 export function pickRuptureGridEnv(

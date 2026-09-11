@@ -171,15 +171,27 @@ describe('config ownership boundaries (contract tests)', () => {
     expect(config).not.toHaveProperty('QUEUE_PREFIX');
   });
 
-  it('worker config never exposes Demo Fintech credentials', () => {
+  // Phase 3 update (ADR-0012 §55): the worker is the EXECUTOR, so it
+  // legitimately receives target credential VALUES for the reference
+  // names experiments may declare (DEMO_ADMIN_TOKEN,
+  // DEMO_INSPECTION_TOKEN, DEMO_PROVIDER_SIGNING_SECRET). The Demo
+  // DATABASE URL remains strictly forbidden — the worker reaches the
+  // target over HTTP only. The ownership boundary that must not move
+  // is database access, not the executor's credential resolution.
+  it('worker config receives executor credential values but NEVER the Demo database', () => {
     const config = loadConfig(workerConfigSchema, SHARED_DEV_ENV) as unknown as Record<
       string,
       unknown
     >;
     expect(config).not.toHaveProperty('DEMO_DATABASE_URL');
     expect(config).not.toHaveProperty('DEMO_POSTGRES_PASSWORD');
-    expect(config).not.toHaveProperty('DEMO_ADMIN_TOKEN');
-    expect(config).not.toHaveProperty('DEMO_PROVIDER_SIGNING_SECRET');
+    expect(config).not.toHaveProperty('DEMO_HOST');
+    expect(config).not.toHaveProperty('DEMO_PORT');
+    // Executor credential refs are expected (values resolved at
+    // request time only; never logged, never persisted).
+    expect(config).toHaveProperty('DEMO_ADMIN_TOKEN');
+    expect(config).toHaveProperty('DEMO_INSPECTION_TOKEN');
+    expect(config).toHaveProperty('DEMO_PROVIDER_SIGNING_SECRET');
   });
 
   it('compose-service variables never leak into any app config', () => {

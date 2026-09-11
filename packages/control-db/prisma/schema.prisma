@@ -1,11 +1,23 @@
 // =====================================================================
-// RuptureGrid Control PostgreSQL schema — Phase 1 infrastructure only
+// RuptureGrid Control PostgreSQL schema
 // =====================================================================
-// This phase deliberately creates NO domain tables (no users, targets,
-// experiments, runs, evidence, findings — those arrive in Phases 3–5).
-// The migration below exists solely to establish the schema ownership
-// boundaries (control / evidence / analysis) and to prove the migration
-// workflow against real PostgreSQL.
+// Migration 0001 established the schema ownership boundaries
+// (control / evidence / analysis) with NO domain tables. This schema
+// adds the Phase 3 execution-engine domain models (architecture §6):
+//
+//   TargetRegistration / TargetOrigin — registered, authorized targets
+//   ExperimentDefinition / ExperimentRevision — versioned definitions
+//   RunSnapshot — canonicalized, hash-pinned execution intent (ADR-0010)
+//   ExperimentRun / ExperimentStepRun — durable state machines (§7, §8)
+//   StepInvocation — one physical attempt of one step (§6)
+//   StaleWriterEvent — record of rejected stale-writer writes (§10)
+//
+// Deliberately ABSENT (R-01 phase boundaries): RawObservation,
+// normalized events, invariant definitions/evaluations, findings,
+// forensic timeline, AI tables — those are Phase 4/5.
+//
+// Everything here lives in the `control` schema. The `evidence` and
+// `analysis` schemas remain empty until their own phases own them.
 
 generator client {
   provider = "prisma-client"
@@ -13,6 +25,386 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  schemas   = ["control", "evidence", "analysis"]
+  provider = "postgresql"
+  schemas  = ["control", "evidence", "analysis"]
+}
+
+// ---------------------------------------------------------------------
+// Enums (canonical terminology — AGENTS R-18, architecture §7/§8)
+// ---------------------------------------------------------------------
+
+/// security-boundaries §2: `local-development | staging | production`.
+/// Production fault targeting is DENIED in v1 (ADR-0011).
+enum TargetEnvironment {
+  LOCAL_DEVELOPMENT
+  STAGING
+  PRODUCTION
+
+  @@schema("control")
+}
+
+/// Run state machine (architecture §8).
+enum RunState {
+  CREATED
+  SNAPSHOT_PINNED
+  DISPATCHING
+  RUNNING
+  RECONCILING
+  COMPLETED
+  FAILED
+  CANCELLED
+
+  @@schema("control")
+}
+
+/// Step intent-execution state machine (architecture §8). The v1
+/// ordered-dependency policy stops a run on process failure: a step
+/// whose prerequisite terminally FAILED/CANCELLED is itself CANCELLED
+/// (sideEffectKnowledge KNOWN_ABSENT), never invented as a new state.
+enum StepState {
+  PENDING
+  DISPATCHED
+  CLAIMED
+  EXECUTING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+
+  @@schema("control")
+}
+
+/// intentOutcome — did the executor complete its own work? (§7.1)
+enum IntentOutcome {
+  SUCCEEDED
+  FAILED
+  CANCELLED
+
+  @@schema("control")
+}
+
+/// sideEffectKnowledge — what is known about the remote mutation?
+/// (§7.1, ADR-0008). Orthogonal to intentOutcome; never collapsed.
+enum SideEffectKnowledge {
+  KNOWN_OCCURRED
+  KNOWN_ABSENT
+  INDETERMINATE
+  NOT_APPLICABLE
+
+  @@schema("control")
+}
+
+/// Durable dispatch marker on a step run (ADR-0003 §9): PostgreSQL
+/// records the intent; BullMQ is coordination only. RECONCILE marks a
+/// step the reconciler has taken under recovery responsibility.
+enum DispatchState {
+  PENDING
+  DISPATCHED
+  RECONCILE
+
+  @@schema("control")
+}
+
+/// Experiment-declared retry classification (§7.2). NONE = executor
+/// never retries; SAFE = retry permitted for provably pre-send
+/// failures and read-only transient failures within a bounded budget.
+/// INDETERMINATE mutating outcomes are never retried regardless
+/// (ADR-0008).
+enum DeclaredRetryPolicy {
+  NONE
+  SAFE
+
+  @@schema("control")
+}
+
+/// Declared mutation semantics of an action (§7.1): read-only actions
+/// carry sideEffectKnowledge NOT_APPLICABLE; mutating actions get a
+/// real sideEffectKnowledge classification per invocation.
+enum MutationClassification {
+  READ_ONLY
+  MUTATING
+
+  @@schema("control")
+}
+
+/// §27 contract kinds: what the target contract lets the executor
+/// conclude about side effects from responses. demo-fintech-webhook
+/// guarantees no-effect for its definitive 4xx transport rejections.
+enum ContractKind {
+  DEMO_FINTECH_WEBHOOK
+  GENERIC_HTTP
+
+  @@schema("control")
+}
+
+/// Furthest transport stage an invocation reached (§7.1 classification
+/// input). REQUEST_SENT or beyond ⇒ the request may have reached the
+/// target; below it ⇒ provably not sent (KNOWN_ABSENT territory).
+enum TransportStage {
+  PREPARED
+  CONNECTING
+  REQUEST_SENT
+  RESPONSE_HEADERS
+  RESPONSE_COMPLETE
+
+  @@schema("control")
+}
+
+// ---------------------------------------------------------------------
+// Target registration (security-boundaries §2)
+// ---------------------------------------------------------------------
+
+/// A registered, authorized target. Executable origins, environment
+/// classification, and the credential REFERENCE NAMES its experiments
+/// may use. Never stores secret values (ADR-0012).
+model TargetRegistration {
+  id             String            @id @default(uuid()) @db.Uuid
+  displayName    String            @unique @db.VarChar(120)
+  environment    TargetEnvironment  /// Credential reference names steps on this target may declare.
+  /// Must be a subset of the executor's server-side allowlist
+  /// (EXECUTOR_CREDENTIAL_REFS); enforced at registration.
+  credentialRefs String[]
+  /// Response-interpretation contract used by side-effect
+  /// classification (architecture §7.1, prompt §27).
+  contractKind ContractKind
+  createdAt    DateTime          @default(now()) @db.Timestamptz(6)
+
+  origins   TargetOrigin[]
+  revisions ExperimentRevision[]
+
+  @@map("target_registration")
+  @@schema("control")
+}
+
+/// One normalized executable origin (scheme + host + port) of a
+/// target. Stored pre-normalized (lowercase host, explicit port);
+/// the executor compares parsed-and-normalized origins, never strings
+/// (security-boundaries §3). Globally unique so origin authority is
+/// never ambiguous.
+model TargetOrigin {
+  id       String @id @default(uuid()) @db.Uuid
+  targetId String @db.Uuid
+  /// Canonical form: `<scheme>://<host>[:<port>]` with lowercase host.
+  origin   String @unique @db.VarChar(255)
+
+  target TargetRegistration @relation(fields: [targetId], references: [id], onDelete: Restrict)
+
+  @@index([targetId])
+  @@map("target_origin")
+  @@schema("control")
+}
+
+// ---------------------------------------------------------------------
+// Experiment definitions and immutable revisions
+// ---------------------------------------------------------------------
+
+model ExperimentDefinition {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @unique @db.VarChar(120)
+  description String?  @db.VarChar(500)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  revisions ExperimentRevision[]
+
+  @@map("experiment_definition")
+  @@schema("control")
+}
+
+/// One immutable version of an experiment: target binding + validated,
+/// normalized ordered steps. Never updated after creation (ADR-0010:
+/// runs execute from snapshots, and snapshots pin a revision).
+model ExperimentRevision {
+  id             String   @id @default(uuid()) @db.Uuid
+  definitionId   String   @db.Uuid
+  revisionNumber Int
+  targetId       String   @db.Uuid
+  /// Validated normalized step templates (the ExperimentDocument
+  /// shape from @rupturegrid/engine — validation happens before any
+  /// write; secrets are never present).
+  stepsJson      Json
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  definition ExperimentDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict)
+  target     TargetRegistration   @relation(fields: [targetId], references: [id], onDelete: Restrict)
+  snapshots  RunSnapshot[]
+
+  @@unique([definitionId, revisionNumber])
+  @@index([targetId])
+  @@map("experiment_revision")
+  @@schema("control")
+}
+
+// ---------------------------------------------------------------------
+// Run snapshots (ADR-0010)
+// ---------------------------------------------------------------------
+
+/// Canonicalized, content-hashed, append-only materialization of
+/// everything one run needs. Created BEFORE dispatch/execution; runs
+/// reference the snapshot, never the mutable definition rows.
+model RunSnapshot {
+  id               String   @id @default(uuid()) @db.Uuid
+  revisionId       String   @db.Uuid
+  /// Canonicalization algorithm version (documented constant).
+  canonicalization String   @db.VarChar(32)
+  /// SHA-256 hex of the canonical UTF-8 bytes of `content`.
+  contentHash      String   @unique @db.VarChar(64)
+  /// The full snapshot document (deterministically serialized).
+  content          Json
+  createdAt        DateTime @default(now()) @db.Timestamptz(6)
+
+  revision ExperimentRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+  runs     ExperimentRun[]
+
+  @@index([revisionId])
+  @@map("run_snapshot")
+  @@schema("control")
+}
+
+// ---------------------------------------------------------------------
+// Runs and step runs (architecture §7–§10)
+// ---------------------------------------------------------------------
+
+model ExperimentRun {
+  id            String    @id @default(uuid()) @db.Uuid
+  snapshotId    String    @db.Uuid
+  state         RunState
+  /// Bounded terminal failure detail (FAILED runs). Never contains
+  /// secrets (redaction before persistence).
+  failureReason String?   @db.VarChar(500)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  terminalAt    DateTime? @db.Timestamptz(6)
+  /// Set by the API cancel endpoint; workers observe it at
+  /// cooperative cancel points (before dispatch, between waves,
+  /// before each retry) — never a mid-request abort (§8 §10).
+  cancelRequestedAt DateTime? @db.Timestamptz(6)
+
+  snapshot RunSnapshot        @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  steps    ExperimentStepRun[]
+
+  @@index([state])
+  @@index([createdAt])
+  @@map("experiment_run")
+  @@schema("control")
+}
+
+model ExperimentStepRun {
+  id       String @id @default(uuid()) @db.Uuid
+  runId    String @db.Uuid
+  /// 0-based position in the snapshot's ordered step list.
+  sequence Int
+  name     String @db.VarChar(120)
+
+  state StepState @default(PENDING)
+
+  // ---- Durable ownership (ADR-0009): lease fields ON the step run ----
+  /// Worker identity of the current/last claim generation.
+  leaseOwnerId   String?   @db.VarChar(120)
+  /// Lease deadline; claims and expiries are decided against
+  /// PostgreSQL time (statement_now), not worker clocks.
+  leaseExpiresAt DateTime? @db.Timestamptz(6)
+  /// Monotonic claim generation; incremented by every successful
+  /// claim. All owner state writes are conditioned on it.
+  fencingToken   BigInt    @default(0)
+
+  // ---- Durable dispatch intent (ADR-0003) ----
+  dispatchState     DispatchState @default(PENDING)
+  dispatchAttempts  Int           @default(0)
+  lastDispatchError String?       @db.VarChar(500)
+  dispatchedAt      DateTime?     @db.Timestamptz(6)
+
+  // ---- Outcome dimensions (§7.1, orthogonal) ----
+  intentOutcome       IntentOutcome?
+  sideEffectKnowledge SideEffectKnowledge?
+  /// Executor retry attempts consumed (repeat invocations are
+  /// separate StepInvocation rows, not retries).
+  attemptCount        Int                  @default(0)
+  /// Bounded terminal error detail. Never contains secrets.
+  error               String?              @db.VarChar(500)
+
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  claimedAt   DateTime? @db.Timestamptz(6)
+  executingAt DateTime? @db.Timestamptz(6)
+  terminalAt  DateTime? @db.Timestamptz(6)
+
+  run               ExperimentRun      @relation(fields: [runId], references: [id], onDelete: Restrict)
+  invocations       StepInvocation[]
+  staleWriterEvents StaleWriterEvent[]
+
+  @@unique([runId, sequence])
+  @@index([runId])
+  /// Reconciliation discovery: dispatchable or reclaimable steps.
+  @@index([dispatchState, state])
+  /// Lease-expiry discovery: CLAIMED/EXECUTING past their deadline.
+  @@index([state, leaseExpiresAt])
+  @@map("experiment_step_run")
+  @@schema("control")
+}
+
+/// One physical attempt of one step, including deliberate repeats
+/// (§7.2: repeat ≠ retry). Carries the per-invocation identity used
+/// for evidence correlation (e.g. the Demo's deliveryAttemptId) and
+/// the transport-stage detail that drives side-effect classification.
+model StepInvocation {
+  id                 String  @id @default(uuid()) @db.Uuid
+  stepRunId          String  @db.Uuid
+  /// 1-based physical invocation index within the step (repeat).
+  sequence           Int
+  /// Target-facing per-invocation identity when the action declares
+  /// one (e.g. x-rupturegrid-delivery-attempt-id). Generated per
+  /// physical invocation; never reused.
+  invocationIdentity String? @db.VarChar(120)
+
+  /// Furthest transport stage reached (NULL = never started).
+  transportStage TransportStage?
+  httpStatus     Int?
+  requestBytes   Int?
+  responseBytes  Int?
+  /// Bounded captured response body for legitimate variable-reference
+  /// steps. Subject to redaction; capped by the response-size limit.
+  responseBody   String?
+  /// 1-based index of the repeat wave; ordered so later steps can
+  /// reference a specific delivery deterministically.
+  waveIndex      Int?
+  /// Executor-side timing for the invocation (ms). Observation only —
+  /// never authoritative for ownership decisions.
+  durationMs            Int?
+  outcome               IntentOutcome?
+  sideEffectKnowledge   SideEffectKnowledge?
+  /// Bounded per-invocation error detail. Never contains secrets.
+  error                 String?              @db.VarChar(500)
+  /// Owner + fencing token of the writer generation (architecture
+  /// §10: records are attributed to their invocation and writer).
+  writtenByOwner        String?              @db.VarChar(120)
+  writtenByFencingToken BigInt?
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(6)
+  finishedAt DateTime? @db.Timestamptz(6)
+
+  stepRun ExperimentStepRun @relation(fields: [stepRunId], references: [id], onDelete: Restrict)
+
+  @@unique([stepRunId, sequence])
+  @@map("step_invocation")
+  @@schema("control")
+}
+
+/// Append-only record of a rejected stale-writer state write
+/// (architecture §10). Fencing governs durable state; the attempt is
+/// recorded, never silently discarded.
+model StaleWriterEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  stepRunId    String   @db.Uuid
+  /// Owner that attempted the write.
+  attemptedBy  String   @db.VarChar(120)
+  /// Fencing token the stale writer believed it owned.
+  fencingToken BigInt
+  /// What it tried to do (bounded, secret-free).
+  detail       String   @db.VarChar(500)
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+
+  stepRun ExperimentStepRun @relation(fields: [stepRunId], references: [id], onDelete: Restrict)
+
+  @@index([stepRunId])
+  @@map("stale_writer_event")
+  @@schema("control")
 }

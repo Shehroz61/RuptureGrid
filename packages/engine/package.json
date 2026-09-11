@@ -1,23 +1,29 @@
 {
-  "name": "@rupturegrid/worker",
+  "name": "@rupturegrid/engine",
   "version": "1.0.0",
   "private": true,
-  "description": "RuptureGrid execution worker process shell (Phase 1)",
+  "description": "RuptureGrid Phase 3 execution engine: validation, snapshots, durable run/step state, claims/leases/fencing, HTTP executor, reconciliation",
   "type": "module",
-  "main": "./dist/main.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/main.js",
-    "dev": "node --watch dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src"
   },
   "dependencies": {
     "@rupturegrid/config": "workspace:*",
     "@rupturegrid/control-db": "workspace:*",
-    "@rupturegrid/engine": "workspace:*",
     "@rupturegrid/logger": "workspace:*",
-    "@rupturegrid/queue": "workspace:*",
     "@rupturegrid/shared": "workspace:*"
   },
   "devDependencies": {

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import type { INestApplication } from '@nestjs/common';
 import { HEALTH_OPTIONS, HealthController } from './health/health.controller.js';
+import { EXECUTION_OPTIONS, ExecutionController } from './execution/execution.controller.js';
 import type { ApiConfig } from '@rupturegrid/config';
 import type { ControlDb } from '@rupturegrid/control-db';
 
@@ -12,13 +13,21 @@ export interface AppModuleOptions {
 /** Builds the configured root module for the API process. */
 export function buildAppModule(options: AppModuleOptions) {
   @Module({
-    controllers: [HealthController],
+    controllers: [HealthController, ExecutionController],
     providers: [
       {
         provide: HEALTH_OPTIONS,
         useValue: {
           controlDb: options.controlDb,
           redisUrl: options.config.REDIS_URL,
+        },
+      },
+      {
+        provide: EXECUTION_OPTIONS,
+        useValue: {
+          controlDb: options.controlDb,
+          redisUrl: options.config.REDIS_URL,
+          queuePrefix: options.config.QUEUE_PREFIX,
         },
       },
     ],
@@ -33,3 +42,5 @@ export async function closeResources(app: INestApplication): Promise<void> {
   const controller = app.get(HealthController);
   await controller.close();
 }
+
+export { HealthController };

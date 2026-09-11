@@ -8,9 +8,30 @@
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from './generated/client/client.js';
 
+export type { PrismaClient } from './generated/client/client.js';
+export * from './generated/client/enums.js';
+export type {
+  TargetRegistrationModel,
+  TargetOriginModel,
+  ExperimentDefinitionModel,
+  ExperimentRevisionModel,
+  RunSnapshotModel,
+  ExperimentRunModel,
+  ExperimentStepRunModel,
+  StepInvocationModel,
+  StaleWriterEventModel,
+} from './generated/client/models.js';
+
 export interface ControlDb {
   /** Raw health probe: SELECT 1 against the Control PostgreSQL. */
   ping(): Promise<void>;
+  /**
+   * The typed Prisma client for Control-schema domain operations
+   * (Phase 3 execution engine). Domain code uses the generated model
+   * API; cross-cutting conditional/fenced writes use `$executeRaw`
+   * inside transactions for precise database-time predicates.
+   */
+  readonly prisma: PrismaClient;
   /** Closes the underlying connection pool. */
   disconnect(): Promise<void>;
 }
@@ -22,14 +43,15 @@ export interface ControlDb {
  */
 export function createControlDb(connectionString: string): ControlDb {
   const adapter = new PrismaPg({ connectionString });
-  const client = new PrismaClient({ adapter });
+  const prisma = new PrismaClient({ adapter });
 
   return {
+    prisma,
     async ping() {
-      await client.$queryRawUnsafe('SELECT 1');
+      await prisma.$queryRawUnsafe('SELECT 1');
     },
     async disconnect() {
-      await client.$disconnect();
+      await prisma.$disconnect();
     },
   };
 }

@@ -1,0 +1,31 @@
+{
+  "name": "@rupturegrid/evidence",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RuptureGrid Phase 4 evidence truth: redacted capture, hash-chained raw observations, deterministic normalization, causal derivation, invariant evaluation",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@rupturegrid/control-db": "workspace:*",
+    "@rupturegrid/engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}

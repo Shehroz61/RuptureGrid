@@ -67,6 +67,8 @@ export {
   StepNotClaimableError,
   createDemoCredentialResolver,
 } from './step-processor.js';
+export { noopEvidenceSink } from './evidence-sink.js';
+export type { EvidenceSink, InvocationObservation } from './evidence-sink.js';
 export {
   findUndispatchedSteps,
   resolveExpiredLease,

@@ -2,8 +2,8 @@
 // RuptureGrid Control PostgreSQL schema
 // =====================================================================
 // Migration 0001 established the schema ownership boundaries
-// (control / evidence / analysis) with NO domain tables. This schema
-// adds the Phase 3 execution-engine domain models (architecture §6):
+// (control / evidence / analysis). Migration 0002 added the Phase 3
+// execution-engine domain models (architecture §6):
 //
 //   TargetRegistration / TargetOrigin — registered, authorized targets
 //   ExperimentDefinition / ExperimentRevision — versioned definitions
@@ -12,13 +12,22 @@
 //   StepInvocation — one physical attempt of one step (§6)
 //   StaleWriterEvent — record of rejected stale-writer writes (§10)
 //
-// Deliberately ABSENT (R-01 phase boundaries): RawObservation,
-// normalized events, invariant definitions/evaluations, findings,
-// forensic timeline, AI tables — those are Phase 4/5.
+// Migration 0003 (this schema, Phase 4) adds the evidence-truth models
+// (docs/evidence-model.md, ADR-0006):
 //
-// Everything here lives in the `control` schema. The `evidence` and
-// `analysis` schemas remain empty until their own phases own them.
-
+//   evidence schema:  RawObservation, NormalizedEvent,
+//                     CausalRelationship, EvidenceIntegrityHead
+//   analysis schema:  InvariantDefinition, EvaluationBatch,
+//                     InvariantEvaluation
+//
+// Deliberately ABSENT (R-01 phase boundaries): Finding, finding
+// severity, forensic timeline, reproduction definitions, AI tables —
+// those are Phase 5.
+//
+// Phase 3 execution tables stay in `control` (§13: execution state and
+// evidence are different concepts); RawObservation/NormalizedEvent/
+// CausalRelationship live in `evidence`; invariant models live in
+// `analysis`. No evidence tables exist in Demo PostgreSQL (ADR-0002).
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/client"
@@ -280,6 +289,12 @@ model ExperimentRun {
 
   snapshot RunSnapshot        @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
   steps    ExperimentStepRun[]
+  rawObservations      RawObservation[]
+  normalizedEvents     NormalizedEvent[]
+  causalRelationships  CausalRelationship[]
+  evidenceIntegrityHead EvidenceIntegrityHead?
+  evaluationBatches    EvaluationBatch[]
+  invariantEvaluations InvariantEvaluation[]
 
   @@index([state])
   @@index([createdAt])
@@ -330,6 +345,7 @@ model ExperimentStepRun {
   run               ExperimentRun      @relation(fields: [runId], references: [id], onDelete: Restrict)
   invocations       StepInvocation[]
   staleWriterEvents StaleWriterEvent[]
+  rawObservations   RawObservation[]
 
   @@unique([runId, sequence])
   @@index([runId])
@@ -407,4 +423,293 @@ model StaleWriterEvent {
   @@index([stepRunId])
   @@map("stale_writer_event")
   @@schema("control")
+}
+
+// =====================================================================
+// Phase 4 — EVIDENCE context (evidence schema)
+// =====================================================================
+// Canonical terminology per docs/evidence-model.md §1–§6 and ADR-0006:
+//   RawObservation      — what RuptureGrid actually observed (OBSERVED)
+//   NormalizedEvent     — deterministic versioned projection (DERIVED)
+//   CausalRelationship  — identity-backed linkage between events (DERIVED)
+//   EvidenceIntegrityHead — per-run hash-chain head pointer
+//
+// Integrity contract (evidence-model §4, stated honestly):
+//   - LOGICALLY APPEND-ONLY: no application update/delete path exists
+//     for observations/events/relationships; corrections append new
+//     records. NOT claimed: immutable / tamper-proof / non-repudiable.
+//   - CONTENT-ADDRESSED: contentHash is the SHA-256 of the canonical
+//     stored REDACTED representation (redaction before persistence —
+//     security-boundaries §7, ADR-0012). It is NOT a hash of "exact
+//     raw wire bytes".
+//   - HASH-CHAINED PER RUN: each observation records its predecessor's
+//     contentHash; the run's chain head lives in evidence_integrity_head.
+//     Post-hoc modification by the application's writers is detectable.
+
+/// Raw observation kinds (evidence-model §3 initial contract).
+enum ObservationKind {
+  http_request_observed
+  http_response_observed
+  delivery_emitted
+  executor_error
+  target_observation
+
+  @@schema("evidence")
+}
+
+/// Origin classes (evidence-model §2). Phase 4 writes only OBSERVED
+/// and DETERMINISTIC_DERIVED rows; AI_INTERPRETED exists as a value so
+/// a future phase cannot silently widen the truth path (ADR-0007).
+enum EvidenceOrigin {
+  OBSERVED
+  DETERMINISTIC_DERIVED
+  AI_INTERPRETED
+
+  @@schema("evidence")
+}
+
+/// One raw observation of one physical invocation or adapter read.
+/// Not fenced (observed reality is attributed, never erased —
+/// architecture §10): a stale generation's truthful observation may be
+/// appended, carrying ITS writer identity; it can never regain
+/// authority over execution state.
+model RawObservation {
+  id                 String         @id @default(uuid()) @db.Uuid
+  runId              String         @db.Uuid
+  stepRunId          String?        @db.Uuid
+  /// StepInvocation row this observation belongs to (execution
+  /// correlation; evidence remains a separate concept — §13).
+  invocationId       String?        @db.Uuid
+  /// The target-facing per-invocation identity observed on the wire.
+  invocationIdentity String?        @db.VarChar(120)
+  kind               ObservationKind
+  /// Explicit evidence-adapter kind for target_observation rows (e.g.
+  /// demo-fintech-payment-lineage). Never inferred from paths.
+  adapterKind        String?        @db.VarChar(64)
+  /// Versioned schema of `payload` so old evidence stays interpretable.
+  schemaVersion      String         @db.VarChar(32)
+  observedAt         DateTime       @db.Timestamptz(6)
+  /// The STORED REDACTED representation (bounded). Never raw secret-
+  /// bearing bytes (ADR-0012); `redactionApplied` records honestly that
+  /// redaction transformed the captured data.
+  payload            Json
+  redactionApplied   Boolean
+  redactionPolicyVersion String     @db.VarChar(32)
+  truncated          Boolean        @default(false)
+  /// SHA-256 hex of the canonical UTF-8 bytes of the stored
+  /// representation (redaction applied BEFORE hashing). An integrity
+  /// and traceability field — NOT a global identity: two runs observing
+  /// identical content each keep their own observation row.
+  contentHash        String         @db.VarChar(64)
+  /// Position of this observation in its run's hash chain (0-based,
+  /// gap-free under the append lock).
+  chainIndex         Int
+  /// contentHash of the predecessor observation of this run.
+  prevContentHash    String?        @db.VarChar(64)
+  origin             EvidenceOrigin
+  /// Writer provenance: which worker generation captured this.
+  writerOwnerId      String         @db.VarChar(120)
+  writerFencingToken BigInt?
+  createdAt          DateTime       @default(now()) @db.Timestamptz(6)
+
+  run     ExperimentRun      @relation(fields: [runId], references: [id], onDelete: Restrict)
+  stepRun ExperimentStepRun? @relation(fields: [stepRunId], references: [id], onDelete: Restrict)
+
+  /// Observation identity = provenance tuple. An exact re-persistence
+  /// of the SAME physical invocation's observation resolves to ONE row
+  /// (idempotent retry); a different invocation — or a different run
+  /// reusing an identity string — is a DIFFERENT observation (its own
+  /// row), never an alias of other runs' evidence.
+  @@unique([runId, kind, invocationIdentity])
+  @@index([runId, chainIndex])
+  @@index([contentHash])
+  @@index([runId, kind])
+  @@index([stepRunId])
+  @@map("raw_observation")
+  @@schema("evidence")
+}
+
+/// Deterministic versioned projection of one or more raw observations
+/// (evidence-model §1 NORMALIZED EVENT). Re-running the same normalizer
+/// version on the same input produces the same row (input-hash unique).
+model NormalizedEvent {
+  id                    String         @id @default(uuid()) @db.Uuid
+  runId                 String         @db.Uuid
+  /// Typed event name, namespaced by normalizer (e.g.
+  /// demo.payment-delivery-observed).
+  eventType             String         @db.VarChar(64)
+  /// Business subject identity when the event has one (e.g. the
+  /// providerPaymentId) — the join key for attribution.
+  subjectKey            String?        @db.VarChar(200)
+  payload               Json
+  normalizerName        String         @db.VarChar(80)
+  normalizerVersion     String         @db.VarChar(32)
+  /// SHA-256 of the canonical input tuple (source observation content
+  /// hashes) — derivation idempotency.
+  inputHash             String         @db.VarChar(64)
+  origin                EvidenceOrigin @default(DETERMINISTIC_DERIVED)
+  /// Content hashes of the source RawObservations (traceability raw →
+  /// derived).
+  sourceObservationHashes String[]
+  /// Chain index of the anchoring observation, when single-sourced.
+  primaryObservationIndex Int?
+  createdAt             DateTime       @default(now()) @db.Timestamptz(6)
+
+  run            ExperimentRun       @relation(fields: [runId], references: [id], onDelete: Restrict)
+  fromRelations  CausalRelationship[] @relation("CausalRelationshipFromEvent")
+  toRelations    CausalRelationship[] @relation("CausalRelationshipToEvent")
+
+  @@unique([runId, normalizerName, normalizerVersion, inputHash])
+  @@index([runId, eventType])
+  @@index([runId, subjectKey])
+  @@map("normalized_event")
+  @@schema("evidence")
+}
+
+/// Identity-backed relationship between two normalized events
+/// (evidence-model §6). Basis is the CANONICAL hyphenated form:
+///   identity-direct | identity-chain | temporal-correlation
+/// temporal-correlation is recorded only as a weak hint and can never
+/// be the sole support of a FAIL verdict (§6, §7).
+model CausalRelationship {
+  id           String   @id @default(uuid()) @db.Uuid
+  runId        String   @db.Uuid
+  fromEventId  String   @db.Uuid
+  toEventId    String   @db.Uuid
+  relationKind String   @db.VarChar(64)
+  basis        String   @db.VarChar(24)
+  /// The explicit linkage proof: which identity fields in which
+  /// payloads matched. Secret-free by redaction before persistence.
+  evidenceJson Json
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+
+  run       ExperimentRun  @relation(fields: [runId], references: [id], onDelete: Restrict)
+  fromEvent NormalizedEvent @relation("CausalRelationshipFromEvent", fields: [fromEventId], references: [id], onDelete: Restrict)
+  toEvent   NormalizedEvent @relation("CausalRelationshipToEvent", fields: [toEventId], references: [id], onDelete: Restrict)
+
+  @@unique([runId, fromEventId, toEventId, relationKind, basis])
+  @@index([runId])
+  @@index([fromEventId])
+  @@index([toEventId])
+  @@map("causal_relationship")
+  @@schema("evidence")
+}
+
+/// Per-run hash-chain head (evidence-model §4: "the run stores the
+/// final chain head"). A mutable pointer row by design — it is
+/// coordination metadata, not observation truth.
+model EvidenceIntegrityHead {
+  runId             String   @id @db.Uuid
+  lastChainIndex    Int
+  headContentHash   String   @db.VarChar(64)
+  observationCount  Int
+  updatedAt         DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  /// Last verification outcome (recomputed chain). Verification is
+  /// re-runnable; it never rewrites observation rows.
+  lastVerifiedAt    DateTime? @db.Timestamptz(6)
+  lastVerifiedHeadHash String? @db.VarChar(64)
+  lastVerifiedObservationCount Int?
+
+  run ExperimentRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  @@map("evidence_integrity_head")
+  @@schema("evidence")
+}
+
+// =====================================================================
+// Phase 4 — ANALYSIS context (analysis schema)
+// =====================================================================
+// Deterministic business-invariant evaluation (evidence-model §7,
+// ADR-0006). Deliberately ABSENT (R-01 phase boundaries): Finding,
+// finding severity, forensic timeline, reproduction definitions —
+// those are Phase 5.
+
+/// Invariant verdicts are EXACTLY these three (evidence-model §1/§7).
+/// NOT_EVALUABLE is first-class: insufficient evidence is "cannot
+/// determine", never a silent pass.
+enum InvariantVerdict {
+  PASS
+  FAIL
+  NOT_EVALUABLE
+
+  @@schema("analysis")
+}
+
+/// A declared, versioned business rule. v1 carries exactly one:
+/// INV-IZ-1 (incident-zero §5).
+model InvariantDefinition {
+  id           String   @id @default(uuid()) @db.Uuid
+  invariantKey String   @unique @db.VarChar(80)
+  title        String   @db.VarChar(200)
+  description  String   @db.VarChar(1000)
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+
+  evaluations InvariantEvaluation[]
+
+  @@map("invariant_definition")
+  @@schema("analysis")
+}
+
+/// One analysis pass of one (run, invariant, evaluator version).
+/// Unique per tuple: concurrent/repeat analysis converges on ONE batch
+/// row; later NEW evidence produces NEW evaluation rows on the SAME
+/// batch — history is never rewritten (idempotency by input hash).
+model EvaluationBatch {
+  id               String    @id @default(uuid()) @db.Uuid
+  runId            String    @db.Uuid
+  invariantKey     String    @db.VarChar(80)
+  evaluatorVersion String    @db.VarChar(32)
+  startedAt        DateTime  @default(now()) @db.Timestamptz(6)
+  completedAt      DateTime? @db.Timestamptz(6)
+  evaluationCount  Int       @default(0)
+
+  run         ExperimentRun         @relation(fields: [runId], references: [id], onDelete: Restrict)
+  evaluations InvariantEvaluation[]
+
+  @@unique([runId, invariantKey, evaluatorVersion])
+  @@index([runId])
+  @@map("evaluation_batch")
+  @@schema("analysis")
+}
+
+/// One deterministic evaluation of one invariant for one subject
+/// (evidence-model §7). Same inputs (evidence set + target-state
+/// verification + evaluator version) ⇒ same verdict and the same
+/// evidenceSetHash, persisted ONCE. Re-evaluation under a new
+/// evaluator version adds a new row — never a mutation.
+model InvariantEvaluation {
+  id               String           @id @default(uuid()) @db.Uuid
+  batchId          String           @db.Uuid
+  runId            String           @db.Uuid
+  invariantKey     String           @db.VarChar(80)
+  evaluatorVersion String           @db.VarChar(32)
+  /// The business subject evaluated (e.g. providerPaymentId).
+  subjectKey       String           @db.VarChar(200)
+  verdict          InvariantVerdict
+  /// Bounded human-readable justification (deterministic, secret-free).
+  reason           String           @db.VarChar(500)
+  /// SHA-256 of the canonical evidence-set input tuple. Deterministic
+  /// fingerprint of everything this verdict rests on.
+  evidenceSetHash  String           @db.VarChar(64)
+  /// What the completeness claim rests on (e.g. lineage-complete,
+  /// delivery-attributable).
+  completenessBasis String          @db.VarChar(64)
+  /// Secret-free structured detail (counted effects, bases, gaps).
+  details          Json
+  /// Traceability: content hashes of every raw observation, ids of
+  /// every normalized event and causal relationship used.
+  sourceObservationHashes String[]
+  normalizedEventIds      String[]
+  causalRelationshipIds   String[]
+  createdAt        DateTime         @default(now()) @db.Timestamptz(6)
+
+  batch     EvaluationBatch     @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  run       ExperimentRun       @relation(fields: [runId], references: [id], onDelete: Restrict)
+  invariant InvariantDefinition @relation(fields: [invariantKey], references: [invariantKey], onDelete: Restrict)
+
+  @@unique([runId, invariantKey, evaluatorVersion, subjectKey, evidenceSetHash])
+  @@index([runId])
+  @@index([batchId])
+  @@map("invariant_evaluation")
+  @@schema("analysis")
 }

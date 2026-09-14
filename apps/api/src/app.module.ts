@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import type { INestApplication } from '@nestjs/common';
 import { HEALTH_OPTIONS, HealthController } from './health/health.controller.js';
 import { EXECUTION_OPTIONS, ExecutionController } from './execution/execution.controller.js';
+import { EVIDENCE_OPTIONS, EvidenceController } from './evidence/evidence.controller.js';
 import type { ApiConfig } from '@rupturegrid/config';
 import type { ControlDb } from '@rupturegrid/control-db';
 
@@ -13,7 +14,7 @@ export interface AppModuleOptions {
 /** Builds the configured root module for the API process. */
 export function buildAppModule(options: AppModuleOptions) {
   @Module({
-    controllers: [HealthController, ExecutionController],
+    controllers: [HealthController, ExecutionController, EvidenceController],
     providers: [
       {
         provide: HEALTH_OPTIONS,
@@ -28,6 +29,12 @@ export function buildAppModule(options: AppModuleOptions) {
           controlDb: options.controlDb,
           redisUrl: options.config.REDIS_URL,
           queuePrefix: options.config.QUEUE_PREFIX,
+        },
+      },
+      {
+        provide: EVIDENCE_OPTIONS,
+        useValue: {
+          controlDb: options.controlDb,
         },
       },
     ],

@@ -76,17 +76,24 @@ export interface InvocationRecord {
  * (bounded retries; concurrent slots converge because each conflict
  * re-reads the current maximum).
  */
+export interface RecordedInvocation {
+  /** The created StepInvocation row's durable id (evidence linkage). */
+  readonly invocationId: string;
+  /** The sequence ACTUALLY used (may differ from the planned one). */
+  readonly sequence: number;
+}
+
 export async function recordInvocation(
   prisma: PrismaClient,
   stepRunId: string,
   record: InvocationRecord,
   ctx: FencingContext,
-): Promise<void> {
+): Promise<RecordedInvocation> {
   const maxAttempts = 64;
   let sequence = record.sequence;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
-      await prisma.stepInvocation.create({
+      const created = await prisma.stepInvocation.create({
         data: {
           stepRunId,
           sequence,
@@ -104,8 +111,9 @@ export async function recordInvocation(
           writtenByOwner: ctx.ownerId,
           writtenByFencingToken: BigInt(ctx.fencingToken),
         },
+        select: { id: true, sequence: true },
       });
-      return;
+      return { invocationId: created.id, sequence: created.sequence };
     } catch (error) {
       const code = (error as { code?: string }).code;
       const lastAttempt = attempt === maxAttempts - 1;
@@ -119,6 +127,10 @@ export async function recordInvocation(
       sequence = (current._max.sequence ?? 0) + 1;
     }
   }
+  // Unreachable: the bounded loop above returns or throws. Satisfies
+  // the compiler for the no-implicit-return rule without fabricating a
+  // record.
+  throw new Error('recordInvocation: exhausted bounded sequence-allocation retries');
 }
 
 export interface TerminalWrite {

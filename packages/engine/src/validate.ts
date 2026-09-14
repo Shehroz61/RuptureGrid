@@ -394,6 +394,38 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
       }
     }
 
+    // ---- Explicit evidence adapter (Phase 4, §28/§29) ----
+    const rawAdapter = rawAction['evidenceAdapter'];
+    let evidenceAdapter: ExperimentStep['action']['evidenceAdapter'];
+    if (rawAdapter !== undefined) {
+      if (!isRecord(rawAdapter)) {
+        issues.push(`steps[${index}].action.evidenceAdapter must be an object`);
+      } else {
+        const kind = rawAdapter['kind'];
+        if (kind !== 'demo-fintech-payment-lineage') {
+          issues.push(
+            `steps[${index}].action.evidenceAdapter.kind must be "demo-fintech-payment-lineage" (the only Phase 4 adapter)`,
+          );
+        }
+        const from = rawAdapter['providerPaymentIdFrom'];
+        const validFrom =
+          typeof from === 'string' &&
+          (/^\$\{steps\.[a-z][a-z0-9-]{0,62}\.response\.[A-Za-z0-9_.[\]]+\}$/.test(from) ||
+            /^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$/.test(from));
+        if (!validFrom) {
+          issues.push(
+            `steps[${index}].action.evidenceAdapter.providerPaymentIdFrom must be a "\${steps.<name>.response.<path>}" reference or a literal identity`,
+          );
+        }
+        if (kind === 'demo-fintech-payment-lineage' && validFrom) {
+          evidenceAdapter = {
+            kind: 'demo-fintech-payment-lineage',
+            providerPaymentIdFrom: from as string,
+          };
+        }
+      }
+    }
+
     if (issues.length > stepIssuesBefore) {
       return placeholderStep(index);
     }
@@ -409,6 +441,7 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
       ...(Object.keys(headers).length > 0 ? { headers } : {}),
       ...(body !== undefined ? { body } : {}),
       ...(credentialRefs.length > 0 ? { credentialRefs } : {}),
+      ...(evidenceAdapter !== undefined ? { evidenceAdapter } : {}),
     };
     return { name, action };
   });

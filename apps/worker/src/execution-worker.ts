@@ -22,6 +22,12 @@ import {
   markRunDispatching,
   settleCancelledRun,
 } from '@rupturegrid/engine';
+import {
+  createEngineEvidenceSink,
+  captureDemoPaymentLineage,
+  runRunAnalysis,
+  DEMO_LINEAGE_ADAPTER_KIND,
+} from '@rupturegrid/evidence';
 
 export interface ExecutionWorkerRuntime {
   readonly ready: Promise<void>;
@@ -61,6 +67,41 @@ export async function startExecutionWorkerRuntime(): Promise<ExecutionWorkerRunt
       await queue.close();
     }
   };
+  // Phase 4: durable evidence capture — every real invocation
+  // observation is redacted, hashed, and hash-chained per run. Capture
+  // failure never blocks execution (honest incompleteness is logged).
+  const evidenceSink = createEngineEvidenceSink(controlDb.prisma);
+
+  // Phase 4: EXPLICIT target-evidence adapter (§28/§29). Only steps
+  // whose frozen action declares evidenceAdapter.kind trigger this.
+  // The inspection credential is resolved from validated config at
+  // request time and exists only inside this call frame (ADR-0012).
+  const captureEvidenceAdapter = async (input: {
+    readonly runId: string;
+    readonly stepRunId: string;
+    readonly origin: string;
+    readonly adapterKind: 'demo-fintech-payment-lineage';
+    readonly providerPaymentId: string;
+    readonly writerOwnerId: string;
+    readonly writerFencingToken: string | null;
+  }): Promise<void> => {
+    if (input.adapterKind !== DEMO_LINEAGE_ADAPTER_KIND) {
+      logger.warn('unknown evidence adapter kind requested', {
+        adapterKind: input.adapterKind,
+      });
+      return;
+    }
+    await captureDemoPaymentLineage(controlDb.prisma, {
+      runId: input.runId,
+      stepRunId: input.stepRunId,
+      origin: input.origin,
+      inspectionToken: config.DEMO_INSPECTION_TOKEN ?? null,
+      providerPaymentId: input.providerPaymentId,
+      writerOwnerId: input.writerOwnerId,
+      writerFencingToken: input.writerFencingToken,
+    });
+  };
+
   const processor = new StepProcessor({
     prisma: controlDb.prisma,
     config: {
@@ -69,6 +110,8 @@ export async function startExecutionWorkerRuntime(): Promise<ExecutionWorkerRunt
     },
     credentials: createDemoCredentialResolver(config),
     dispatchNextStep,
+    evidenceSink,
+    captureEvidenceAdapter,
   });
 
   // ---- Reconciler loop (bounded, interval-driven) ----
@@ -98,7 +141,21 @@ export async function startExecutionWorkerRuntime(): Promise<ExecutionWorkerRunt
           },
         });
         const lease = await reconcileExpiredLeases(controlDb.prisma, 50);
-        logger.info('reconcile sweep', { ...result, ...lease });
+        // Phase 4: deterministic analysis for settled runs. Runs whose
+        // steps are all terminal and that have evidence but no complete
+        // evaluation batch are analyzed idempotently here (PostgreSQL-
+        // driven, survives Redis outages; repeat passes converge). A
+        // settled run with NO evidence produces the honest empty
+        // result; analysis never blocks or delays reconciliation.
+        let analyzed = 0;
+        try {
+          analyzed = await analyzeSettledRuns(controlDb.prisma, 10);
+        } catch (error) {
+          logger.warn('analysis pass failed (retry next sweep)', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        logger.info('reconcile sweep', { ...result, ...lease, analyzed });
         return { ...result, leaseRecoveries: lease.indeterminate + lease.requeue };
       } finally {
         await queue.close();
@@ -114,6 +171,41 @@ export async function startExecutionWorkerRuntime(): Promise<ExecutionWorkerRunt
       });
     });
   }, config.WORKER_RECONCILE_INTERVAL_MS);
+
+  /**
+   * Finds settled runs (all steps terminal) that have raw evidence but
+   * no evaluation batch yet, and runs the deterministic analysis for
+   * each. Bounded per sweep; idempotent — repeat passes converge.
+   */
+  const analyzeSettledRuns = async (
+    prisma: ControlDb['prisma'],
+    batch: number,
+  ): Promise<number> => {
+    const candidates = (await prisma.$queryRaw`
+      SELECT r."id" AS "runId"
+        FROM "control"."experiment_run" r
+       WHERE r."state" IN ('COMPLETED', 'FAILED')
+         AND EXISTS (SELECT 1 FROM "evidence"."raw_observation" o WHERE o."runId" = r."id")
+         AND NOT EXISTS (
+           SELECT 1 FROM "analysis"."evaluation_batch" b
+            WHERE b."runId" = r."id" AND b."completedAt" IS NOT NULL
+         )
+       LIMIT ${batch}
+    `) as Array<{ runId: string }>;
+    let count = 0;
+    for (const candidate of candidates) {
+      try {
+        await runRunAnalysis(prisma, candidate.runId);
+        count += 1;
+      } catch (error) {
+        logger.warn('run analysis failed (will retry next sweep)', {
+          runId: candidate.runId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return count;
+  };
 
   const ready = (async () => {
     await controlDb.ping();

@@ -53,6 +53,23 @@ export interface HttpActionTemplate {
    * Must be a subset of the target's registered credentialRefs.
    */
   readonly credentialRefs?: readonly string[];
+  /**
+   * Phase 4: EXPLICIT target-evidence adapter declaration (§28/§29).
+   * When set, after this step's terminal write the worker invokes the
+   * named adapter to capture target business-state observations
+   * (read-only, target-authored APIs only). Adapter selection is
+   * NEVER inferred from response shape or path substrings.
+   */
+  readonly evidenceAdapter?: {
+    /** The adapter kind (the only Phase 4 kind: demo payment lineage). */
+    readonly kind: 'demo-fintech-payment-lineage';
+    /**
+     * Where the logical payment id comes from: a `${steps.<name>.response.…}`
+     * reference resolved like body references (identity-backed — the
+     * target's own response names the payment), or a literal.
+     */
+    readonly providerPaymentIdFrom: string;
+  };
 }
 
 /** One ordered step of an experiment. */

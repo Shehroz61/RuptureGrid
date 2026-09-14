@@ -58,10 +58,14 @@ export interface ExecutorOutcome {
   readonly requestBytes: number;
   readonly responseBytes: number;
   readonly responseBody: string | null;
+  /** Response header map as actually received (observation only). */
+  readonly responseHeaders: Readonly<Record<string, string>> | null;
   readonly durationMs: number;
   /** Bounded, redaction-safe error detail (no headers, no URLs with secrets). */
   readonly error: string | null;
   readonly headersSent: Readonly<Record<string, string>>;
+  /** True when the buffered response exceeded the executor cap and was cut. */
+  readonly responseTruncated: boolean;
 }
 
 export interface ExecuteInput {
@@ -283,9 +287,11 @@ export async function executeHttp(input: ExecuteInput): Promise<ExecutorOutcome>
       requestBytes: bodyBytes,
       responseBytes: 0,
       responseBody: null,
+      responseHeaders: null,
       durationMs: 0,
       error: `request body ${bodyBytes}B exceeds maxRequestBodyBytes`,
       headersSent: {},
+      responseTruncated: false,
     };
   }
 
@@ -331,9 +337,11 @@ export async function executeHttp(input: ExecuteInput): Promise<ExecutorOutcome>
         requestBytes: bodyBytes,
         responseBytes: declaredLength,
         responseBody: null,
+        responseHeaders: Object.fromEntries(response.headers.entries()),
         durationMs: Date.now() - started,
         error: `response content-length ${declaredLength}B exceeds maxResponseBytes`,
         headersSent: headers,
+        responseTruncated: false,
       };
     }
 
@@ -346,18 +354,23 @@ export async function executeHttp(input: ExecuteInput): Promise<ExecutorOutcome>
         requestBytes: bodyBytes,
         responseBytes: buffer.byteLength,
         responseBody: null,
+        responseHeaders: Object.fromEntries(response.headers.entries()),
         durationMs: Date.now() - started,
         error: `response ${buffer.byteLength}B exceeds maxResponseBytes`,
         headersSent: headers,
+        responseTruncated: false,
       };
     }
     const responseBytes = buffer.byteLength;
     const text = new TextDecoder().decode(buffer);
 
     const intentOutcome = status >= 200 && status < 300 ? 'SUCCEEDED' : 'FAILED';
-    // Bounded stored body (bounded field, redaction-safe for these
-    // response shapes; full redaction pipeline is Phase 4 evidence).
-    const responseBody = text.length > 4096 ? text.slice(0, 4096) : text;
+    // Bounded stored body. Phase 4: the bound is an executor capture
+    // limit; redaction happens in the evidence layer (before durable
+    // persistence), and the truncation fact travels with the outcome.
+    const BODY_CAPTURE_CHARS = 4096;
+    const responseTruncated = text.length > BODY_CAPTURE_CHARS;
+    const responseBody = responseTruncated ? text.slice(0, BODY_CAPTURE_CHARS) : text;
     const finalStage: TransportStage = 'RESPONSE_COMPLETE';
     return {
       intentOutcome,
@@ -366,9 +379,11 @@ export async function executeHttp(input: ExecuteInput): Promise<ExecutorOutcome>
       requestBytes: bodyBytes,
       responseBytes,
       responseBody,
+      responseHeaders: Object.fromEntries(response.headers.entries()),
       durationMs: Date.now() - started,
       error: intentOutcome === 'FAILED' ? `target returned HTTP ${status}` : null,
       headersSent: headers,
+      responseTruncated,
     };
   } catch (error) {
     const isAbort =
@@ -386,9 +401,11 @@ export async function executeHttp(input: ExecuteInput): Promise<ExecutorOutcome>
       requestBytes: bodyBytes,
       responseBytes: 0,
       responseBody: null,
+      responseHeaders: null,
       durationMs: Date.now() - started,
       error: failure.detail,
       headersSent: headers,
+      responseTruncated: false,
     };
   } finally {
     clearTimeout(timer);

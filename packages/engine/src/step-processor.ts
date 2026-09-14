@@ -22,6 +22,8 @@ import { markExecuting, recordInvocation, writeTerminalState } from './transitio
 import type { FencingContext } from './transitions.js';
 import { classifyInvocation, decideRetry } from './classify.js';
 import type { ClassifyResult } from './classify.js';
+import { noopEvidenceSink } from './evidence-sink.js';
+import type { EvidenceSink } from './evidence-sink.js';
 import { executeHttp, CredentialResolutionError } from './executor.js';
 import type { CredentialResolver } from './executor.js';
 
@@ -36,7 +38,33 @@ export interface StepProcessorDeps {
    * in RECONCILE for the reconciler — never stranded.
    */
   readonly dispatchNextStep?: (runId: string, nextStepRunId: string) => Promise<void>;
+  /**
+   * Phase 4 evidence sink: receives every REAL invocation observation.
+   * Capture failures are recorded (honest incompleteness), never
+   * silently swallowed, and never block execution.
+   */
+  readonly evidenceSink?: EvidenceSink;
+  /**
+   * Phase 4 EXPLICIT target-evidence adapter hook (§28/§29): invoked
+   * after a step's fenced terminal SUCCEEDED write when the step's
+   * action declares an evidenceAdapter. The engine resolves the
+   * adapter's identity input from the step's own recorded responses
+   * (identity-backed, never timestamps) and hands over the frozen
+   * snapshot's target origin; the implementation owns the adapter.
+   * Failures are recorded as honest incompleteness, never fatal.
+   */
+  readonly captureEvidenceAdapter?: (input: {
+    readonly runId: string;
+    readonly stepRunId: string;
+    readonly origin: string;
+    readonly adapterKind: 'demo-fintech-payment-lineage';
+    readonly providerPaymentId: string;
+    readonly writerOwnerId: string;
+    readonly writerFencingToken: string | null;
+  }) => Promise<void>;
 }
+
+import type { InvocationObservation } from './evidence-sink.js';
 
 export class StepNotClaimableError extends Error {
   public constructor(stepRunId: string) {
@@ -98,11 +126,25 @@ export class StepProcessor {
   private readonly credentials: CredentialResolver;
   private readonly heartbeat: HeartbeatLoop;
   private readonly dispatchNextStep: (runId: string, nextStepRunId: string) => Promise<void>;
+  private readonly evidenceSink: EvidenceSink;
+  private readonly captureEvidenceAdapter:
+    | ((input: {
+        readonly runId: string;
+        readonly stepRunId: string;
+        readonly origin: string;
+        readonly adapterKind: 'demo-fintech-payment-lineage';
+        readonly providerPaymentId: string;
+        readonly writerOwnerId: string;
+        readonly writerFencingToken: string | null;
+      }) => Promise<void>)
+    | undefined;
 
   public constructor(deps: StepProcessorDeps) {
     this.prisma = deps.prisma;
     this.config = deps.config;
     this.credentials = deps.credentials;
+    this.evidenceSink = deps.evidenceSink ?? noopEvidenceSink;
+    this.captureEvidenceAdapter = deps.captureEvidenceAdapter;
     this.dispatchNextStep =
       deps.dispatchNextStep ??
       (async () => {
@@ -297,11 +339,60 @@ export class StepProcessor {
       // reconciler's settleRuns marks the run FAILED and the remaining
       // steps CANCELLED via cancelRequestedAt (set below on failure).
       if (terminal === 'SUCCEEDED') {
+        // EXPLICIT adapter capture (§28/§29) BEFORE the next step
+        // dispatches: the target's business-state observation enters
+        // the evidence chain as part of THIS step's reality.
+        if (action.evidenceAdapter !== undefined) {
+          await this.runEvidenceAdapterCapture(
+            claim,
+            ctx,
+            action.evidenceAdapter,
+            snapshotDocument,
+          );
+        }
         await this.dispatchNextOrderedStep(claim.runId, claim.sequence);
       }
       return terminal;
     } finally {
       this.heartbeat.stop();
+    }
+  }
+
+  /**
+   * Resolves the declared adapter's logical-payment identity and hands
+   * the capture to the injected adapter hook. A `${steps.…}` reference
+   * resolves through the SAME mechanism as body references (the
+   * target's own response names the payment — identity-backed); a
+   * literal is used as-is. Failure is honest incompleteness: logged,
+   * never fabricated, never fatal to execution.
+   */
+  private async runEvidenceAdapterCapture(
+    claim: ClaimResult,
+    ctx: FencingContext,
+    adapter: NonNullable<ExperimentStep['action']['evidenceAdapter']>,
+    document: RunSnapshotDocument,
+  ): Promise<void> {
+    if (this.captureEvidenceAdapter === undefined) {
+      return;
+    }
+    try {
+      const providerPaymentId = adapter.providerPaymentIdFrom.startsWith('${steps.')
+        ? await this.resolveBodyReferences(claim.runId, adapter.providerPaymentIdFrom)
+        : adapter.providerPaymentIdFrom;
+      await this.captureEvidenceAdapter({
+        runId: claim.runId,
+        stepRunId: claim.stepRunId,
+        origin: document.target.origin,
+        adapterKind: adapter.kind,
+        providerPaymentId,
+        writerOwnerId: ctx.ownerId,
+        writerFencingToken: ctx.fencingToken,
+      });
+    } catch (error) {
+      this.onCaptureFailure(
+        { invocationIdentity: `${claim.runId}:${claim.sequence}:adapter-capture` },
+        error,
+      );
     }
   }
 
@@ -393,7 +484,7 @@ export class StepProcessor {
           intentOutcome: outcome.intentOutcome,
           httpStatus: outcome.httpStatus,
         });
-        await recordInvocation(
+        const recorded = await recordInvocation(
           prisma,
           claim.stepRunId,
           {
@@ -417,6 +508,54 @@ export class StepProcessor {
           },
           ctx,
         );
+        // Phase 4 evidence capture: hand the sink EXACTLY what this
+        // attempt observed — request bytes were as-sent (credential
+        // substitution applied; the evidence layer redacts before
+        // persistence), response as-received. Capture failure is
+        // recorded as honest incompleteness and NEVER blocks or alters
+        // execution semantics; a stale generation's truthful
+        // observation is still appendable with its writer provenance
+        // (§14) because the sink is not fenced.
+        const observation = {
+          runId: claim.runId,
+          stepRunId: claim.stepRunId,
+          invocationId: recorded.invocationId,
+          invocationIdentity: identity,
+          sequence: recorded.sequence,
+          waveIndex: Math.floor(invocationIndex / Math.max(1, action.concurrency ?? 1)),
+          method: action.method,
+          relativePath: action.relativePath,
+          requestHeaders: outcome.headersSent,
+          requestBody:
+            resolvedBody === undefined
+              ? action.body === undefined
+                ? null
+                : action.body
+              : resolvedBody,
+          transportStage: outcome.transportStage,
+          httpStatus: outcome.httpStatus,
+          responseHeaders: outcome.responseHeaders,
+          responseBody: outcome.responseBody,
+          responseTruncated: outcome.responseTruncated,
+          requestBytes: outcome.requestBytes,
+          responseBytes: outcome.responseBytes,
+          durationMs: outcome.durationMs,
+          outcome: classified.intentOutcome === 'SUCCEEDED' ? 'SUCCEEDED' : ('FAILED' as const),
+          error: outcome.error,
+          observedAt: new Date(),
+        } satisfies InvocationObservation;
+        try {
+          await this.evidenceSink.captureInvocation(observation, {
+            ownerId: ctx.ownerId,
+            fencingToken: ctx.fencingToken,
+          });
+        } catch (captureError) {
+          // Honest incompleteness: the observation HAPPENED but could
+          // not be durably captured. Recorded in the invocation row's
+          // error field? No — that would alter execution truth. Logged;
+          // the audit trail for capture failures is the worker log.
+          this.onCaptureFailure(observation, captureError);
+        }
       } catch (error) {
         // Ownership lost mid-invocation (lease expired and another
         // generation claimed): stop immediately and exit without any
@@ -539,6 +678,21 @@ export class StepProcessor {
       throw new Error(`run ${runId} not found`);
     }
     return run.snapshot.content as unknown as RunSnapshotDocument;
+  }
+
+  /**
+   * Evidence-capture failure hook: never blocks execution, never
+   * mutates execution truth. Overridable in tests; the default logs
+   * bounded, secret-safe detail (the observation payload is never
+   * included — it may contain pre-redaction request material).
+   */
+  private onCaptureFailure(observation: { invocationIdentity: string }, error: unknown): void {
+    // Bounded stderr note; the bounded redacted attempt happens in the
+    // evidence layer, so nothing secret-safe to print here exists.
+    console.error(
+      `[evidence] capture failed for invocation ${observation.invocationIdentity}: ` +
+        `${error instanceof Error ? error.message.slice(0, 300) : 'unknown error'}`,
+    );
   }
 
   private ownerId = `worker-${randomUUID()}`;

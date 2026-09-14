@@ -50,6 +50,9 @@ importers:
       '@rupturegrid/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@rupturegrid/evidence':
+        specifier: workspace:*
+        version: link:../../packages/evidence
       '@rupturegrid/logger':
         specifier: workspace:*
         version: link:../../packages/logger
@@ -140,6 +143,9 @@ importers:
       '@rupturegrid/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@rupturegrid/evidence':
+        specifier: workspace:*
+        version: link:../../packages/evidence
       '@rupturegrid/logger':
         specifier: workspace:*
         version: link:../../packages/logger
@@ -225,6 +231,22 @@ importers:
       '@rupturegrid/shared':
         specifier: workspace:*
         version: link:../shared
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  packages/evidence:
+    dependencies:
+      '@rupturegrid/control-db':
+        specifier: workspace:*
+        version: link:../control-db
+      '@rupturegrid/engine':
+        specifier: workspace:*
+        version: link:../engine
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

@@ -213,6 +213,9 @@ export function evaluateInvIz1(graph: InvariantEvidenceGraph): EvaluationSubject
           attributedEffectCount: attributed.size,
           attributionBasis: 'identity-chain',
           paymentEventId: paymentEvent.id,
+          // The COUNTED effects by id — the minimal sufficient proof
+          // set a downstream Finding cites (not every derivation input).
+          equivalentEffectEventIds: [...equivalent].map((effect) => effect.id).sort(),
           walletId: walletId ?? null,
           amountMinor: amountMinor ?? null,
           currency: currency ?? null,

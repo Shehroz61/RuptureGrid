@@ -20,9 +20,17 @@
 //   analysis schema:  InvariantDefinition, EvaluationBatch,
 //                     InvariantEvaluation
 //
-// Deliberately ABSENT (R-01 phase boundaries): Finding, finding
-// severity, forensic timeline, reproduction definitions, AI tables —
-// those are Phase 5.
+// Migration 0004 (Phase 5) adds the forensic-analysis models to the
+// analysis context (docs/evidence-model.md §8/§9, docs/phase-roadmap.md
+// Phase 5):
+//
+//   analysis schema:  Finding, FindingEvidenceReference,
+//                     ForensicTimelineEntry, ForensicDerivation,
+//                     ReproductionDefinition, RunComparison
+//
+// Still deliberately ABSENT (R-01 phase boundaries): finding severity,
+// finding workflow status (OPEN/ACKNOWLEDGED/...), AI interpretation
+// tables, product UI.
 //
 // Phase 3 execution tables stay in `control` (§13: execution state and
 // evidence are different concepts); RawObservation/NormalizedEvent/
@@ -262,6 +270,7 @@ model RunSnapshot {
 
   revision ExperimentRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
   runs     ExperimentRun[]
+  reproductionDefinitions ReproductionDefinition[]
 
   @@index([revisionId])
   @@map("run_snapshot")
@@ -295,6 +304,10 @@ model ExperimentRun {
   evidenceIntegrityHead EvidenceIntegrityHead?
   evaluationBatches    EvaluationBatch[]
   invariantEvaluations InvariantEvaluation[]
+  findings             Finding[]
+  timelineEntries      ForensicTimelineEntry[]
+  forensicDerivations  ForensicDerivation[]
+  reproductionDefinitions ReproductionDefinition[]
 
   @@index([state])
   @@index([createdAt])
@@ -706,10 +719,288 @@ model InvariantEvaluation {
   batch     EvaluationBatch     @relation(fields: [batchId], references: [id], onDelete: Restrict)
   run       ExperimentRun       @relation(fields: [runId], references: [id], onDelete: Restrict)
   invariant InvariantDefinition @relation(fields: [invariantKey], references: [invariantKey], onDelete: Restrict)
+  findings  Finding[]
 
   @@unique([runId, invariantKey, evaluatorVersion, subjectKey, evidenceSetHash])
   @@index([runId])
   @@index([batchId])
   @@map("invariant_evaluation")
+  @@schema("analysis")
+}
+
+// =====================================================================
+// Phase 5 — FORENSIC ANALYSIS (analysis schema)
+// =====================================================================
+// Findings and the forensic timeline are DERIVED investigator-facing
+// artifacts (docs/phase-roadmap.md Phase 5, evidence-model §8/§9):
+//   - A Finding is an investigator-facing deterministic statement
+//     derived from an ALREADY-PERSISTED InvariantEvaluation. It never
+//     re-evaluates evidence, never contradicts the evaluation, and
+//     carries full provenance: evaluation → events → relationships →
+//     observation hashes → run/steps/invocations.
+//   - The forensic timeline is the investigation representation of the
+//     run (evidence-model §9): every entry cites its source row, every
+//     ordering carries an explicit basis, and timeline entries NEVER
+//     assert causality — only the cited CausalRelationship does.
+//   - Reproduction definitions capture the durable "how to intentionally
+//     execute the same experiment intent again" record (ADR-0010,
+//     incident-replay §1) — the snapshot is already the authoritative
+//     frozen intent; this row binds it to the run.
+//   - Run comparisons are the post-fix-replay groundwork (incident-replay
+//     §6): side-by-side verdicts for the same invariant across two runs
+//     sharing a snapshot hash.
+//
+// Identity/idempotency (finding identity converges; repeated analysis
+// must not duplicate): semantic identity = (runId, invariantEvaluationId,
+// findingRuleVersion) enforced by a DB unique key. Timeline identity =
+// (runId, derivationVersion, sourceKind, sourceId, entryKind) — the same
+// source under the same derivation version is ONE entry. Creation
+// timestamps never participate in semantic identity (§32).
+
+/// Deterministic failure-reason codes (bounded vocabulary, §14). Phase 5
+/// defines exactly one: the duplicate-credit Finding for a FAILed
+/// INV-IZ-1. PASS and NOT_EVALUABLE produce NO Finding (§10/§41:
+/// uncertainty is never converted into a defect).
+enum FindingReasonCode {
+  DUPLICATE_EQUIVALENT_FINANCIAL_EFFECT
+
+  @@schema("analysis")
+}
+
+/// The evidence subject of a Finding / TimelineEntry (§29/§47): every
+/// source reference is TYPED — a string id alone would pretend to be an
+/// FK without being one (§63).
+enum EvidenceSubjectKind {
+  RUN
+  STEP_RUN
+  INVOCATION
+  RAW_OBSERVATION
+  NORMALIZED_EVENT
+  CAUSAL_RELATIONSHIP
+  INVARIANT_EVALUATION
+  FINDING
+
+  @@schema("analysis")
+}
+
+/// Timeline entry kinds (small explicit deterministic taxonomy, §20 —
+/// derived from the accepted Phase 3/4 truth, never decorative).
+enum TimelineEntryKind {
+  RUN_TERMINAL_STATE
+  STEP_TERMINAL_STATE
+  INVOCATION_EXECUTED
+  HTTP_REQUEST_OBSERVED
+  HTTP_RESPONSE_OBSERVED
+  EXECUTOR_ERROR_OBSERVED
+  PROVIDER_PAYMENT_OBSERVED
+  PROVIDER_EVENT_OBSERVED
+  WEBHOOK_DELIVERY_OBSERVED
+  PROCESSING_ATTEMPT_OBSERVED
+  FINANCIAL_EFFECT_OBSERVED
+  LEDGER_ENTRY_OBSERVED
+  TARGET_STATE_OBSERVED
+  PAYMENT_DELIVERY_OBSERVED
+  INVARIANT_EVALUATED
+  FINDING_DERIVED
+
+  @@schema("analysis")
+}
+
+/// How a timeline entry's position was determined (evidence-model §9:
+/// every ordering carries an explicit basis).
+enum TimelineOrderingBasis {
+  sequence
+  wall_clock
+  unordered_overlap
+
+  @@schema("analysis")
+}
+
+/// One deterministic investigator-facing conclusion derived from ONE
+/// persisted InvariantEvaluation (evidence-model §8). Semantic content
+/// is immutable after creation; a changed rule version appends a NEW
+/// Finding — history is never rewritten (§45).
+model Finding {
+  id                 String   @id @default(uuid()) @db.Uuid
+  runId              String   @db.Uuid
+  /// The authoritative Phase 4 evaluation this Finding rests on. The
+  /// Finding NEVER re-computes a verdict: one business truth engine.
+  invariantEvaluationId String @db.Uuid
+  invariantKey       String   @db.VarChar(80)
+  evaluatorVersion   String   @db.VarChar(32)
+  /// Version of the deterministic finding rule that produced this row.
+  findingRuleVersion String   @db.VarChar(32)
+  /// The business subject (e.g. providerPaymentId) — mirrors the
+  /// evaluation's subject; one failing subject = one Finding (§43).
+  subjectKey         String   @db.VarChar(200)
+  reasonCode         FindingReasonCode
+  /// Deterministic bounded title from fixed templates (§15). No AI prose.
+  title              String   @db.VarChar(200)
+  /// Deterministic bounded summary from the evaluation's own details.
+  summary            String   @db.VarChar(500)
+  /// SHA-256 over the canonical input tuple: rule version, evaluation
+  /// identity, subject, and the ordered proof-reference set (§32). Wall
+  /// clock never enters semantic identity.
+  inputFingerprint   String   @db.VarChar(64)
+  /// Deterministic structured detail (counts, amounts, basis) copied
+  /// from the evaluation — never recomputed (§96/§50).
+  details            Json
+  /// Confidence scope (evidence-model §8): what the evidence PROVES
+  /// versus what remains uncertain — INDETERMINATE invocation outcomes
+  /// and non-identity attribution dependencies are listed explicitly,
+  /// never smoothed over. Deterministic, derived from the run's own
+  /// persisted execution rows; never an LLM judgement (ADR-0007).
+  provenScope        Json
+  uncertainScope     Json
+  createdAt          DateTime @default(now()) @db.Timestamptz(6)
+
+  run            ExperimentRun       @relation(fields: [runId], references: [id], onDelete: Restrict)
+  evaluation     InvariantEvaluation @relation(fields: [invariantEvaluationId], references: [id], onDelete: Restrict)
+  evidenceRefs   FindingEvidenceReference[]
+
+  /// Semantic idempotency is a DATABASE constraint, not an
+  /// application-level check (§64): the same evaluation under the same
+  /// rule version converges on ONE Finding row.
+  @@unique([invariantEvaluationId, findingRuleVersion])
+  @@index([runId])
+  @@index([runId, subjectKey])
+  @@index([invariantKey])
+  @@index([reasonCode])
+  @@map("finding")
+  @@schema("analysis")
+}
+
+/// Minimal sufficient proof references for a Finding (§29): only the
+/// events/relationships/observations that constitute the proof, typed
+/// and deterministically selected — never "every observation in the run".
+model FindingEvidenceReference {
+  id        String  @id @default(uuid()) @db.Uuid
+  findingId String  @db.Uuid
+  subject   EvidenceSubjectKind
+  /// Durable row id (or observation contentHash for RAW_OBSERVATION —
+  /// the stable raw-evidence handle Phase 4 already exposes).
+  sourceId  String  @db.VarChar(200)
+  /// Role of this reference in the proof (bounded, deterministic).
+  role      String  @db.VarChar(64)
+  /// Deterministic 1-based position within the Finding's proof set.
+  position  Int
+
+  finding Finding @relation(fields: [findingId], references: [id], onDelete: Restrict)
+
+  @@unique([findingId, sourceId, role])
+  @@index([findingId])
+  @@map("finding_evidence_reference")
+  @@schema("analysis")
+}
+
+/// One forensic-timeline entry (evidence-model §9). Persisted,
+/// versioned, recomputable: repeated derivation over identical inputs
+/// converges on the SAME semantic rows (§68). Every entry cites its
+/// source row; causality claims live ONLY in the cited
+/// CausalRelationship — adjacency in this timeline is not causality
+/// (§23). Ordering carries an explicit basis (§21/§22).
+model ForensicTimelineEntry {
+  id                String @id @default(uuid()) @db.Uuid
+  runId             String @db.Uuid
+  derivationVersion String @db.VarChar(32)
+  entryKind         TimelineEntryKind
+  /// TYPED source reference (§47): the durable row (or observation
+  /// contentHash) this entry presents. No source-less entries.
+  sourceKind        EvidenceSubjectKind
+  sourceId          String @db.VarChar(200)
+  /// Explicit ordering basis (evidence-model §9): `sequence` for
+  /// engine-assigned ordinals, `wall_clock` where only timestamps
+  /// exist, `unordered_overlap` for genuinely concurrent observations
+  /// (order not knowable, not asserted).
+  orderingBasis     TimelineOrderingBasis
+  /// Engine ordinal where the source has one (step sequence, invocation
+  /// sequence, observation chain index), else 0. Display/filter
+  /// metadata — the persisted total order is time-primary
+  /// (occurredAt, sourceKind, sourceId, entryKind) with this ordinal
+  /// exposed for identity (§22).
+  sequenceNumber    Int
+  /// Wall-clock instant of the underlying source (execution time,
+  /// observedAt, or derivedAt — the semantics are named in `timeMeaning`).
+  occurredAt        DateTime @db.Timestamptz(6)
+  /// Which time semantic `occurredAt` carries (§21): never one fake
+  /// event timestamp collapsed across meanings.
+  timeMeaning       String  @db.VarChar(40)
+  /// The business subject when the entry has one (providerPaymentId…).
+  subjectKey        String? @db.VarChar(200)
+  /// Safe derived detail copied from the stored source (§99). Secret-
+  /// free by construction: sources were redacted before persistence.
+  details           Json
+  createdAt         DateTime @default(now()) @db.Timestamptz(6)
+
+  run ExperimentRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  /// Same source under the same derivation version is ONE entry —
+  /// concurrent/repeat derivation converges (§65).
+  @@unique([runId, derivationVersion, sourceKind, sourceId, entryKind])
+  @@index([runId, occurredAt])
+  @@index([runId, sequenceNumber])
+  @@index([runId, entryKind])
+  @@index([runId, subjectKey])
+  @@map("forensic_timeline_entry")
+  @@schema("analysis")
+}
+
+/// One durable forensic-derivation pass over one run (§33): records the
+/// derivation version + the input fingerprint the outputs rest on, so
+/// recomputability is auditable. Repeat passes with identical input
+/// converge on the same row (unique per run + version + fingerprint).
+model ForensicDerivation {
+  id                 String   @id @default(uuid()) @db.Uuid
+  runId              String   @db.Uuid
+  derivationVersion  String   @db.VarChar(32)
+  /// Fingerprint over the derivation INPUT tuple: finding-rule inputs
+  /// (evaluations) + timeline source set (execution rows, observation
+  /// hashes, derived events/relationships). Identical inputs ⇒ identical
+  /// fingerprint ⇒ identical outputs (§135).
+  inputFingerprint   String   @db.VarChar(64)
+  startedAt          DateTime @default(now()) @db.Timestamptz(6)
+  completedAt        DateTime? @db.Timestamptz(6)
+  findingCount       Int      @default(0)
+  timelineEntryCount Int      @default(0)
+
+  run ExperimentRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  @@unique([runId, derivationVersion, inputFingerprint])
+  @@index([runId])
+  @@map("forensic_derivation")
+  @@schema("analysis")
+}
+
+/// Durable record binding one run to its frozen execution intent for
+/// reproduction (incident-replay §1). The RunSnapshot (hash-pinned,
+/// append-only) remains the authoritative intent; this row binds the
+/// run → snapshot → experiment → target with the run's invariant
+/// results, so an investigator can answer "can we reproduce this?"
+/// from durable truth alone.
+model ReproductionDefinition {
+  id              String @id @default(uuid()) @db.Uuid
+  runId           String @db.Uuid
+  snapshotId      String @db.Uuid
+  snapshotContentHash String @db.VarChar(64)
+  /// The target processing mode the experiment requires (incident-replay
+  /// §1.2), extracted from the frozen snapshot steps.
+  targetModeRequirement String? @db.VarChar(32)
+  /// Credential REFERENCE names required (never values, ADR-0012).
+  credentialRefs  String[]
+  /// Invariant definitions (versioned) the replay must evaluate.
+  invariantBindings Json
+  /// Expected outcome classes (incident-replay §1.6) — for the
+  /// canonical scenario the run's own deterministic verdicts.
+  acceptanceExpectations Json
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+
+  run      ExperimentRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+  snapshot RunSnapshot   @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+
+  /// One reproduction definition per run (its snapshot is already
+  /// unique per run creation).
+  @@unique([runId])
+  @@index([snapshotId])
+  @@map("reproduction_definition")
   @@schema("analysis")
 }

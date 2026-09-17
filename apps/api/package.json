@@ -20,6 +20,7 @@
     "@rupturegrid/engine": "workspace:*",
     "@rupturegrid/evidence": "workspace:*",
     "@rupturegrid/control-db": "workspace:*",
+    "@rupturegrid/forensics": "workspace:*",
     "@rupturegrid/logger": "workspace:*",
     "@rupturegrid/queue": "workspace:*",
     "@rupturegrid/shared": "workspace:*",

@@ -185,14 +185,20 @@ describe('INV-IZ-1 evaluator', () => {
     const g2 = builder();
     attributedLineage(g2, 'PP-det-00000000001', 2);
     // Verdicts/reasons are identical; row ids are storage identity, not
-    // evaluation semantics, so they are excluded from the comparison.
+    // evaluation semantics, so they are excluded from the comparison
+    // (paymentEventId and the counted effect ids are both graph-local
+    // identity, not evaluation semantics).
     const strip = (results: ReturnType<typeof evaluateInvIz1>) =>
       results.map((result) => ({
         subjectKey: result.subjectKey,
         verdict: result.verdict,
         reason: result.reason,
         completenessBasis: result.completenessBasis,
-        details: { ...result.details, paymentEventId: '<id>' },
+        details: {
+          ...result.details,
+          paymentEventId: '<id>',
+          equivalentEffectEventIds: '<ids>',
+        },
       }));
     expect(strip(evaluateInvIz1(g1.graph))).toEqual(strip(evaluateInvIz1(g2.graph)));
   });

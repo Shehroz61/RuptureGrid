@@ -53,6 +53,9 @@ importers:
       '@rupturegrid/evidence':
         specifier: workspace:*
         version: link:../../packages/evidence
+      '@rupturegrid/forensics':
+        specifier: workspace:*
+        version: link:../../packages/forensics
       '@rupturegrid/logger':
         specifier: workspace:*
         version: link:../../packages/logger
@@ -247,6 +250,25 @@ importers:
       '@rupturegrid/engine':
         specifier: workspace:*
         version: link:../engine
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  packages/forensics:
+    dependencies:
+      '@rupturegrid/control-db':
+        specifier: workspace:*
+        version: link:../control-db
+      '@rupturegrid/engine':
+        specifier: workspace:*
+        version: link:../engine
+      '@rupturegrid/evidence':
+        specifier: workspace:*
+        version: link:../evidence
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

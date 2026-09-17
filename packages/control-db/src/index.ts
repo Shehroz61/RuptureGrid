@@ -20,6 +20,18 @@ export type {
   ExperimentStepRunModel,
   StepInvocationModel,
   StaleWriterEventModel,
+  RawObservationModel,
+  NormalizedEventModel,
+  CausalRelationshipModel,
+  EvidenceIntegrityHeadModel,
+  InvariantDefinitionModel,
+  EvaluationBatchModel,
+  InvariantEvaluationModel,
+  FindingModel,
+  FindingEvidenceReferenceModel,
+  ForensicTimelineEntryModel,
+  ForensicDerivationModel,
+  ReproductionDefinitionModel,
 } from './generated/client/models.js';
 
 export interface ControlDb {

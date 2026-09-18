@@ -57,6 +57,94 @@ function parsePaging(query: { limit?: string | undefined; cursor?: string | unde
   return { take: limit, cursor: query.cursor ?? null };
 }
 
+/**
+ * Global findings index (Phase 6 UI input): every persisted Finding
+ * across runs, newest first, with the run context an investigator
+ * needs to decide where to look. Read-only over stored rows; verdict
+ * semantics remain those of the referenced evaluations (never recomputed).
+ * Bounded offset pagination like the runs list.
+ */
+@Controller('api/v1/findings')
+export class FindingsIndexController {
+  private readonly controlDb: ControlDb;
+
+  public constructor(@Inject(FORENSICS_OPTIONS) options: ForensicsControllerOptions) {
+    this.controlDb = options.controlDb;
+  }
+
+  @Get()
+  public async list(@Query('limit') limit?: string, @Query('offset') offset?: string) {
+    const rawLimit = limit === undefined || limit === '' ? NaN : Number(limit);
+    const take = Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 50;
+    if (take < 1 || take > MAX_PAGE_SIZE) {
+      throw new HttpException(
+        { error: { code: 'INVALID_PAGINATION', message: `limit must be 1..${MAX_PAGE_SIZE}` } },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const rawOffset = offset === undefined || offset === '' ? 0 : Number(offset);
+    if (!Number.isInteger(rawOffset) || rawOffset < 0) {
+      throw new HttpException(
+        { error: { code: 'INVALID_PAGINATION', message: 'offset must be a non-negative integer' } },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const skip = rawOffset;
+    const [total, rows] = await Promise.all([
+      this.controlDb.prisma.finding.count(),
+      this.controlDb.prisma.finding.findMany({
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        take,
+        skip,
+        include: {
+          run: {
+            select: {
+              id: true,
+              state: true,
+              createdAt: true,
+              snapshot: {
+                select: {
+                  contentHash: true,
+                  revision: {
+                    select: {
+                      definition: { select: { id: true, name: true } },
+                      target: { select: { displayName: true, environment: true } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+    return {
+      total,
+      count: rows.length,
+      offset: skip,
+      limit: take,
+      findings: rows.map((row) => ({
+        id: row.id,
+        runId: row.runId,
+        runState: row.run.state,
+        runCreatedAt: row.run.createdAt,
+        experimentName: row.run.snapshot.revision.definition.name,
+        targetDisplayName: row.run.snapshot.revision.target.displayName,
+        targetEnvironment: row.run.snapshot.revision.target.environment,
+        snapshotContentHash: row.run.snapshot.contentHash,
+        invariantKey: row.invariantKey,
+        evaluatorVersion: row.evaluatorVersion,
+        findingRuleVersion: row.findingRuleVersion,
+        subjectKey: row.subjectKey,
+        reasonCode: row.reasonCode,
+        title: row.title,
+        summary: row.summary,
+        createdAt: row.createdAt,
+      })),
+    };
+  }
+}
+
 @Controller('api/v1/runs/:runId/forensics')
 export class ForensicsController {
   private readonly controlDb: ControlDb;

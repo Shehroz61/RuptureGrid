@@ -2,7 +2,7 @@
   "name": "@rupturegrid/web",
   "version": "1.0.0",
   "private": true,
-  "description": "RuptureGrid product web shell — Phase 1 foundation only, no product UI",
+  "description": "RuptureGrid product web shell — investigation UI over accepted backend truth (Phase 6)",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

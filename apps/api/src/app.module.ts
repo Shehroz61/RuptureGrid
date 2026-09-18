@@ -3,7 +3,11 @@ import type { INestApplication } from '@nestjs/common';
 import { HEALTH_OPTIONS, HealthController } from './health/health.controller.js';
 import { EXECUTION_OPTIONS, ExecutionController } from './execution/execution.controller.js';
 import { EVIDENCE_OPTIONS, EvidenceController } from './evidence/evidence.controller.js';
-import { FORENSICS_OPTIONS, ForensicsController } from './forensics/forensics.controller.js';
+import {
+  FORENSICS_OPTIONS,
+  ForensicsController,
+  FindingsIndexController,
+} from './forensics/forensics.controller.js';
 import type { ApiConfig } from '@rupturegrid/config';
 import type { ControlDb } from '@rupturegrid/control-db';
 
@@ -15,7 +19,13 @@ export interface AppModuleOptions {
 /** Builds the configured root module for the API process. */
 export function buildAppModule(options: AppModuleOptions) {
   @Module({
-    controllers: [HealthController, ExecutionController, EvidenceController, ForensicsController],
+    controllers: [
+      HealthController,
+      ExecutionController,
+      EvidenceController,
+      FindingsIndexController,
+      ForensicsController,
+    ],
     providers: [
       {
         provide: HEALTH_OPTIONS,

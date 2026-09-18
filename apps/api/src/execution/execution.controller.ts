@@ -22,6 +22,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
 } from '@nestjs/common';
 import type { ControlDb } from '@rupturegrid/control-db';
 import {
@@ -39,6 +40,32 @@ import type { TargetRegistrationResult, CreatedRun } from '@rupturegrid/engine';
 // keep the controller's module-load surface honest.
 
 export const EXECUTION_OPTIONS = Symbol('execution-options');
+
+/** Parses a bounded non-negative integer query parameter (list routes). */
+function parseBoundedInt(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+  name: string,
+): number {
+  if (raw === undefined || raw === '') {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new HttpException(
+      {
+        error: {
+          code: 'INVALID_PAGINATION',
+          message: `${name} must be an integer in ${min}..${max}`,
+        },
+      },
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+  return value;
+}
 
 export interface ExecutionControllerOptions {
   readonly controlDb: ControlDb;
@@ -262,6 +289,127 @@ export class ExecutionController {
           ? 'some steps could not be enqueued; the run stays durable in DISPATCHING and reconciliation will recover them'
           : null,
     };
+  }
+
+  /**
+   * Run list (Phase 6 UI input): truthful, bounded, newest-first.
+   * Every column is durable Control-Plane state — no derived
+   * percentages, no health scores. Pagination is offset/limit with
+   * server-side bounds; `total` is reported so the UI can render
+   * honest coverage ("showing X–Y of Z"), never a fake infinite list.
+   */
+  @Get('runs')
+  public async listRuns(@Query('limit') limit?: string, @Query('offset') offset?: string) {
+    const take = parseBoundedInt(limit, 50, 1, 200, 'limit');
+    const skip = parseBoundedInt(offset, 0, 0, Number.MAX_SAFE_INTEGER, 'offset');
+    const [total, runs] = await Promise.all([
+      this.controlDb.prisma.experimentRun.count(),
+      this.controlDb.prisma.experimentRun.findMany({
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        take,
+        skip,
+        select: {
+          id: true,
+          state: true,
+          createdAt: true,
+          terminalAt: true,
+          failureReason: true,
+          cancelRequestedAt: true,
+          snapshot: {
+            select: {
+              contentHash: true,
+              revision: {
+                select: {
+                  id: true,
+                  revisionNumber: true,
+                  definition: { select: { id: true, name: true } },
+                  target: { select: { displayName: true, environment: true } },
+                },
+              },
+            },
+          },
+          steps: { select: { state: true, sideEffectKnowledge: true } },
+          _count: { select: { findings: true } },
+        },
+      }),
+    ]);
+    return {
+      total,
+      count: runs.length,
+      offset: skip,
+      limit: take,
+      runs: runs.map((run) => ({
+        runId: run.id,
+        state: run.state,
+        createdAt: run.createdAt,
+        terminalAt: run.terminalAt,
+        failureReason: run.failureReason,
+        cancelRequestedAt: run.cancelRequestedAt,
+        snapshotContentHash: run.snapshot.contentHash,
+        revisionId: run.snapshot.revision.id,
+        revisionNumber: run.snapshot.revision.revisionNumber,
+        experimentId: run.snapshot.revision.definition.id,
+        experimentName: run.snapshot.revision.definition.name,
+        targetDisplayName: run.snapshot.revision.target.displayName,
+        targetEnvironment: run.snapshot.revision.target.environment,
+        stepCount: run.steps.length,
+        succeededStepCount: run.steps.filter((step) => step.state === 'SUCCEEDED').length,
+        failedStepCount: run.steps.filter((step) => step.state === 'FAILED').length,
+        indeterminateStepCount: run.steps.filter(
+          (step) => step.sideEffectKnowledge === 'INDETERMINATE',
+        ).length,
+        findingCount: run._count.findings,
+      })),
+    };
+  }
+
+  /**
+   * Experiment definition list (Phase 6 UI input): the versioned
+   * definitions that runs execute. Truthful counts only; the latest
+   * revision is included so the UI can show which revision is current
+   * without implying that older revisions vanished (append-only).
+   */
+  @Get('experiments')
+  public async listExperiments(@Query('limit') limit?: string) {
+    const take = parseBoundedInt(limit, 50, 1, 200, 'limit');
+    const [total, definitions] = await Promise.all([
+      this.controlDb.prisma.experimentDefinition.count(),
+      this.controlDb.prisma.experimentDefinition.findMany({
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        take,
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          createdAt: true,
+          revisions: {
+            orderBy: { revisionNumber: 'desc' },
+            take: 1,
+            select: {
+              id: true,
+              revisionNumber: true,
+              createdAt: true,
+              target: { select: { displayName: true, environment: true } },
+            },
+          },
+          _count: { select: { revisions: true } },
+        },
+      }),
+    ]);
+    const definitionsOut = await Promise.all(
+      definitions.map(async (definition) => ({
+        id: definition.id,
+        name: definition.name,
+        description: definition.description,
+        createdAt: definition.createdAt,
+        revisionCount: definition._count.revisions,
+        latestRevision: definition.revisions[0] === undefined ? null : definition.revisions[0],
+        runCount: await this.controlDb.prisma.experimentRun.count({
+          where: { snapshot: { revision: { definitionId: definition.id } } },
+        }),
+      })),
+    );
+    return { total, count: definitionsOut.length, limit: take, experiments: definitionsOut };
   }
 
   @Get('runs/:id')

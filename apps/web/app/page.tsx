@@ -1,17 +1,8 @@
-// RuptureGrid v1.0 — Phase 1 foundation page.
-// Deliberately minimal: no fake metrics, no dashboard, no product
-// feature simulation (product-design.md §7, Phase 1 spec §41–42).
+import { redirect } from 'next/navigation';
 
+// RuptureGrid v1.0 — Phase 6: the product opens on the run list, the
+// investigator's entry point. The Phase 1 foundation placeholder page
+// is retired (its content described absent product features).
 export default function HomePage() {
-  return (
-    <main>
-      <p className="version">RuptureGrid v1.0</p>
-      <h1>Break systems before users do.</h1>
-      <p>
-        This is the Phase 1 engineering foundation. Product workflows — controlled failure
-        experiments, invariant verification, and forensic investigation — are not implemented yet.
-      </p>
-      <span className="status">FOUNDATION</span>
-    </main>
-  );
+  redirect('/runs');
 }

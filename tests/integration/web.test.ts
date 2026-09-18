@@ -1,8 +1,10 @@
 // =====================================================================
 // Integration — web application (real Next.js production server)
 // =====================================================================
-// Verifies the web shell builds and serves: the foundation page renders
-// with product identity and NO fake operational content, and the
+// Verifies the web shell builds and serves: the retired Phase 1
+// foundation home page redirects to the runs list (the product entry
+// point since Phase 6), the rendered product carries NO fake
+// operational content (product-design §7, Phase 1 spec §42), and the
 // liveness route answers.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -88,15 +90,19 @@ afterAll(async () => {
   await web?.close();
 });
 
-describe('web foundation page', () => {
-  it('serves the foundation identity without fake operational data', async () => {
-    const response = await fetch(web!.baseUrl);
+describe('web home route', () => {
+  it('redirects the retired foundation page to the runs list', async () => {
+    const response = await fetch(web!.baseUrl, { redirect: 'manual' });
+    expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toBe('/runs');
+  });
+
+  it('renders the product shell without fake operational data', async () => {
+    const response = await fetch(`${web!.baseUrl}/runs`);
     expect(response.status).toBe(200);
     const html = await response.text();
 
     expect(html).toContain('RuptureGrid');
-    expect(html).toContain('Break systems before users do.');
-    expect(html).toContain('FOUNDATION');
 
     // No fake operational data (product-design §7, Phase 1 spec §42).
     expect(html).not.toMatch(/99\.9%/);

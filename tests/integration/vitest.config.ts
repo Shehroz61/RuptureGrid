@@ -11,6 +11,7 @@ const aliases = {
   '@rupturegrid/engine': resolve('packages/engine/src/index.ts'),
   '@rupturegrid/evidence': resolve('packages/evidence/src/index.ts'),
   '@rupturegrid/forensics': resolve('packages/forensics/src/index.ts'),
+  '@rupturegrid/incident-zero': resolve('packages/incident-zero/src/index.ts'),
   '@rupturegrid/control-db/client': resolve('packages/control-db/src/generated/client/client.ts'),
 };
 

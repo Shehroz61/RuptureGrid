@@ -277,6 +277,37 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  packages/incident-zero:
+    dependencies:
+      '@rupturegrid/config':
+        specifier: workspace:*
+        version: link:../config
+      '@rupturegrid/control-db':
+        specifier: workspace:*
+        version: link:../control-db
+      '@rupturegrid/engine':
+        specifier: workspace:*
+        version: link:../engine
+      '@rupturegrid/evidence':
+        specifier: workspace:*
+        version: link:../evidence
+      '@rupturegrid/forensics':
+        specifier: workspace:*
+        version: link:../forensics
+      '@rupturegrid/queue':
+        specifier: workspace:*
+        version: link:../queue
+      '@rupturegrid/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   packages/logger:
     dependencies:
       '@rupturegrid/shared':

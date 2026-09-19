@@ -28,7 +28,8 @@
     "db:generate": "pnpm --filter @rupturegrid/shared run build && pnpm --filter @rupturegrid/config run build && pnpm --filter @rupturegrid/control-db run generate && pnpm --filter @rupturegrid/demo-db run generate",
     "db:migrate": "pnpm db:generate && pnpm --filter @rupturegrid/control-db run migrate:deploy && pnpm --filter @rupturegrid/demo-db run migrate:deploy",
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:unit && pnpm build",
-    "verify:integration": "pnpm infra:up && pnpm db:migrate && pnpm test:integration"
+    "verify:integration": "pnpm infra:up && pnpm db:migrate && pnpm test:integration",
+    "incident-zero:verify": "pnpm build && node packages/incident-zero/dist/cli.js"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",

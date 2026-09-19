@@ -98,15 +98,19 @@ export interface RegisteredDemoTarget {
 
 /**
  * Registers the REAL demo target (idempotent by origin) with
- * credential REFERENCES only.
+ * credential REFERENCES only. A displayName may be supplied (golden
+ * suites pass unique names; the golden RUNNER's mode is always an
+ * explicit option, never a name convention);
+ * a unique default keeps older suites unchanged.
  */
 export async function registerDemoTarget(
   prisma: PrismaClient,
   demo: RunningDemo,
+  displayName?: string,
 ): Promise<RegisteredDemoTarget> {
   try {
     const registered = await registerTarget(prisma, {
-      displayName: uniqueName('phase4-target'),
+      displayName: displayName ?? uniqueName('phase4-target'),
       environment: 'LOCAL_DEVELOPMENT',
       origins: [demo.baseUrl],
       contractKind: 'DEMO_FINTECH_WEBHOOK',

@@ -1,0 +1,36 @@
+{
+  "name": "@rupturegrid/incident-zero",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Incident Zero end-to-end golden scenario (Phase 7): canonical experiment definitions, readiness checks, bounded-polling orchestration, and the golden result manifest — one library over accepted Phase 3/4/5 truth",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "incident-zero-verify": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@rupturegrid/config": "workspace:*",
+    "@rupturegrid/engine": "workspace:*",
+    "@rupturegrid/control-db": "workspace:*",
+    "@rupturegrid/evidence": "workspace:*",
+    "@rupturegrid/forensics": "workspace:*",
+    "@rupturegrid/queue": "workspace:*",
+    "@rupturegrid/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}

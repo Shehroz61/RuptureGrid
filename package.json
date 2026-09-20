@@ -29,9 +29,11 @@
     "db:migrate": "pnpm db:generate && pnpm --filter @rupturegrid/control-db run migrate:deploy && pnpm --filter @rupturegrid/demo-db run migrate:deploy",
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:unit && pnpm build",
     "verify:integration": "pnpm infra:up && pnpm db:migrate && pnpm test:integration",
-    "incident-zero:verify": "pnpm build && node packages/incident-zero/dist/cli.js"
+    "incident-zero:verify": "pnpm build && node packages/incident-zero/dist/cli.js",
+    "showcase:generate": "pnpm build && node packages/showcase/dist/cli.js"
   },
   "devDependencies": {
+    "playwright": "1.63.0",
     "@eslint/js": "^10.0.0",
     "eslint": "^10.0.0",
     "prettier": "^3.6.2",

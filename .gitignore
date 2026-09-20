@@ -46,6 +46,10 @@ test-results/
 playwright-report/
 blob-report/
 
+# Phase 8 showcase generated artifacts (screenshots, video, session
+# manifests, browser profiles) — generated per-run, never committed.
+.artifacts/
+
 # OS / editor
 .DS_Store
 Thumbs.db

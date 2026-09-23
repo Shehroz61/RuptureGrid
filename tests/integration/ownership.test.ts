@@ -20,7 +20,7 @@ import {
   writeTerminalState,
 } from '@rupturegrid/engine';
 import type { FencingContext } from '@rupturegrid/engine';
-import { getControlPrisma, uniqueName } from './helpers/execution-harness.js';
+import { getControlPrisma, uniqueName, uniqueTestOrigin } from './helpers/execution-harness.js';
 
 const prisma = getControlPrisma();
 
@@ -30,7 +30,7 @@ async function makeRunWithSteps(
   const target = await registerTarget(prisma, {
     displayName: uniqueName('ownership-target'),
     environment: 'LOCAL_DEVELOPMENT',
-    origins: [`http://127.0.0.1:${39000 + (Date.now() % 900)}`],
+    origins: [await uniqueTestOrigin(prisma)],
     contractKind: 'GENERIC_HTTP',
   });
   const created = await createExperiment(prisma, {

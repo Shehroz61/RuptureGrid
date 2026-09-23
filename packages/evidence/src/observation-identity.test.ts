@@ -60,11 +60,29 @@ afterAll(async () => {
 let targetId = '';
 let seq = 0;
 
+/**
+ * A collision-free loopback origin for a target this suite never
+ * connects to. The previous time-bucketed port collided with other
+ * runs' registrations on the persistent shared dev database (origin
+ * authority is global by design), so uniqueness is verified against
+ * the authoritative table BEFORE registering — bounded regeneration.
+ */
+async function uniqueTestOrigin(client: PrismaClient): Promise<string> {
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const origin = `http://127.0.0.1:${35000 + Math.floor(Math.random() * 20000)}`;
+    const clash = await client.targetOrigin.findUnique({ where: { origin }, select: { id: true } });
+    if (clash === null) {
+      return origin;
+    }
+  }
+  throw new Error('uniqueTestOrigin: exhausted bounded regeneration attempts');
+}
+
 beforeAll(async () => {
   const target = await registerTarget(prisma, {
-    displayName: `identity-target-${Date.now()}`,
+    displayName: `identity-target-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
     environment: 'LOCAL_DEVELOPMENT',
-    origins: [`http://127.0.0.1:${35000 + (Date.now() % 900)}`],
+    origins: [await uniqueTestOrigin(prisma)],
     contractKind: 'GENERIC_HTTP',
   });
   targetId = target.targetId;

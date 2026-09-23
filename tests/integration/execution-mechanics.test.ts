@@ -28,7 +28,13 @@ import {
   settleCancelledRun,
 } from '@rupturegrid/engine';
 import { loadTestEnv } from './helpers/env.js';
-import { getControlPrisma, uniqueName, waitFor } from './helpers/execution-harness.js';
+import {
+  getControlPrisma,
+  registerLocalFixtureTarget,
+  uniqueName,
+  uniqueTestOrigin,
+  waitFor,
+} from './helpers/execution-harness.js';
 
 const env = loadTestEnv();
 const prisma = getControlPrisma();
@@ -96,13 +102,12 @@ beforeAll(async () => {
   const address = server?.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${address.port}`;
   // The fixture origin is registered ONCE (origin authority is global).
-  const fixtureTarget = await registerTarget(prisma, {
-    displayName: uniqueName('mech-fixture-target'),
-    environment: 'LOCAL_DEVELOPMENT',
-    origins: [baseUrl],
-    contractKind: 'GENERIC_HTTP',
-  });
-  fixtureTargetId = fixtureTarget.targetId;
+  const fixtureTarget = await registerLocalFixtureTarget(
+    prisma,
+    uniqueName('mech-fixture-target'),
+    baseUrl,
+  );
+  fixtureTargetId = fixtureTarget;
 });
 
 afterAll(async () => {
@@ -238,12 +243,41 @@ describe('execution mechanics over real infrastructure', () => {
     const [first, second] = made.stepRunIds as [string, string];
 
     // Mark DISPATCHING like the real API, then enqueue step 0.
+    // The consumer stays UP until the CHAINED step reaches terminal:
+    // the processor commits step-0's terminal state BEFORE calling
+    // dispatchNextStep, so observing step-0 terminal and tearing the
+    // consumer down immediately can strand the chained job in Redis
+    // (a race the reconciler would recover in production, but which
+    // this test asserts via the live path). Waiting on step-1 keeps
+    // the window closed without weakening any assertion.
     await markRunDispatching(controlDb.prisma, made.runId);
-    const terminal = await dispatchAndRun(made.runId, first);
+    await startConsumer();
+    let terminal: string;
+    try {
+      await queue.enqueueStep({ runId: made.runId, stepRunId: first, sequence: 0 });
+      terminal = await waitFor(async () => {
+        const row = await controlDb.prisma.experimentStepRun.findUnique({
+          where: { id: second },
+          select: { state: true },
+        });
+        if (row?.state === 'SUCCEEDED' || row?.state === 'FAILED' || row?.state === 'CANCELLED') {
+          return row.state;
+        }
+        return null;
+      });
+    } finally {
+      await consumer?.close();
+      consumer = null;
+    }
     expect(terminal).toBe('SUCCEEDED');
 
+    const firstRow = await controlDb.prisma.experimentStepRun.findUniqueOrThrow({
+      where: { id: first },
+    });
+    expect(firstRow.state).toBe('SUCCEEDED');
+
     // Chained step also reached the real target.
-    await waitFor(async () => (hitsFor('GET', '/two') >= 1 ? true : null));
+    expect(hitsFor('GET', '/two')).toBeGreaterThanOrEqual(1);
     const secondRow = await controlDb.prisma.experimentStepRun.findUniqueOrThrow({
       where: { id: second },
     });
@@ -388,7 +422,7 @@ describe('execution mechanics over real infrastructure', () => {
     const deadTarget = await registerTarget(controlDb.prisma, {
       displayName: uniqueName('dead-target'),
       environment: 'LOCAL_DEVELOPMENT',
-      origins: [`http://127.0.0.1:${40000 + (Date.now() % 20000)}`],
+      origins: [await uniqueTestOrigin(controlDb.prisma)],
       contractKind: 'GENERIC_HTTP',
     });
     const created = await createExperiment(controlDb.prisma, {

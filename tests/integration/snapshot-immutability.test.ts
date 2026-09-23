@@ -7,7 +7,12 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createExperiment, createRun, registerTarget, RunCreationError } from '@rupturegrid/engine';
-import { getControlPrisma, waitFor, uniqueName } from './helpers/execution-harness.js';
+import {
+  getControlPrisma,
+  uniqueName,
+  uniqueTestOrigin,
+  waitFor,
+} from './helpers/execution-harness.js';
 
 const prisma = getControlPrisma();
 
@@ -19,7 +24,7 @@ describe('run snapshots are immutable (ADR-0010, Phase 3 §20)', () => {
   beforeAll(async () => {
     // Origin uniqueness is global; derive a fresh port per run so the
     // suite is order-independent and rerunnable.
-    const origin = `http://127.0.0.1:${40000 + ((Date.now() + 7) % 20000)}`;
+    const origin = await uniqueTestOrigin(prisma);
     const target = await registerTarget(prisma, {
       displayName: uniqueName('immutability-target'),
       environment: 'LOCAL_DEVELOPMENT',
@@ -158,7 +163,7 @@ describe('worker-side revalidation of target environment (Phase 3 §12)', () => 
     // by the executor's own origin re-check; here we prove the durable
     // path: a run's snapshot carries ONLY the registered origin.
     // Origin uniqueness is global, so derive a fresh port per run.
-    const origin = `http://127.0.0.1:${40000 + (Date.now() % 20000)}`;
+    const origin = await uniqueTestOrigin(prisma);
     const target = await registerTarget(prisma, {
       displayName: uniqueName('revalidate-target'),
       environment: 'LOCAL_DEVELOPMENT',

@@ -25,11 +25,15 @@ import {
   createExperiment,
   createRun,
   markRunDispatching,
-  registerTarget,
   runReconcileSweep,
 } from '@rupturegrid/engine';
 import { loadTestEnv } from './helpers/env.js';
-import { getControlPrisma, uniqueName, waitFor } from './helpers/execution-harness.js';
+import {
+  getControlPrisma,
+  registerLocalFixtureTarget,
+  uniqueName,
+  waitFor,
+} from './helpers/execution-harness.js';
 
 const env = loadTestEnv();
 const prisma = getControlPrisma();
@@ -93,15 +97,10 @@ function redisReachable(): boolean {
 describe('Redis outage → durable creation → reconciliation recovery (§40)', () => {
   it('survives Redis down at creation, recovers via reconciler, completes without operator repair', async () => {
     // --- 0. Fixture target (registered BEFORE the outage) ---
-    const target = await registerTarget(prisma, {
-      displayName: uniqueName('outage-target'),
-      environment: 'LOCAL_DEVELOPMENT',
-      origins: [baseUrl],
-      contractKind: 'GENERIC_HTTP',
-    });
+    const targetId = await registerLocalFixtureTarget(prisma, uniqueName('outage-target'), baseUrl);
     const created = await createExperiment(prisma, {
       name: uniqueName('outage-experiment'),
-      targetId: target.targetId,
+      targetId,
       document: {
         steps: [
           {
@@ -216,7 +215,7 @@ describe('Redis outage → durable creation → reconciliation recovery (§40)',
     // the sweep reports our run settled).
     await waitFor(
       async () => {
-        const settled = await runReconcileSweep({
+        await runReconcileSweep({
           prisma: controlDb.prisma,
           dispatchBatch: 100,
           settleBatch: 50,

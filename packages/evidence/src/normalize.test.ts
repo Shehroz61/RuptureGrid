@@ -96,6 +96,10 @@ const lineagePayload = validateLineage({
     ledgerEntries: 1,
   },
   processingMode: 'VULNERABLE',
+  // Phase 9: the target's own whole-wallet reconciliation (normalizer
+  // v2 fields) — exact decimal strings, integer minor units (R-06).
+  walletLedgerCreditSumMinor: '1000000',
+  walletBalanceDifferenceMinor: '0',
 });
 
 describe('invocation normalizer', () => {

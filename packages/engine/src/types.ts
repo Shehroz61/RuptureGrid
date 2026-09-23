@@ -9,6 +9,7 @@
 // freeze (ADR-0010).
 
 import type { ContractKind } from './target.js';
+import type { ControlledFaultActivation, ControlledFaultKind } from '@rupturegrid/shared';
 
 /** The only HTTP methods the v1 executor accepts. */
 export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const;
@@ -70,6 +71,26 @@ export interface HttpActionTemplate {
      */
     readonly providerPaymentIdFrom: string;
   };
+  /**
+   * Phase 9: the declared controlled-fault plan for THIS step
+   * (docs/controlled-faults.md, ADR-0014). Typed and closed — no
+   * free-form code of any kind. Validation gates it to the Demo
+   * webhook delivery path on a LOCAL_DEVELOPMENT target.
+   */
+  readonly faultPlan?: {
+    readonly planVersion: 'controlled-fault/v1';
+    readonly faultKind: ControlledFaultKind;
+    readonly activation: ControlledFaultActivation;
+    /** Deterministic trigger budget (1..maxFaultTriggersPerStep). */
+    readonly maxTriggers: number;
+  };
+  /**
+   * Phase 9: deterministic repeat-wave stagger ("staggered redelivery
+   * waves"). Wave 1 starts immediately; each later wave starts at
+   * least this many ms after the previous wave STARTED. 0/absent = no
+   * staggering. Bounded by EXECUTION_LIMITS.maxWaveStaggerMs.
+   */
+  readonly waveStaggerMs?: number;
 }
 
 /** One ordered step of an experiment. */

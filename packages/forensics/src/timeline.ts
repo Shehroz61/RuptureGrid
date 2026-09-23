@@ -60,6 +60,8 @@ export const TIMELINE_ENTRY_KINDS = {
   ledgerEntryObserved: 'LEDGER_ENTRY_OBSERVED',
   targetStateObserved: 'TARGET_STATE_OBSERVED',
   paymentDeliveryObserved: 'PAYMENT_DELIVERY_OBSERVED',
+  faultPlanConfigured: 'FAULT_PLAN_CONFIGURED',
+  faultPlanActivated: 'FAULT_PLAN_ACTIVATED',
   invariantEvaluated: 'INVARIANT_EVALUATED',
   findingDerived: 'FINDING_DERIVED',
 } as const;
@@ -367,8 +369,16 @@ export function deriveTimeline(input: TimelineDerivationInput): TimelineDerivati
     eventsBySourceHash.set(hash, list);
   }
   for (const event of input.events) {
-    const entryKind = eventKindFor(event.eventType);
-    if (entryKind === null) {
+    // Phase 9: a fault-plan state event expands into its own entry kinds
+    // (CONFIGURED always; ACTIVATED only on observed triggersUsed ≥ 1);
+    // every other event type maps to at most one entry kind.
+    const entryKinds: string[] =
+      event.eventType === 'demo.fault-plan-state-observed'
+        ? faultPlanEntryKindsFor(event.payload)
+        : [eventKindFor(event.eventType)].filter(
+            (kind: string | null): kind is string => kind !== null,
+          );
+    if (entryKinds.length === 0) {
       continue; // Unknown event types are never invented into entries.
     }
     const source = isRecord(event.payload['sourceObservation'])
@@ -382,23 +392,25 @@ export function deriveTimeline(input: TimelineDerivationInput): TimelineDerivati
     const siblings = hash === null ? [] : (eventsBySourceHash.get(hash) ?? []);
     const unorderedSiblings =
       observation !== undefined && observation.kind === 'target_observation' && siblings.length > 1;
-    push({
-      entryKind,
-      sourceKind: TIMELINE_SOURCE_KINDS.normalizedEvent,
-      sourceId: event.id,
-      orderingBasis: unorderedSiblings
-        ? TIMELINE_ORDERING_BASES.unorderedOverlap
-        : TIMELINE_ORDERING_BASES.wallClock,
-      sequenceNumber: observation === undefined ? 0 : observation.chainIndex,
-      occurredAt: observation === undefined ? event.createdAt : observation.observedAt,
-      timeMeaning: observation === undefined ? 'derivedAt' : 'observedAt',
-      subjectKey: event.subjectKey,
-      details: safeDetails({
-        eventId: event.id,
-        eventType: event.eventType,
-        businessIdentities: businessIdentitiesOf(event.eventType, event.payload),
-      }),
-    });
+    for (const entryKind of entryKinds) {
+      push({
+        entryKind,
+        sourceKind: TIMELINE_SOURCE_KINDS.normalizedEvent,
+        sourceId: event.id,
+        orderingBasis: unorderedSiblings
+          ? TIMELINE_ORDERING_BASES.unorderedOverlap
+          : TIMELINE_ORDERING_BASES.wallClock,
+        sequenceNumber: observation === undefined ? 0 : observation.chainIndex,
+        occurredAt: observation === undefined ? event.createdAt : observation.observedAt,
+        timeMeaning: observation === undefined ? 'derivedAt' : 'observedAt',
+        subjectKey: event.subjectKey,
+        details: safeDetails({
+          eventId: event.id,
+          eventType: event.eventType,
+          businessIdentities: businessIdentitiesOf(event.eventType, event.payload),
+        }),
+      });
+    }
   }
 
   // ---- Invariant evaluations (derived truth; deterministically placed). ----
@@ -521,9 +533,31 @@ function eventKindFor(eventType: string): string | null {
       return TIMELINE_ENTRY_KINDS.ledgerEntryObserved;
     case 'demo.payment-delivery-observed':
       return TIMELINE_ENTRY_KINDS.paymentDeliveryObserved;
+    case 'demo.fault-plan-state-observed':
+      // Phase 9: handled separately in the event loop — a fault-plan
+      // event expands to CONFIGURED (+ ACTIVATED only on observed
+      // budget consumption) via faultPlanEntryKindsFor.
+      return null;
     default:
       return null; // Unknown event types are never invented into entries.
   }
+}
+
+/**
+ * Phase 9: resolves the fault-plan entry kind(s) for ONE
+ * demo.fault-plan-state-observed event. CONFIGURED is emitted for every
+ * observed armed plan; ACTIVATED is emitted only when the target's own
+ * accounting shows triggersUsed ≥ 1 (integer; R-06-adjacent honesty —
+ * a count, not an amount). Returns an empty list only for malformed
+ * payloads, which are never invented into entries.
+ */
+export function faultPlanEntryKindsFor(payload: Record<string, unknown>): string[] {
+  const kinds: string[] = [TIMELINE_ENTRY_KINDS.faultPlanConfigured];
+  const triggersUsed = payload['triggersUsed'];
+  if (typeof triggersUsed === 'number' && Number.isInteger(triggersUsed) && triggersUsed >= 1) {
+    kinds.push(TIMELINE_ENTRY_KINDS.faultPlanActivated);
+  }
+  return kinds;
 }
 
 /** Bounded identity set per entity type (§97: identities stay distinct). */
@@ -551,5 +585,12 @@ function businessIdentitiesOf(
   copy('status');
   copy('entryType');
   copy('eventType');
+  // Phase 9 fault-plan state: the target's own accounting of the armed
+  // fault (docs/controlled-faults.md §6). `faultKind` is the plan
+  // identity (subjectKey); `triggersUsed`/`maxTriggers` are integers.
+  copy('faultKind');
+  copy('planVersion');
+  copy('triggersUsed');
+  copy('maxTriggers');
   return { eventType, ...identities };
 }

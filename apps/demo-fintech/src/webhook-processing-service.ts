@@ -30,8 +30,10 @@ import {
   verifyProviderSignature,
   WebhookPayloadError,
 } from '@rupturegrid/demo-db';
+import type { FaultControlService } from '@rupturegrid/demo-db';
 import {
   BusinessMismatchError,
+  ControlledFaultRejectionError,
   DuplicateDeliveryIdentityError,
   NotFoundError,
   ProcessingFailedError,
@@ -63,8 +65,10 @@ export function createWebhookProcessingService(options: {
   db: DemoDb;
   signingSecret: string;
   modeProvider: () => Promise<ProcessingMode>;
+  /** Phase 9: target-owned fault control (absent = no fault capability). */
+  faults?: FaultControlService;
 }): WebhookProcessingService {
-  const { db, signingSecret, modeProvider } = options;
+  const { db, signingSecret, modeProvider, faults } = options;
 
   return {
     /**
@@ -121,6 +125,23 @@ export function createWebhookProcessingService(options: {
         throw new BusinessMismatchError(
           'payload amount/currency contradict the registered payment',
         );
+      }
+
+      // ---- Phase 9 fault hook 1: PRE_MUTATION_REJECTION ----
+      // After ALL validation, BEFORE any persistence: no delivery row,
+      // no processing attempt, no financial effect can exist for this
+      // request. The definitive contract rejection maps (via the
+      // accepted classify table) to sideEffectKnowledge KNOWN_ABSENT.
+      // (Post-commit response faults live in the ROUTE layer, after
+      // this service returns the committed outcome — the route owns
+      // response serialization; see app.ts.)
+      if (faults !== undefined) {
+        const preMutation = await faults.consumeTrigger('PRE_MUTATION_REJECTION');
+        if (preMutation === 'TRIGGERED') {
+          throw new ControlledFaultRejectionError(
+            'controlled fault PRE_MUTATION_REJECTION: target refused before any business mutation (docs/controlled-faults.md §4.1)',
+          );
+        }
       }
 
       // 5. Record the valid physical delivery + its processing attempt.

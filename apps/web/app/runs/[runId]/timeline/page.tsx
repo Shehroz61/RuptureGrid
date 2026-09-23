@@ -34,6 +34,10 @@ const KIND_ORDER_LABELS: Readonly<Record<string, string>> = {
   LEDGER_ENTRY_OBSERVED: 'ledger entry observed',
   TARGET_STATE_OBSERVED: 'target state observed',
   PAYMENT_DELIVERY_OBSERVED: 'payment delivery observed',
+  // Phase 9 (docs/controlled-faults.md §6): configured vs activated are
+  // separate target-authored facts and stay separate rows.
+  FAULT_PLAN_CONFIGURED: 'fault plan configured',
+  FAULT_PLAN_ACTIVATED: 'fault plan activated',
   INVARIANT_EVALUATED: 'invariant evaluated',
   FINDING_DERIVED: 'finding derived',
 };

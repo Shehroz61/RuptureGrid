@@ -15,6 +15,9 @@ import { canonicalizeJson } from '@rupturegrid/engine';
 import {
   DEMO_LINEAGE_NORMALIZER_NAME,
   DEMO_LINEAGE_NORMALIZER_VERSION,
+  DEMO_FAULT_STATUS_NORMALIZER_NAME,
+  DEMO_FAULT_STATUS_NORMALIZER_VERSION,
+  DEMO_FAULT_PLAN_STATE_EVENT_TYPE,
   INVOCATION_NORMALIZER_NAME,
   INVOCATION_NORMALIZER_VERSION,
 } from './versions.js';
@@ -286,6 +289,74 @@ export function normalizeDemoLineageObservation(input: {
       walletId: wallet['walletId'],
       balanceMinor: wallet['balanceMinor'] ?? null,
       currency: wallet['currency'] ?? null,
+      // Phase 9 (docs/controlled-faults.md §6): the target's OWN
+      // whole-wallet reconciliation, carried verbatim from the stored
+      // observation. Exact decimal STRINGS — never floats (R-06).
+      walletLedgerCreditSumMinor:
+        typeof input.payload['walletLedgerCreditSumMinor'] === 'string'
+          ? input.payload['walletLedgerCreditSumMinor']
+          : null,
+      walletBalanceDifferenceMinor:
+        typeof input.payload['walletBalanceDifferenceMinor'] === 'string'
+          ? input.payload['walletBalanceDifferenceMinor']
+          : null,
+    });
+  }
+  return events;
+}
+
+// ---------------------------------------------------------------------
+// Target observations (Demo fault status) → fault-state events (Phase 9)
+// ---------------------------------------------------------------------
+
+/**
+ * Normalizes ONE stored Demo fault-status observation (docs/
+ * controlled-faults.md §5/§6) into per-plan fault-state events. Every
+ * plan the target itself reports becomes an event whose payload
+ * preserves the target's own trigger accounting. This event is the
+ * persisted basis for "activated": a triggerCount ≥ 1 in the observed
+ * state; absence of budget consumption is never reported as activation.
+ */
+export function normalizeDemoFaultStatusObservation(input: {
+  readonly contentHash: string;
+  readonly chainIndex: number;
+  readonly payload: unknown;
+}): NormalizedEventSpec[] {
+  if (!isRecord(input.payload)) {
+    return [];
+  }
+  const plans = input.payload['plans'];
+  if (!Array.isArray(plans)) {
+    return [];
+  }
+  const source = {
+    kind: 'target_observation',
+    contentHash: input.contentHash,
+    chainIndex: input.chainIndex,
+  };
+  const events: NormalizedEventSpec[] = [];
+  for (const plan of plans) {
+    if (!isRecord(plan) || typeof plan['faultKind'] !== 'string') {
+      continue; // Unknown plan shape: no meaning is invented.
+    }
+    events.push({
+      eventType: DEMO_FAULT_PLAN_STATE_EVENT_TYPE,
+      subjectKey: plan['faultKind'],
+      payload: {
+        faultKind: plan['faultKind'],
+        planVersion: plan['planVersion'] ?? null,
+        activation: plan['activation'] ?? null,
+        maxTriggers: plan['maxTriggers'] ?? null,
+        triggersUsed: plan['triggersUsed'] ?? null,
+        armedAt: plan['armedAt'] ?? null,
+        expiresAt: plan['expiresAt'] ?? null,
+        expired: plan['expired'] ?? null,
+        sourceObservation: source,
+      },
+      normalizerName: DEMO_FAULT_STATUS_NORMALIZER_NAME,
+      normalizerVersion: DEMO_FAULT_STATUS_NORMALIZER_VERSION,
+      sourceObservationHashes: [input.contentHash],
+      primaryObservationIndex: input.chainIndex,
     });
   }
   return events;

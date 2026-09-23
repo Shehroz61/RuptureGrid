@@ -74,6 +74,10 @@ export interface DemoLineagePayload {
     ledgerEntries: number;
   };
   processingMode: string;
+  /** Phase 9: whole-wallet accepted-credit ledger sum (target's own reconciliation). */
+  walletLedgerCreditSumMinor: string;
+  /** Phase 9: balanceMinor − walletLedgerCreditSumMinor (target's own arithmetic). */
+  walletBalanceDifferenceMinor: string;
 }
 
 export interface CapturedLineage {
@@ -196,6 +200,14 @@ export function validateLineage(raw: unknown): DemoLineagePayload {
       ledgerEntries: int(counts['ledgerEntries'], 'counts.ledgerEntries'),
     },
     processingMode: str(raw['processingMode'], 'processingMode'),
+    walletLedgerCreditSumMinor: str(
+      raw['walletLedgerCreditSumMinor'],
+      'walletLedgerCreditSumMinor',
+    ),
+    walletBalanceDifferenceMinor: str(
+      raw['walletBalanceDifferenceMinor'],
+      'walletBalanceDifferenceMinor',
+    ),
   };
   return lineage;
 }
@@ -242,6 +254,146 @@ export async function captureDemoPaymentLineage(
     runId: input.runId,
     stepRunId: input.stepRunId,
     adapterKind: DEMO_LINEAGE_ADAPTER_KIND,
+    observedAt: new Date(),
+    payload,
+    writerOwnerId: input.writerOwnerId,
+    writerFencingToken: input.writerFencingToken,
+  });
+  return {
+    observationId: appended.id,
+    observationHash: appended.contentHash,
+    chainIndex: appended.chainIndex,
+    payload,
+  };
+}
+
+// =====================================================================
+// Phase 9 — Demo fault-status observation adapter
+// (docs/controlled-faults.md §5: `demo-fintech-fault-status`)
+// =====================================================================
+// Captures the target's OWN view of its fault plans through the
+// READ-ONLY inspection API (GET /inspection/faults). This is
+// target-authored activation truth: "configured vs activated" is never
+// inferred from error shapes — a triggerCount ≥ 1 in THIS observation
+// is the persisted basis for "activated". Stored as a target_observation
+// raw observation (redacted, hash-chained, provenance-recorded) exactly
+// like every other observed fact; no new observation origin class.
+
+/** The explicit Phase 9 adapter kind for fault-state observation. */
+export const DEMO_FAULT_STATUS_ADAPTER_KIND = 'demo-fintech-fault-status';
+
+export interface DemoFaultPlanState {
+  readonly faultKind: string;
+  readonly planVersion: string;
+  readonly activation: string;
+  readonly maxTriggers: number;
+  readonly triggersUsed: number;
+  readonly armedAt: string;
+  readonly expiresAt: string;
+  readonly expired: boolean;
+}
+
+export interface DemoFaultStatusPayload {
+  readonly plans: readonly DemoFaultPlanState[];
+}
+
+export interface CapturedFaultStatus {
+  readonly observationId: string;
+  readonly observationHash: string;
+  readonly chainIndex: number;
+  readonly payload: DemoFaultStatusPayload;
+}
+
+/**
+ * Shape-validates the fault-status inspection response. Structural
+ * only; values are checked, never interpreted.
+ */
+export function validateFaultStatus(raw: unknown): DemoFaultStatusPayload {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new DemoAdapterError('fault status response must be a JSON object');
+  }
+  const plans = (raw as Record<string, unknown>)['plans'];
+  if (!Array.isArray(plans)) {
+    throw new DemoAdapterError('fault status response must contain a plans array');
+  }
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+  const str = (value: unknown, field: string): string => {
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new DemoAdapterError(`fault status field ${field} must be a non-empty string`);
+    }
+    return value;
+  };
+  const int = (value: unknown, field: string): number => {
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+      throw new DemoAdapterError(`fault status field ${field} must be a non-negative integer`);
+    }
+    return value;
+  };
+  const bool = (value: unknown, field: string): boolean => {
+    if (typeof value !== 'boolean') {
+      throw new DemoAdapterError(`fault status field ${field} must be a boolean`);
+    }
+    return value;
+  };
+  return {
+    plans: plans.map((plan, index): DemoFaultPlanState => {
+      if (!isRecord(plan)) {
+        throw new DemoAdapterError(`fault status plans[${index}] must be an object`);
+      }
+      return {
+        faultKind: str(plan['faultKind'], 'plan.faultKind'),
+        planVersion: str(plan['planVersion'], 'plan.planVersion'),
+        activation: str(plan['activation'], 'plan.activation'),
+        maxTriggers: int(plan['maxTriggers'], 'plan.maxTriggers'),
+        triggersUsed: int(plan['triggersUsed'], 'plan.triggersUsed'),
+        armedAt: str(plan['armedAt'], 'plan.armedAt'),
+        expiresAt: str(plan['expiresAt'], 'plan.expiresAt'),
+        expired: bool(plan['expired'], 'plan.expired'),
+      };
+    }),
+  };
+}
+
+/**
+ * Fetches and captures the Demo target's own fault-status view. The
+ * token exists only inside this call frame (ADR-0012); the payload is
+ * stored redacted as a target_observation raw observation.
+ */
+export async function captureDemoFaultStatus(
+  prisma: PrismaClient,
+  input: {
+    readonly runId: string;
+    readonly stepRunId: string | null;
+    readonly origin: string;
+    readonly inspectionToken: string | null;
+    readonly writerOwnerId: string;
+    readonly writerFencingToken: string | null;
+  },
+): Promise<CapturedFaultStatus> {
+  if (input.inspectionToken === null || input.inspectionToken === '') {
+    throw new DemoAdapterError(
+      'inspection credential is not available; fault-status observation cannot be captured',
+    );
+  }
+  const url = `${input.origin}/inspection/faults`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${input.inspectionToken}`, accept: 'application/json' },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) {
+    throw new DemoAdapterError(
+      `fault-status fetch failed: HTTP ${response.status} (read-only adapter; no retry)`,
+    );
+  }
+  const raw: unknown = await response.json();
+  const payload = validateFaultStatus(raw);
+  const store = new RawObservationStore(prisma);
+  const appended = await store.appendTargetObservation({
+    runId: input.runId,
+    stepRunId: input.stepRunId,
+    adapterKind: DEMO_FAULT_STATUS_ADAPTER_KIND,
     observedAt: new Date(),
     payload,
     writerOwnerId: input.writerOwnerId,

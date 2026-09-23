@@ -15,8 +15,12 @@ import type { PrismaClient } from '@rupturegrid/control-db';
 import { canonicalizeJson } from '@rupturegrid/engine';
 import { eventInputHash } from './normalize.js';
 import type { NormalizedEventSpec } from './normalize.js';
-import { normalizeDemoLineageObservation, normalizeInvocationObservation } from './normalize.js';
-import { DEMO_LINEAGE_ADAPTER_KIND } from './demo-adapter.js';
+import {
+  normalizeDemoFaultStatusObservation,
+  normalizeDemoLineageObservation,
+  normalizeInvocationObservation,
+} from './normalize.js';
+import { DEMO_FAULT_STATUS_ADAPTER_KIND, DEMO_LINEAGE_ADAPTER_KIND } from './demo-adapter.js';
 
 export interface DerivedEventRow {
   readonly id: string;
@@ -49,7 +53,7 @@ function recordToPlain(value: unknown): Record<string, unknown> {
 
 /**
  * Loads every raw observation of a run (ordered by chain index) and
- * derives events from the two supported kinds:
+ * derives events from the supported kinds:
  *   - invocation observations (executor HTTP evidence)
  *   - target observations of the explicit Demo lineage adapter
  */
@@ -59,6 +63,7 @@ export async function loadNormalizerInputs(
 ): Promise<{
   invocations: Array<{ contentHash: string; chainIndex: number; payload: unknown }>;
   lineageObservations: Array<{ contentHash: string; chainIndex: number; payload: unknown }>;
+  faultStatusObservations: Array<{ contentHash: string; chainIndex: number; payload: unknown }>;
 }> {
   const observations = await prisma.rawObservation.findMany({
     where: { runId },
@@ -67,6 +72,11 @@ export async function loadNormalizerInputs(
   });
   const invocations: Array<{ contentHash: string; chainIndex: number; payload: unknown }> = [];
   const lineageObservations: Array<{
+    contentHash: string;
+    chainIndex: number;
+    payload: unknown;
+  }> = [];
+  const faultStatusObservations: Array<{
     contentHash: string;
     chainIndex: number;
     payload: unknown;
@@ -82,6 +92,15 @@ export async function loadNormalizerInputs(
         payload: observation.payload,
       });
     } else if (
+      observation.kind === 'target_observation' &&
+      observation.adapterKind === DEMO_FAULT_STATUS_ADAPTER_KIND
+    ) {
+      faultStatusObservations.push({
+        contentHash: observation.contentHash,
+        chainIndex: observation.chainIndex,
+        payload: observation.payload,
+      });
+    } else if (
       observation.kind === 'http_response_observed' ||
       observation.kind === 'executor_error'
     ) {
@@ -92,7 +111,7 @@ export async function loadNormalizerInputs(
       });
     }
   }
-  return { invocations, lineageObservations };
+  return { invocations, lineageObservations, faultStatusObservations };
 }
 
 /**
@@ -110,6 +129,9 @@ export async function deriveRunEvidence(
   }
   for (const input of inputs.lineageObservations) {
     specs.push(...normalizeDemoLineageObservation(input));
+  }
+  for (const input of inputs.faultStatusObservations) {
+    specs.push(...normalizeDemoFaultStatusObservation(input));
   }
 
   // Persist events idempotently: the (run, normalizer, version,

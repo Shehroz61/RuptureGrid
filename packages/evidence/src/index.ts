@@ -23,6 +23,17 @@ export {
   INV_IZ_1_EVALUATOR_VERSION,
   INV_IZ_1_TITLE,
   INV_IZ_1_DESCRIPTION,
+  DEMO_FAULT_STATUS_NORMALIZER_NAME,
+  DEMO_FAULT_STATUS_NORMALIZER_VERSION,
+  DEMO_FAULT_PLAN_STATE_EVENT_TYPE,
+  INV_DF_1_KEY,
+  INV_DF_1_EVALUATOR_VERSION,
+  INV_DF_1_TITLE,
+  INV_DF_1_DESCRIPTION,
+  INV_DF_2_KEY,
+  INV_DF_2_EVALUATOR_VERSION,
+  INV_DF_2_TITLE,
+  INV_DF_2_DESCRIPTION,
 } from './versions.js';
 
 export {
@@ -39,12 +50,23 @@ export {
   DemoAdapterError,
   captureDemoPaymentLineage,
   validateLineage,
+  DEMO_FAULT_STATUS_ADAPTER_KIND,
+  captureDemoFaultStatus,
+  validateFaultStatus,
 } from './demo-adapter.js';
-export type { DemoAdapterConfig, DemoLineagePayload, CapturedLineage } from './demo-adapter.js';
+export type {
+  DemoAdapterConfig,
+  DemoLineagePayload,
+  CapturedLineage,
+  DemoFaultPlanState,
+  DemoFaultStatusPayload,
+  CapturedFaultStatus,
+} from './demo-adapter.js';
 
 export {
   normalizeInvocationObservation,
   normalizeDemoLineageObservation,
+  normalizeDemoFaultStatusObservation,
   eventInputHash,
 } from './normalize.js';
 export type { NormalizedEventSpec } from './normalize.js';
@@ -56,7 +78,13 @@ export {
 } from './derive.js';
 export type { DerivationResult, DerivedEventRow, DerivedRelationshipRow } from './derive.js';
 
-export { evaluateInvIz1, COMPLETENESS_BASES, INV_IZ_1 } from './invariants.js';
+export {
+  evaluateInvIz1,
+  evaluateInvDf1,
+  evaluateInvDf2,
+  COMPLETENESS_BASES,
+  INV_IZ_1,
+} from './invariants.js';
 export type {
   InvariantEvidenceGraph,
   InvariantVerdictValue,

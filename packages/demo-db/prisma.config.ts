@@ -17,5 +17,9 @@ export default defineConfig({
   },
   datasource: {
     url: env('DEMO_DATABASE_URL'),
+    // Prisma 7 requires a shadow database for `migrate dev` and for
+    // migration-vs-schema diffs — the reviewable-migration check for
+    // Phase 9 fault-control schema (R-12). Created by docker compose.
+    shadowDatabaseUrl: env('DEMO_SHADOW_DATABASE_URL'),
   },
 });

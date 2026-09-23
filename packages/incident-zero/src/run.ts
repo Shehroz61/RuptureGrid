@@ -233,7 +233,10 @@ async function loadEvaluation(
   subjectKey: string,
 ): Promise<GoldenEvaluation | null> {
   const row = await prisma.invariantEvaluation.findFirst({
-    where: { runId, subjectKey },
+    // Golden contract is INV-IZ-1-specific: Phase 9 added INV-DF-1/2
+    // batches with different subject vocabularies (wallet ids); pin the
+    // key so the golden result never surfaces an unrelated evaluation.
+    where: { runId, subjectKey, invariantKey: 'INV-IZ-1' },
     orderBy: { createdAt: 'desc' },
     select: { id: true, subjectKey: true, verdict: true, reason: true, details: true },
   });

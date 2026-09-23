@@ -19,13 +19,21 @@ import { randomUUID } from 'node:crypto';
 import type { PrismaClient, InvariantVerdict } from '@rupturegrid/control-db';
 import { deriveRunEvidence } from './derive.js';
 import { computeEvidenceSetFingerprint } from './derive.js';
-import { evaluateInvIz1 } from './invariants.js';
+import { evaluateInvDf1, evaluateInvDf2, evaluateInvIz1 } from './invariants.js';
 import type { InvariantEvidenceGraph } from './invariants.js';
 import {
   INV_IZ_1_DESCRIPTION,
   INV_IZ_1_KEY,
   INV_IZ_1_TITLE,
   INV_IZ_1_EVALUATOR_VERSION,
+  INV_DF_1_DESCRIPTION,
+  INV_DF_1_KEY,
+  INV_DF_1_TITLE,
+  INV_DF_1_EVALUATOR_VERSION,
+  INV_DF_2_DESCRIPTION,
+  INV_DF_2_KEY,
+  INV_DF_2_TITLE,
+  INV_DF_2_EVALUATOR_VERSION,
 } from './versions.js';
 
 export class AnalysisError extends Error {
@@ -35,17 +43,35 @@ export class AnalysisError extends Error {
   }
 }
 
-/** Creates the INV-IZ-1 definition row if absent (idempotent). */
+/** Creates every invariant definition row if absent (idempotent). */
 export async function ensureInvariantDefinitions(prisma: PrismaClient): Promise<void> {
-  await prisma.invariantDefinition.upsert({
-    where: { invariantKey: INV_IZ_1_KEY },
-    create: {
+  for (const definition of [
+    {
       invariantKey: INV_IZ_1_KEY,
       title: INV_IZ_1_TITLE,
       description: INV_IZ_1_DESCRIPTION,
     },
-    update: {},
-  });
+    {
+      invariantKey: INV_DF_1_KEY,
+      title: INV_DF_1_TITLE,
+      description: INV_DF_1_DESCRIPTION,
+    },
+    {
+      invariantKey: INV_DF_2_KEY,
+      title: INV_DF_2_TITLE,
+      description: INV_DF_2_DESCRIPTION,
+    },
+  ] as const) {
+    await prisma.invariantDefinition.upsert({
+      where: { invariantKey: definition.invariantKey },
+      create: {
+        invariantKey: definition.invariantKey,
+        title: definition.title,
+        description: definition.description,
+      },
+      update: {},
+    });
+  }
 }
 
 export interface PersistedEvaluation {
@@ -134,49 +160,71 @@ export async function runRunAnalysis(
     })),
   };
 
-  // 3. Deterministic evaluation.
-  const results = evaluateInvIz1(graph);
+  // 3. Deterministic evaluation: every registered invariant over the
+  // SAME evidence graph (one business truth engine; each evaluator
+  // pure + versioned; Phase 9 adds INV-DF-1/INV-DF-2, docs/
+  // controlled-faults.md §6).
+  const evaluationSets = [
+    {
+      invariantKey: INV_IZ_1_KEY,
+      evaluatorVersion: INV_IZ_1_EVALUATOR_VERSION,
+      results: evaluateInvIz1(graph),
+    },
+    {
+      invariantKey: INV_DF_1_KEY,
+      evaluatorVersion: INV_DF_1_EVALUATOR_VERSION,
+      results: evaluateInvDf1(graph),
+    },
+    {
+      invariantKey: INV_DF_2_KEY,
+      evaluatorVersion: INV_DF_2_EVALUATOR_VERSION,
+      results: evaluateInvDf2(graph),
+    },
+  ] as const;
 
   // 4. Idempotent persistence. Batch row: unique per
   // (run, invariant, evaluatorVersion) — concurrent passes converge.
   // (Prisma upsert is select-then-insert under the hood, so a concurrent
   // insert can surface as P2002; the re-fetch then converges.)
-  let batch: { id: string };
-  try {
-    batch = await prisma.evaluationBatch.upsert({
-      where: {
-        runId_invariantKey_evaluatorVersion: {
-          runId,
-          invariantKey: INV_IZ_1_KEY,
-          evaluatorVersion: INV_IZ_1_EVALUATOR_VERSION,
+  const batches: Array<{ invariantKey: string; id: string }> = [];
+  for (const set of evaluationSets) {
+    try {
+      const batch = await prisma.evaluationBatch.upsert({
+        where: {
+          runId_invariantKey_evaluatorVersion: {
+            runId,
+            invariantKey: set.invariantKey,
+            evaluatorVersion: set.evaluatorVersion,
+          },
         },
-      },
-      create: {
-        runId,
-        invariantKey: INV_IZ_1_KEY,
-        evaluatorVersion: INV_IZ_1_EVALUATOR_VERSION,
-      },
-      update: {},
-      select: { id: true },
-    });
-  } catch (error) {
-    if ((error as { code?: string }).code !== 'P2002') {
-      throw error;
-    }
-    const existing = await prisma.evaluationBatch.findUnique({
-      where: {
-        runId_invariantKey_evaluatorVersion: {
+        create: {
           runId,
-          invariantKey: INV_IZ_1_KEY,
-          evaluatorVersion: INV_IZ_1_EVALUATOR_VERSION,
+          invariantKey: set.invariantKey,
+          evaluatorVersion: set.evaluatorVersion,
         },
-      },
-      select: { id: true },
-    });
-    if (existing === null) {
-      throw error;
+        update: {},
+        select: { id: true },
+      });
+      batches.push({ invariantKey: set.invariantKey, id: batch.id });
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'P2002') {
+        throw error;
+      }
+      const existing = await prisma.evaluationBatch.findUnique({
+        where: {
+          runId_invariantKey_evaluatorVersion: {
+            runId,
+            invariantKey: set.invariantKey,
+            evaluatorVersion: set.evaluatorVersion,
+          },
+        },
+        select: { id: true },
+      });
+      if (existing === null) {
+        throw error;
+      }
+      batches.push({ invariantKey: set.invariantKey, id: existing.id });
     }
-    batch = existing;
   }
 
   // Traceability sets (evidence-model §8 provenance): observations are
@@ -184,49 +232,56 @@ export async function runRunAnalysis(
   const sourceObservationHashes = fingerprint.observationHashes;
 
   const evaluations: PersistedEvaluation[] = [];
-  for (const result of results) {
-    const created = await persistEvaluation(prisma, {
-      id: randomUUID(),
-      batchId: batch.id,
-      runId,
-      subjectKey: result.subjectKey,
-      verdict: result.verdict,
-      reason: result.reason.slice(0, 500),
-      evidenceSetHash: fingerprint.fingerprint,
-      completenessBasis: result.completenessBasis.slice(0, 64),
-      details: {
-        ...result.details,
-        evaluatorVersion: INV_IZ_1_EVALUATOR_VERSION,
-        invariantKey: INV_IZ_1_KEY,
-        evidenceSetFingerprint: fingerprint.fingerprint,
-      },
-      sourceObservationHashes,
-      normalizedEventIds: fingerprint.eventIds,
-      causalRelationshipIds: fingerprint.relationshipIds,
-    });
-    if (created !== null) {
-      evaluations.push({
-        id: created.id,
-        subjectKey: created.subjectKey,
-        verdict: created.verdict,
-        reason: created.reason,
-        evidenceSetHash: created.evidenceSetHash,
-        evaluatorVersion: created.evaluatorVersion,
-        createdAt: created.createdAt,
-      });
+  for (const set of evaluationSets) {
+    const batchId = batches.find((batch) => batch.invariantKey === set.invariantKey)?.id;
+    if (batchId === undefined) {
+      throw new AnalysisError(`batch row missing for ${set.invariantKey}`);
     }
+    for (const result of set.results) {
+      const created = await persistEvaluation(prisma, {
+        id: randomUUID(),
+        batchId,
+        invariantKey: set.invariantKey,
+        evaluatorVersion: set.evaluatorVersion,
+        runId,
+        subjectKey: result.subjectKey,
+        verdict: result.verdict,
+        reason: result.reason.slice(0, 500),
+        evidenceSetHash: fingerprint.fingerprint,
+        completenessBasis: result.completenessBasis.slice(0, 64),
+        details: {
+          ...result.details,
+          evaluatorVersion: set.evaluatorVersion,
+          invariantKey: set.invariantKey,
+          evidenceSetFingerprint: fingerprint.fingerprint,
+        },
+        sourceObservationHashes,
+        normalizedEventIds: fingerprint.eventIds,
+        causalRelationshipIds: fingerprint.relationshipIds,
+      });
+      if (created !== null) {
+        evaluations.push({
+          id: created.id,
+          subjectKey: created.subjectKey,
+          verdict: created.verdict,
+          reason: created.reason,
+          evidenceSetHash: created.evidenceSetHash,
+          evaluatorVersion: created.evaluatorVersion,
+          createdAt: created.createdAt,
+        });
+      }
+    }
+    const evaluationCount = await prisma.invariantEvaluation.count({
+      where: { batchId },
+    });
+    await prisma.evaluationBatch.update({
+      where: { id: batchId },
+      data: { completedAt: new Date(), evaluationCount },
+    });
   }
 
-  const evaluationCount = await prisma.invariantEvaluation.count({
-    where: { batchId: batch.id },
-  });
-  await prisma.evaluationBatch.update({
-    where: { id: batch.id },
-    data: { completedAt: new Date(), evaluationCount },
-  });
-
   return {
-    batchId: batch.id,
+    batchId: batches[0]?.id ?? '',
     evaluatorVersion: INV_IZ_1_EVALUATOR_VERSION,
     evidenceSetFingerprint: fingerprint.fingerprint,
     evaluations,
@@ -245,6 +300,8 @@ async function persistEvaluation(
   input: {
     readonly id: string;
     readonly batchId: string;
+    readonly invariantKey: string;
+    readonly evaluatorVersion: string;
     readonly runId: string;
     readonly subjectKey: string;
     readonly verdict: InvariantVerdict;
@@ -271,8 +328,8 @@ async function persistEvaluation(
         id: input.id,
         batchId: input.batchId,
         runId: input.runId,
-        invariantKey: INV_IZ_1_KEY,
-        evaluatorVersion: INV_IZ_1_EVALUATOR_VERSION,
+        invariantKey: input.invariantKey,
+        evaluatorVersion: input.evaluatorVersion,
         subjectKey: input.subjectKey.slice(0, 200),
         verdict: input.verdict,
         reason: input.reason,
@@ -302,8 +359,8 @@ async function persistEvaluation(
     const existing = await prisma.invariantEvaluation.findFirst({
       where: {
         runId: input.runId,
-        invariantKey: INV_IZ_1_KEY,
-        evaluatorVersion: INV_IZ_1_EVALUATOR_VERSION,
+        invariantKey: input.invariantKey,
+        evaluatorVersion: input.evaluatorVersion,
         subjectKey: input.subjectKey.slice(0, 200),
         evidenceSetHash: input.evidenceSetHash,
       },

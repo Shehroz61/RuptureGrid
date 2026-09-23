@@ -306,8 +306,12 @@ describe('analysis idempotency and concurrency', () => {
     const ids = new Set(results.flatMap((result) => result.evaluations.map((e) => e.id)));
     const rows = await prisma.invariantEvaluation.findMany({ where: { runId } });
     expect(rows.length).toBe(ids.size);
+    // Phase 9: one batch per registered invariant (INV-IZ-1 + INV-DF-1/2);
+    // concurrency still converges to EXACTLY one batch per invariant —
+    // no duplicates, no conflicts.
     const batches = await prisma.evaluationBatch.findMany({ where: { runId } });
-    expect(batches).toHaveLength(1);
+    expect(batches).toHaveLength(3);
+    expect(new Set(batches.map((batch) => batch.invariantKey)).size).toBe(3);
   });
 
   it('analysis never mutates execution history', async () => {
@@ -481,7 +485,15 @@ describe('Phase 4 APIs (deterministic evidence/evaluation surfaces)', () => {
         analysisBody.evaluations.some((e) => e.subjectKey === paymentId && e.verdict === 'FAIL'),
       ).toBe(true);
       const invariants = await (await fetch(`${base}/api/v1/runs/${runId}/invariants`)).json();
-      expect(invariants.batches.length).toBe(1);
+      // Phase 9: analysis is multi-invariant — one batch per registered
+      // invariant (INV-IZ-1 plus the Phase 9 INV-DF evaluators). The
+      // INV-IZ-1 FAIL expectation above is unchanged and authoritative.
+      expect(invariants.batches.length).toBeGreaterThanOrEqual(1);
+      expect(
+        invariants.batches.some(
+          (batch: { invariantKey?: string }) => batch.invariantKey === 'INV-IZ-1',
+        ),
+      ).toBe(true);
       const integrity = await (await fetch(`${base}/api/v1/runs/${runId}/integrity`)).json();
       expect(integrity.chainValid).toBe(true);
 

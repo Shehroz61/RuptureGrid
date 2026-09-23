@@ -10,7 +10,7 @@
 // read-only inspection API.
 
 import { loadDemoConfig } from '@rupturegrid/config';
-import { createDemoDb } from '@rupturegrid/demo-db';
+import { createDemoDb, createFaultControlService } from '@rupturegrid/demo-db';
 import { createLogger } from '@rupturegrid/logger';
 import { createApp } from './app.js';
 import { createDemoAdminService } from './admin-service.js';
@@ -32,10 +32,14 @@ async function main(): Promise<void> {
     db,
     signingSecret: config.DEMO_PROVIDER_SIGNING_SECRET,
   });
+  // Phase 9: target-owned fault control — plans live in the Demo's own
+  // PostgreSQL and are armed/disarmed ONLY via the Demo's own admin API.
+  const faults = createFaultControlService({ client: db.client });
   const webhook = createWebhookProcessingService({
     db,
     signingSecret: config.DEMO_PROVIDER_SIGNING_SECRET,
     modeProvider: () => admin.getProcessingMode(),
+    faults,
   });
   const inspection = createDemoInspectionService(db);
 
@@ -45,6 +49,7 @@ async function main(): Promise<void> {
     simulator,
     webhook,
     inspection,
+    faults,
     adminToken: config.DEMO_ADMIN_TOKEN,
     inspectionToken: config.DEMO_INSPECTION_TOKEN,
     logger,

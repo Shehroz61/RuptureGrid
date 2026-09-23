@@ -26,6 +26,8 @@ import { noopEvidenceSink } from './evidence-sink.js';
 import type { EvidenceSink } from './evidence-sink.js';
 import { executeHttp, CredentialResolutionError } from './executor.js';
 import type { CredentialResolver } from './executor.js';
+import { noopTelemetry } from './telemetry.js';
+import type { EngineTelemetry } from './telemetry.js';
 
 export interface StepProcessorDeps {
   readonly prisma: PrismaClient;
@@ -62,6 +64,47 @@ export interface StepProcessorDeps {
     readonly writerOwnerId: string;
     readonly writerFencingToken: string | null;
   }) => Promise<void>;
+  /**
+   * Phase 9 controlled-fault control hook (ADR-0014). The engine owns
+   * WHEN to arm/disarm (deterministic step semantics); the caller owns
+   * HOW (the target's own admin API, with the target credential — the
+   * engine stays target-agnostic and holds no target secrets). Arming
+   * failure is a hard precondition: the step fails BEFORE any delivery.
+   * Disarm is best-effort by contract.
+   */
+  readonly controlledFaults?: {
+    readonly arm: (input: {
+      readonly faultPlan: NonNullable<ExperimentStep['action']['faultPlan']>;
+      readonly runId: string;
+      readonly stepRunId: string;
+      /** The FROZEN registered target origin (faults arm only there). */
+      readonly origin: string;
+    }) => Promise<void>;
+    readonly disarm: (input: {
+      readonly faultKind: NonNullable<ExperimentStep['action']['faultPlan']>['faultKind'];
+      readonly runId: string;
+      readonly stepRunId: string;
+      readonly origin: string;
+    }) => Promise<void>;
+  };
+  /**
+   * Phase 9: explicit fault-status observation hook (docs/controlled-
+   * faults.md §5). Called AFTER the terminal write for every fault-
+   * bearing step — success OR failure — because configured-vs-activated
+   * truth matters most on the failure paths. The caller owns HOW (the
+   * target's read-only inspection API, adapter kind, credential); the
+   * engine stays target-agnostic. Failure is honest incompleteness,
+   * never fatal to the step outcome.
+   */
+  readonly captureFaultStatusAdapter?: (input: {
+    readonly runId: string;
+    readonly stepRunId: string;
+    readonly origin: string;
+    readonly writerOwnerId: string;
+    readonly writerFencingToken: string | null;
+  }) => Promise<void>;
+  /** Phase 9 telemetry seam (ADR-0015). Defaults to a no-op. */
+  readonly telemetry?: EngineTelemetry;
 }
 
 import type { InvocationObservation } from './evidence-sink.js';
@@ -138,6 +181,10 @@ export class StepProcessor {
         readonly writerFencingToken: string | null;
       }) => Promise<void>)
     | undefined;
+  private readonly controlledFaults: StepProcessorDeps['controlledFaults'] | undefined;
+  private readonly captureFaultStatusAdapter:
+    StepProcessorDeps['captureFaultStatusAdapter'] | undefined;
+  private readonly telemetry: EngineTelemetry;
 
   public constructor(deps: StepProcessorDeps) {
     this.prisma = deps.prisma;
@@ -145,6 +192,9 @@ export class StepProcessor {
     this.credentials = deps.credentials;
     this.evidenceSink = deps.evidenceSink ?? noopEvidenceSink;
     this.captureEvidenceAdapter = deps.captureEvidenceAdapter;
+    this.controlledFaults = deps.controlledFaults;
+    this.captureFaultStatusAdapter = deps.captureFaultStatusAdapter;
+    this.telemetry = deps.telemetry ?? noopTelemetry;
     this.dispatchNextStep =
       deps.dispatchNextStep ??
       (async () => {
@@ -210,9 +260,43 @@ export class StepProcessor {
       return 'FAILED';
     }
 
+    // ---- Phase 9 execution-time fault-plan gate (defense in depth) ----
+    // Re-derived from the FROZEN snapshot, independent of definition-time
+    // validation (R-14): a fault-bearing step may execute only against a
+    // LOCAL_DEVELOPMENT target. Fails the step BEFORE any delivery —
+    // nothing is ever sent un-gated.
+    if (
+      action.faultPlan !== undefined &&
+      snapshotDocument.target.environment !== 'LOCAL_DEVELOPMENT'
+    ) {
+      await writeTerminalState(
+        prisma,
+        claim.stepRunId,
+        {
+          state: 'FAILED',
+          intentOutcome: 'FAILED',
+          sideEffectKnowledge: 'KNOWN_ABSENT',
+          attemptCount: 0,
+          error: `controlled fault denied: faultPlan requires a LOCAL_DEVELOPMENT target (snapshot environment: ${snapshotDocument.target.environment}; ADR-0014)`,
+        },
+        ctx,
+      );
+      return 'FAILED';
+    }
+
     await markExecuting(this.prisma, claim.stepRunId, ctx);
+    this.telemetry.record({
+      kind: 'step.lifecycle',
+      runId: claim.runId,
+      stepRunId: claim.stepRunId,
+      phase: 'executing',
+    });
     this.heartbeat.start(claim.stepRunId, ctx, this.config.WORKER_LEASE_DURATION_MS);
 
+    // Best-effort disarm: whatever happens below, an armed plan must be
+    // disarmed after the step leaves execution (the arming TTL bounds
+    // any leakage). Disarm outcomes NEVER rewrite execution truth.
+    let faultPlanArmed: NonNullable<ExperimentStep['action']['faultPlan']> | null = null;
     try {
       // ---- Cooperative cancel check (before any network work) ----
       if (await this.cancelRequested(claim.runId)) {
@@ -231,6 +315,62 @@ export class StepProcessor {
         return 'CANCELLED';
       }
 
+      // ---- Phase 9: arm the controlled fault BEFORE the first delivery ----
+      // Arming is a HARD precondition: failure fails the step before any
+      // request is sent (sideEffectKnowledge KNOWN_ABSENT — nothing left
+      // the executor). The fault intent itself is already frozen in the
+      // snapshot; the target validates the plan at its own boundary.
+      if (action.faultPlan !== undefined) {
+        if (this.controlledFaults === undefined) {
+          await writeTerminalState(
+            prisma,
+            claim.stepRunId,
+            {
+              state: 'FAILED',
+              intentOutcome: 'FAILED',
+              sideEffectKnowledge: 'KNOWN_ABSENT',
+              attemptCount: 0,
+              error:
+                'controlled fault plan declared but the worker has no fault-control hook configured',
+            },
+            ctx,
+          );
+          return 'FAILED';
+        }
+        try {
+          await this.controlledFaults.arm({
+            faultPlan: action.faultPlan,
+            runId: claim.runId,
+            stepRunId: claim.stepRunId,
+            origin: snapshotDocument.target.origin,
+          });
+          faultPlanArmed = action.faultPlan;
+          this.telemetry.record({
+            kind: 'fault.armed',
+            runId: claim.runId,
+            stepRunId: claim.stepRunId,
+            faultKind: action.faultPlan.faultKind,
+            maxTriggers: action.faultPlan.maxTriggers,
+          });
+        } catch (error) {
+          await writeTerminalState(
+            prisma,
+            claim.stepRunId,
+            {
+              state: 'FAILED',
+              intentOutcome: 'FAILED',
+              sideEffectKnowledge: 'KNOWN_ABSENT',
+              attemptCount: 0,
+              error: `controlled fault arming failed before any delivery: ${
+                error instanceof Error ? error.message.slice(0, 300) : 'unknown error'
+              }`,
+            },
+            ctx,
+          );
+          return 'FAILED';
+        }
+      }
+
       // ---- Repeat waves with bounded concurrency ----
       const repeat = Math.max(1, Math.min(action.repeat ?? 1, EXECUTION_LIMITS.maxRepeat));
       const concurrency = Math.max(
@@ -238,6 +378,10 @@ export class StepProcessor {
         Math.min(action.concurrency ?? 1, EXECUTION_LIMITS.maxConcurrency),
       );
       const maxAttempts = action.retryPolicy === 'SAFE' ? SAFE_RETRY_MAX_ATTEMPTS : 1;
+      const waveStaggerMs = Math.max(
+        0,
+        Math.min(action.waveStaggerMs ?? 0, EXECUTION_LIMITS.maxWaveStaggerMs),
+      );
 
       let waveIndex = 0;
       let attempts = 0;
@@ -248,7 +392,26 @@ export class StepProcessor {
       let lastError: string | null = null;
       let aggregateOk = true;
 
+      let previousWaveStartedAt = 0;
       while (waveIndex * concurrency < repeat) {
+        // Phase 9: deterministic wave staggering — each later wave starts
+        // at least waveStaggerMs after the previous wave STARTED (no
+        // probability; real clock only).
+        if (waveIndex > 0 && waveStaggerMs > 0) {
+          const waitedMs = Math.max(0, waveStaggerMs - (Date.now() - previousWaveStartedAt));
+          if (waitedMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, waitedMs));
+          }
+          this.telemetry.record({
+            kind: 'wave.staggered',
+            runId: claim.runId,
+            stepRunId: claim.stepRunId,
+            waveIndex,
+            staggerMs: waveStaggerMs,
+            waitedMs,
+          });
+        }
+        const waveStartedAt = Date.now();
         // Cooperative cancel between waves.
         if (await this.cancelRequested(claim.runId)) {
           const sentAnything = attempts > 0 && action.mutation === 'MUTATING';
@@ -309,6 +472,7 @@ export class StepProcessor {
         if (!aggregateOk) {
           break;
         }
+        previousWaveStartedAt = waveStartedAt;
         waveIndex += 1;
       }
 
@@ -333,6 +497,47 @@ export class StepProcessor {
         },
         ctx,
       );
+      this.telemetry.record({
+        kind: 'step.lifecycle',
+        runId: claim.runId,
+        stepRunId: claim.stepRunId,
+        phase: 'terminal',
+        state: terminal,
+        ...(lastError === null ? {} : { detail: lastError.slice(0, 200) }),
+      });
+      // Phase 9: capture the target's OWN fault-state observation AFTER
+      // the terminal write for every fault-bearing step — success OR
+      // failure — because configured-vs-activated truth matters most on
+      // the failure paths (docs/controlled-faults.md §5). Failure to
+      // capture is honest incompleteness: logged, never fatal to the
+      // already-persisted step outcome, never fabricated. The engine
+      // names NO adapter kind — the caller's hook owns target specifics
+      // (engine stays target-agnostic).
+      if (action.faultPlan !== undefined && this.captureFaultStatusAdapter !== undefined) {
+        try {
+          await this.captureFaultStatusAdapter({
+            runId: claim.runId,
+            stepRunId: claim.stepRunId,
+            origin: snapshotDocument.target.origin,
+            writerOwnerId: ctx.ownerId,
+            writerFencingToken: ctx.fencingToken,
+          });
+          this.telemetry.record({
+            kind: 'fault.status.observed',
+            runId: claim.runId,
+            stepRunId: claim.stepRunId,
+            outcome: 'captured',
+          });
+        } catch (error) {
+          this.telemetry.record({
+            kind: 'fault.status.observed',
+            runId: claim.runId,
+            stepRunId: claim.stepRunId,
+            outcome: 'failed',
+            detail: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+          });
+        }
+      }
       // Ordered chaining: only a SUCCEEDED step makes the NEXT step
       // dispatchable (stop safely on dependency failures). If this
       // step FAILED/CANCELLED, no further steps dispatch; the
@@ -351,10 +556,54 @@ export class StepProcessor {
           );
         }
         await this.dispatchNextOrderedStep(claim.runId, claim.sequence);
+      } else if (
+        terminal === 'FAILED' &&
+        action.evidenceAdapter !== undefined &&
+        action.faultPlan !== undefined
+      ) {
+        // Phase 9: a FAILED fault-bearing step ALSO captures its declared
+        // adapter AFTER the terminal write (docs/controlled-faults.md
+        // §4.2/§4.3): for post-mutation response-loss the mutation
+        // objectively committed even though the invocation stays
+        // INDETERMINATE — the later inspection is separate, clearly-
+        // attributed evidence of what the target REALLY did, and never
+        // rewrites execution truth. Ordered chaining stays blocked (the
+        // next step is NOT dispatched). Capture failure remains honest
+        // incompleteness: logged, never fatal, never fabricated.
+        await this.runEvidenceAdapterCapture(claim, ctx, action.evidenceAdapter, snapshotDocument);
       }
       return terminal;
     } finally {
       this.heartbeat.stop();
+      // Phase 9: best-effort disarm AFTER the step leaves execution.
+      // Never rethrows, never rewrites execution truth; the outcome is
+      // telemetry-recorded and the arming TTL bounds any leakage.
+      if (faultPlanArmed !== null && this.controlledFaults !== undefined) {
+        try {
+          await this.controlledFaults.disarm({
+            faultKind: faultPlanArmed.faultKind,
+            runId: claim.runId,
+            stepRunId: claim.stepRunId,
+            origin: snapshotDocument.target.origin,
+          });
+          this.telemetry.record({
+            kind: 'fault.disarm.outcome',
+            runId: claim.runId,
+            stepRunId: claim.stepRunId,
+            faultKind: faultPlanArmed.faultKind,
+            outcome: 'disarmed',
+          });
+        } catch (error) {
+          this.telemetry.record({
+            kind: 'fault.disarm.outcome',
+            runId: claim.runId,
+            stepRunId: claim.stepRunId,
+            faultKind: faultPlanArmed.faultKind,
+            outcome: 'failed',
+            detail: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+          });
+        }
+      }
     }
   }
 
@@ -556,6 +805,24 @@ export class StepProcessor {
           // the audit trail for capture failures is the worker log.
           this.onCaptureFailure(observation, captureError);
         }
+        // Phase 9 telemetry: the REAL per-invocation record — transport
+        // stage, status, timing, and the side-effect classification, all
+        // from the outcome that was just persisted. Nothing is invented;
+        // telemetry never rewrites execution truth (ADR-0015).
+        this.telemetry.record({
+          kind: 'invocation.executed',
+          runId: claim.runId,
+          stepRunId: claim.stepRunId,
+          invocationIdentity: identity,
+          waveIndex: Math.floor(invocationIndex / Math.max(1, action.concurrency ?? 1)),
+          attempt: attemptInInvocation,
+          transportStage: outcome.transportStage,
+          httpStatus: outcome.httpStatus,
+          durationMs: outcome.durationMs,
+          intentOutcome: classified.intentOutcome,
+          sideEffectKnowledge: classified.sideEffectKnowledge,
+          error: outcome.error === null ? null : outcome.error.slice(0, 200),
+        });
       } catch (error) {
         // Ownership lost mid-invocation (lease expired and another
         // generation claimed): stop immediately and exit without any

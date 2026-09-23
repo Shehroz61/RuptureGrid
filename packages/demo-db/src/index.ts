@@ -26,6 +26,7 @@ import { randomId } from './signature.js';
 
 export { Prisma };
 export type { PrismaClient };
+export * from './fault-control.js';
 export * from './money.js';
 export * from './bigint-safe.js';
 export * from './identifiers.js';

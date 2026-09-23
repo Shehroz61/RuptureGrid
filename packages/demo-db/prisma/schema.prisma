@@ -25,6 +25,10 @@
 // - No RuptureGrid concepts (organizations, experiments, evidence,
 //   findings) exist in this schema — this is the TARGET's business data
 //   only (Phase 2 hard non-scope).
+//
+// Phase 9 addition (docs/controlled-faults.md, ADR-0014): the target-
+// owned controlled-fault plan table. RuptureGrid never writes it
+// directly; it is armed/disarmed through the target's own admin API.
 
 generator client {
   provider = "prisma-client"
@@ -197,6 +201,10 @@ enum FinancialEffectType {
   WALLET_CREDIT
 }
 
+enum LedgerEntryType {
+  WALLET_CREDIT
+}
+
 /// ONE accepted business effect — the unit the flagship invariant
 /// counts. Created only inside the financial transaction together with
 /// its ledger entry and the wallet increment.
@@ -221,10 +229,6 @@ model FinancialEffect {
   @@map("financial_effects")
 }
 
-enum LedgerEntryType {
-  WALLET_CREDIT
-}
-
 /// Durable accounting representation of the wallet mutation. The unique
 /// idempotency_key IS the database-enforced business idempotency scope:
 /// vulnerable mode keys by provider event, secure mode keys by logical
@@ -247,4 +251,40 @@ model LedgerEntry {
 
   @@index([walletId])
   @@map("ledger_entries")
+}
+
+// ---------------------------------------------------------------------
+// Phase 9 — target-owned controlled-fault plans (ADR-0014)
+// ---------------------------------------------------------------------
+
+/// ONE armed controlled-fault plan per fault kind (faultKind is unique):
+/// arming REPLACES any existing row of that kind with a fresh budget and
+/// TTL, so a step's arm-then-deliver sequence is deterministic and
+/// repeatable. Trigger consumption is an atomic conditional increment:
+/// the first N matching deliveries since arming trigger, in physical
+/// arrival order — never probabilistic. An expired plan is disarmed by
+/// definition (lazy) and the arming TTL bounds blast-radius leakage if
+/// the caller dies before disarming.
+model FaultPlan {
+  id           String   @id @default(uuid()) @db.Uuid
+  /// Closed v1 kind vocabulary, validated in application code before any
+  /// persistence (docs/controlled-faults.md §4): PRE_MUTATION_REJECTION
+  /// | CRASH_MID_PROCESSING | RESPONSE_TRUNCATION. No Prisma enum so an
+  /// unsupported future kind cannot be persisted by an older target.
+  faultKind    String   @unique @db.VarChar(40)
+  /// The plan-semantics version that created this row ("controlled-fault/v1").
+  planVersion  String   @db.VarChar(32)
+  /// Closed activation vocabulary (v1: first_n_matching_deliveries).
+  activation   String   @db.VarChar(40)
+  /// Trigger budget (1..10, DB-checked). Consumption stops at this count.
+  maxTriggers  Int
+  /// Delivered trigger count since arming (never exceeds maxTriggers).
+  triggersUsed Int      @default(0)
+  armedAt      DateTime @default(now()) @db.Timestamptz(3)
+  /// armedAt + FAULT_PLAN_TTL_MS: past this instant the plan is disarmed.
+  expiresAt    DateTime @db.Timestamptz(3)
+  lastTriggeredAt DateTime? @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  @@map("fault_plans")
 }

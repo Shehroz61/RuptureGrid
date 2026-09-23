@@ -9,8 +9,16 @@
 /** Version of the deterministic finding rule implemented in finding.ts. */
 export const FINDING_RULE_VERSION = 'v1';
 
-/** Version of the deterministic timeline derivation implemented in timeline.ts. */
-export const TIMELINE_DERIVATION_VERSION = 'v1';
+/**
+ * Version of the deterministic timeline derivation implemented in
+ * timeline.ts. v2 (Phase 9): the target-owned fault-plan vocabulary
+ * entered as two separate kinds — FAULT_PLAN_CONFIGURED (plan armed)
+ * and FAULT_PLAN_ACTIVATED (triggersUsed ≥ 1 observed). v1 rows were
+ * never persisted against the collapsed v1 name in any accepted phase,
+ * so the bump only names the new vocabulary; existing Phase 5 entry
+ * semantics are unchanged.
+ */
+export const TIMELINE_DERIVATION_VERSION = 'v2';
 
 /** Identity of the forensic derivation pipeline (pipeline.ts). */
 export const FORENSIC_PIPELINE_NAME = 'phase5-forensics-pipeline';

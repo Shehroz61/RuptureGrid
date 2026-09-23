@@ -53,6 +53,17 @@ export interface PaymentLineage {
     ledgerEntries: number;
   };
   processingMode: ProcessingMode;
+  /**
+   * Phase 9 (docs/controlled-faults.md §6): the target's OWN whole-wallet
+   * reconciliation — the accepted WALLET_CREDIT ledger sum over ALL of
+   * this wallet's entries (not just this payment's) and the observed
+   * balance. Balance-conservation evaluation must use the whole wallet:
+   * a persistent wallet accumulates credits across runs, so summing only
+   * one payment's entries would falsely report a conservation failure.
+   */
+  walletLedgerCreditSumMinor: string;
+  /** balanceMinor − walletLedgerCreditSumMinor (exact integer math). */
+  walletBalanceDifferenceMinor: string;
 }
 
 export interface WalletReconciliation {
@@ -101,6 +112,15 @@ export function createDemoInspectionService(db: DemoDb): DemoInspectionService {
       }
 
       const mode = await db.client.demoSettings.findUnique({ where: { id: 'default' } });
+
+      // Phase 9: the target's own WHOLE-wallet reconciliation basis —
+      // the accepted WALLET_CREDIT sum over ALL of the wallet's ledger
+      // entries (exact bigint arithmetic), mirroring walletReconciliation.
+      const walletLedgerAggregate = await db.client.ledgerEntry.aggregate({
+        where: { walletId: payment.walletId, entryType: 'WALLET_CREDIT' },
+        _sum: { amountMinor: true },
+      });
+      const walletLedgerCreditSum = walletLedgerAggregate._sum.amountMinor ?? 0n;
 
       const events = payment.events.map((event) => toProviderEventDto(event, payment));
       const deliveries = payment.events
@@ -152,6 +172,10 @@ export function createDemoInspectionService(db: DemoDb): DemoInspectionService {
           ledgerEntries: ledgerEntries.length,
         },
         processingMode: mode?.processingMode ?? 'VULNERABLE',
+        walletLedgerCreditSumMinor: walletLedgerCreditSum.toString(10),
+        walletBalanceDifferenceMinor: (
+          payment.wallet.balanceMinor - walletLedgerCreditSum
+        ).toString(10),
       };
     },
 

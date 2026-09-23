@@ -159,6 +159,14 @@ export const EXECUTION_LIMITS = {
   maxTotalInvocationsPerRun: 10_000,
   /** Bound for durable error messages (bytes of text). */
   maxErrorMessageLength: 500,
+  /**
+   * Phase 9: maximum deterministic repeat-wave stagger per step (ms).
+   * 0 disables staggering. Bounded server-side like every other
+   * blast-radius limit (security-boundaries §8).
+   */
+  maxWaveStaggerMs: 60_000,
+  /** Phase 9: maximum fault-plan trigger budget per step. */
+  maxFaultTriggersPerStep: 10,
 } as const;
 
 export type ExecutionLimits = typeof EXECUTION_LIMITS;
@@ -183,5 +191,26 @@ export interface MoneyMinorUnits {
   readonly amountMinorUnits: number;
   readonly currency: CurrencyCode;
 }
+
+// ---------------------------------------------------------------------
+// Phase 9 — controlled-fault constants (docs/controlled-faults.md)
+// ---------------------------------------------------------------------
+// The closed plan-semantics version and kind vocabulary the ENGINE
+// accepts. The Demo Target independently declares the same vocabulary
+// in @rupturegrid/demo-db (the target boundary deliberately does not
+// depend on @rupturegrid/shared — ADR-0002); docs/controlled-faults.md
+// is the single semantic authority both must match.
+
+export const CONTROLLED_FAULT_PLAN_VERSION = 'controlled-fault/v1';
+
+export const CONTROLLED_FAULT_KINDS = [
+  'PRE_MUTATION_REJECTION',
+  'CRASH_MID_PROCESSING',
+  'RESPONSE_TRUNCATION',
+] as const;
+export type ControlledFaultKind = (typeof CONTROLLED_FAULT_KINDS)[number];
+
+export const CONTROLLED_FAULT_ACTIVATIONS = ['first_n_matching_deliveries'] as const;
+export type ControlledFaultActivation = (typeof CONTROLLED_FAULT_ACTIVATIONS)[number];
 
 export { isSensitiveKey, maskSensitiveFields, maskValue, redactUrlPassword } from './redact.js';

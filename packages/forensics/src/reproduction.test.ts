@@ -119,4 +119,90 @@ describe('reproduction — derivation content', () => {
     const bindings = derived.invariantBindings['invariants'] as Array<Record<string, unknown>>;
     expect(bindings[0]).toMatchObject({ title: null, description: null });
   });
+
+  it('a snapshot without fault plans carries a null fault intent (honestly absent)', () => {
+    const derived = deriveReproductionDefinition({
+      runId: 'run-1',
+      snapshot: { id: 'snap-1', contentHash: 'h'.repeat(64), document: snapshotDocument('SECURE') },
+      evaluations: EVALUATIONS,
+    });
+    expect(derived.faultIntent).toBeNull();
+  });
+
+  it('freezes the controlled-fault intent with typed fields and credential REFERENCES only', () => {
+    const document = {
+      steps: [
+        {
+          name: 'deliver-with-fault',
+          action: {
+            method: 'POST',
+            relativePath: '/webhooks/provider',
+            mutation: 'MUTATING',
+            contract: 'DEMO_FINTECH_WEBHOOK',
+            credentialRefs: ['DEMO_PROVIDER_SIGNING_SECRET'],
+            faultPlan: {
+              planVersion: 'controlled-fault/v1',
+              faultKind: 'PRE_MUTATION_REJECTION',
+              activation: 'first_n_matching_deliveries',
+              maxTriggers: 1,
+            },
+          },
+        },
+      ],
+    };
+    const derived = deriveReproductionDefinition({
+      runId: 'run-1',
+      snapshot: { id: 'snap-1', contentHash: 'h'.repeat(64), document },
+      evaluations: [],
+    });
+    expect(derived.faultIntent).not.toBeNull();
+    const steps = derived.faultIntent?.steps ?? [];
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toEqual({
+      stepName: 'deliver-with-fault',
+      planVersion: 'controlled-fault/v1',
+      faultKind: 'PRE_MUTATION_REJECTION',
+      activation: 'first_n_matching_deliveries',
+      maxTriggers: 1,
+      waveStaggerMs: null,
+      credentialRefs: ['DEMO_PROVIDER_SIGNING_SECRET'],
+    });
+    // Credential REFERENCE NAMES only — never values (ADR-0012/R-13).
+    const serialized = JSON.stringify(derived.faultIntent);
+    expect(serialized?.includes('sk-')).toBe(false);
+    expect(serialized?.includes('Bearer ')).toBe(false);
+  });
+
+  it('freezes the wave stagger alongside the plan when declared', () => {
+    const document = {
+      steps: [
+        {
+          name: 'staggered-fault',
+          action: {
+            method: 'POST',
+            relativePath: '/webhooks/provider',
+            mutation: 'MUTATING',
+            contract: 'DEMO_FINTECH_WEBHOOK',
+            faultPlan: {
+              planVersion: 'controlled-fault/v1',
+              faultKind: 'CRASH_MID_PROCESSING',
+              activation: 'first_n_matching_deliveries',
+              maxTriggers: 2,
+            },
+            waveStaggerMs: 250,
+          },
+        },
+      ],
+    };
+    const derived = deriveReproductionDefinition({
+      runId: 'run-1',
+      snapshot: { id: 'snap-1', contentHash: 'h'.repeat(64), document },
+      evaluations: [],
+    });
+    expect(derived.faultIntent?.steps[0]).toMatchObject({
+      faultKind: 'CRASH_MID_PROCESSING',
+      maxTriggers: 2,
+      waveStaggerMs: 250,
+    });
+  });
 });

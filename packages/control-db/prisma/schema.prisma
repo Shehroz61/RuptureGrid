@@ -802,6 +802,18 @@ enum TimelineEntryKind {
   PAYMENT_DELIVERY_OBSERVED
   INVARIANT_EVALUATED
   FINDING_DERIVED
+  /// Phase 9 (docs/controlled-faults.md §6, ADR-0014): target-owned
+  /// controlled-fault plan CONFIGURED — a fault-status observation
+  /// reporting the plan of this kind currently armed (target-authored
+  /// configuration truth from the read-only inspection API).
+  FAULT_PLAN_CONFIGURED
+  /// Phase 9 (docs/controlled-faults.md §6, ADR-0014): target-owned
+  /// controlled-fault plan ACTIVATED — the SAME observation class, but
+  /// derived ONLY when the target's own trigger accounting shows
+  /// triggersUsed ≥ 1 (budget consumption is the persisted basis for
+  /// "activated"; it is never inferred from error shapes). Configured
+  /// and activated are separate facts and remain separate entries.
+  FAULT_PLAN_ACTIVATED
 
   @@schema("analysis")
 }
@@ -992,6 +1004,13 @@ model ReproductionDefinition {
   /// Expected outcome classes (incident-replay §1.6) — for the
   /// canonical scenario the run's own deterministic verdicts.
   acceptanceExpectations Json
+  /// Phase 9 (docs/controlled-faults.md §17, ADR-0014): the frozen
+  /// controlled-fault INTENT of the run's snapshot steps — planVersion,
+  /// faultKind, activation, maxTriggers, and the wave stagger — derived
+  /// from the snapshot (never from live state), with credential
+  /// REFERENCE names only and NO credential values. Empty when the run
+  /// declares no fault.
+  faultIntent Json?
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
 
   run      ExperimentRun @relation(fields: [runId], references: [id], onDelete: Restrict)

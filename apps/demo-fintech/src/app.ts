@@ -20,6 +20,7 @@ import {
   isWellFormedIdentity,
   PROCESSING_MODES,
   PROVIDER_SIGNATURE_HEADER,
+  validateFaultPlanInput,
 } from '@rupturegrid/demo-db';
 import { SERVICE_NAMES } from '@rupturegrid/shared';
 import type { RuptureGridLogger } from '@rupturegrid/logger';
@@ -31,6 +32,7 @@ import type { DemoAdminService } from './admin-service.js';
 import type { DemoInspectionService } from './inspection-service.js';
 import type { ProviderSimulatorService } from './provider-simulator-service.js';
 import type { WebhookProcessingService } from './webhook-processing-service.js';
+import type { FaultControlService } from '@rupturegrid/demo-db';
 
 export interface AppDeps {
   db: DemoDb;
@@ -38,6 +40,8 @@ export interface AppDeps {
   simulator: ProviderSimulatorService;
   webhook: WebhookProcessingService;
   inspection: DemoInspectionService;
+  /** Phase 9: target-owned fault control (target boundary). */
+  faults: FaultControlService;
   adminToken: string;
   inspectionToken: string;
   logger: RuptureGridLogger;
@@ -121,6 +125,47 @@ export function createApp(deps: AppDeps): express.Express {
   });
 
   // -----------------------------------------------------------------
+  // Phase 9: target-owned controlled-fault control (admin token).
+  // The Demo Target OWNS its fault machinery (ADR-0014): plans persist
+  // in the Demo's own PostgreSQL, armed only through THIS admin-authed
+  // API. RuptureGrid arms faults by calling this API with the admin
+  // credential — the same credential class that already operates the
+  // demo. There is no separate fault-control credential to leak and no
+  // cross-boundary write path.
+  // -----------------------------------------------------------------
+  app.put('/demo/admin/faults/:faultKind', adminAuth, async (req, res, next) => {
+    try {
+      const plan = validateFaultPlanInput({
+        ...(req.body as Record<string, unknown>),
+        faultKind: req.params.faultKind,
+      });
+      await deps.faults.arm(plan);
+      const status = await deps.faults.status();
+      const armed = status.plans.find((p: { faultKind: string }) => p.faultKind === plan.faultKind);
+      res.status(200).json({ armed });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete('/demo/admin/faults/:faultKind', adminAuth, async (req, res, next) => {
+    try {
+      await deps.faults.disarm(req.params.faultKind as string);
+      res.status(200).json({ disarmed: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/demo/admin/faults', adminAuth, async (_req, res, next) => {
+    try {
+      res.status(200).json(await deps.faults.status());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // -----------------------------------------------------------------
   // Provider simulator (privileged demo setup — admin token, §59).
   // DEMO/DEVELOPMENT ONLY: this route exists solely to establish the
   // canonical demo scenario on a local/authorized-test target.
@@ -154,14 +199,50 @@ export function createApp(deps: AppDeps): express.Express {
       // Valid duplicates are successful processing responses (§41):
       // both APPLIED and IDEMPOTENT_DUPLICATE are 2xx with an explicit
       // outcome; the outcome field is the business truth.
-      res.status(200).json({
+      const responseBody = {
         deliveryAttemptId: result.deliveryAttemptId,
         processingAttemptId: result.processingAttemptId,
         outcome: result.outcome,
         financialEffectId: result.financialEffectId,
         providerEventId: result.providerEventId,
         providerPaymentId: result.providerPaymentId,
-      });
+      };
+
+      // ---- Phase 9 fault hooks 2/3: post-commit response faults ----
+      // processDelivery RETURNED: the financial transaction COMMITTED and
+      // the processing attempt is finalized — the mutation objectively
+      // occurred. The target then destroys the TCP connection so the
+      // caller cannot observe the outcome: the executor classifies this
+      // conservatively as REQUEST_SENT ⇒ INDETERMINATE (ADR-0008), and
+      // the run's later inspection (read-only) reveals the committed
+      // truth (docs/controlled-faults.md §4.2/§4.3). These hooks live in
+      // the ROUTE layer because Express writes headers on the first
+      // serialization call: the truncation variant must pre-serialize
+      // with an inflated Content-Length and destroy mid-body.
+      if (deps.faults !== undefined) {
+        const truncation = await deps.faults.consumeTrigger('RESPONSE_TRUNCATION');
+        if (truncation === 'TRIGGERED') {
+          const body = JSON.stringify(responseBody);
+          // An honest Content-Length for a body LARGER than what is
+          // sent: valid headers, then the connection dies mid-body.
+          // Headers are not knowledge (§4.3).
+          res.status(200);
+          res.setHeader('content-type', 'application/json');
+          res.setHeader('content-length', String(Buffer.byteLength(body, 'utf8') + 512));
+          res.write(body.slice(0, Math.floor(body.length / 2)));
+          res.destroy();
+          return;
+        }
+        const crash = await deps.faults.consumeTrigger('CRASH_MID_PROCESSING');
+        if (crash === 'TRIGGERED') {
+          // No response bytes at all: the client-observable signature
+          // of a crash mid-processing (§4.2).
+          res.destroy();
+          return;
+        }
+      }
+
+      res.status(200).json(responseBody);
     } catch (error) {
       next(error);
     }
@@ -201,6 +282,21 @@ export function createApp(deps: AppDeps): express.Express {
   );
 
   // -----------------------------------------------------------------
+  // Phase 9: read-only observation of the target's OWN fault state
+  // (docs/controlled-faults.md §5): RuptureGrid captures this through
+  // the explicit evidence adapter kind `demo-fintech-fault-status` —
+  // configured-vs-activated is target-authored truth, never inferred
+  // from error shapes. Read-only credential; no mutation capability.
+  // -----------------------------------------------------------------
+  app.get('/inspection/faults', inspectionAuth, async (_req, res, next) => {
+    try {
+      res.status(200).json(await deps.faults.status());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // -----------------------------------------------------------------
   // Stable error mapping (§42, §95): expected domain conditions map to
   // their documented status; everything else is a 500 without stack
   // traces, SQL, or connection strings. Unexpected errors are logged
@@ -212,6 +308,20 @@ export function createApp(deps: AppDeps): express.Express {
     (error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
       if (error instanceof DemoDomainError) {
         res.status(error.status).json({ error: { code: error.code, message: error.message } });
+        return;
+      }
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'name' in error &&
+        (error as { name?: unknown }).name === 'FaultControlError' &&
+        'status' in error &&
+        'code' in error
+      ) {
+        const faultError = error as unknown as { status: number; code: string; message: string };
+        res
+          .status(faultError.status)
+          .json({ error: { code: faultError.code, message: faultError.message } });
         return;
       }
       const parserErrorType =

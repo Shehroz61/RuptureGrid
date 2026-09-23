@@ -281,3 +281,214 @@ export function evaluateInvIz1(graph: InvariantEvidenceGraph): EvaluationSubject
   }
   return results;
 }
+
+// =====================================================================
+// Phase 9 invariants (docs/controlled-faults.md §6): deterministic,
+// pure evaluation-tier verdicts over the SAME evidence graph. Phase 5
+// Finding generation stays INV-IZ-1-specific — these evaluators add no
+// reason codes and never rewrite existing semantics.
+// =====================================================================
+
+/** A decimal-integer string as carried in lineage payloads (R-06: never floats). */
+const DECIMAL_INTEGER = /^-?\d+$/;
+
+function toMinorUnits(value: unknown): bigint | null {
+  if (typeof value !== 'string' || !DECIMAL_INTEGER.test(value)) {
+    return null;
+  }
+  return BigInt(value);
+}
+
+/**
+ * INV-DF-1 BALANCE_CONSERVATION (docs/controlled-faults.md §6): for the
+ * wallet of an observed payment lineage, the target's OWN whole-wallet
+ * reconciliation must show balanceMinor == accepted WALLET_CREDIT ledger
+ * sum (exact integer minor units). The evaluator consumes the target's
+ * own arithmetic (walletBalanceDifferenceMinor carried from the stored
+ * lineage observation) and verifies the two reconciled quantities agree
+ * with it — one honest external check, no recomputation from partial
+ * per-payment sums (a persistent wallet accumulates credits across
+ * runs, so per-payment sums would falsely report conservation failure).
+ *
+ * Subjects: every distinct walletId named by a wallet-state event whose
+ * payload carries the whole-wallet reconciliation fields.
+ *
+ * Verdicts:
+ *   PASS  — differenceMinor is exactly 0 for the wallet's observed state
+ *   FAIL  — differenceMinor is non-zero (balance and ledger sum disagree)
+ *   NOT_EVALUABLE — no wallet-state event for the wallet carries the
+ *           reconciliation fields (insufficient evidence; reported
+ *           honestly, never assumed)
+ */
+export function evaluateInvDf1(graph: InvariantEvidenceGraph): EvaluationSubjectResult[] {
+  const walletEvents = graph.events.filter(
+    (event) =>
+      event.eventType === 'demo.wallet-state-observed' &&
+      typeof event.payload['walletId'] === 'string',
+  );
+  const byWallet = new Map<
+    string,
+    { event: (typeof walletEvents)[number]; difference: bigint }[]
+  >();
+  let unequippedWallets = new Set<string>();
+  for (const event of walletEvents) {
+    const walletId = event.payload['walletId'] as string;
+    const difference = toMinorUnits(event.payload['walletBalanceDifferenceMinor']);
+    const sum = toMinorUnits(event.payload['walletLedgerCreditSumMinor']);
+    const balance = toMinorUnits(event.payload['balanceMinor']);
+    if (difference === null || sum === null || balance === null) {
+      // This observation predates the reconciliation fields (normalizer
+      // v1) or is malformed: the wallet stays unevaluated by THIS
+      // observation — recorded honestly below if no v2 observation exists.
+      unequippedWallets.add(walletId);
+      continue;
+    }
+    unequippedWallets.delete(walletId);
+    const list = byWallet.get(walletId) ?? [];
+    list.push({ event, difference });
+    byWallet.set(walletId, list);
+  }
+  unequippedWallets = new Set([...unequippedWallets].filter((walletId) => !byWallet.has(walletId)));
+
+  const results: EvaluationSubjectResult[] = [];
+  for (const [walletId, observations] of byWallet) {
+    // Deterministic order: chain index, then event id — never insertion.
+    observations.sort(
+      (a, b) =>
+        a.event.inputHash.localeCompare(b.event.inputHash) || a.event.id.localeCompare(b.event.id),
+    );
+    const disagreements = observations.filter((observation) => observation.difference !== 0n);
+    const observedBalances = [
+      ...new Set(observations.map((o) => o.event.payload['balanceMinor'] as string)),
+    ];
+    if (disagreements.length === 0) {
+      results.push({
+        subjectKey: walletId,
+        verdict: 'PASS',
+        reason:
+          `observed wallet balance equals the accepted WALLET_CREDIT ledger sum in every ` +
+          `${String(observations.length)} target-reported reconciliation(s) (exact integer minor units)`,
+        completenessBasis: COMPLETENESS_BASES.lineageComplete,
+        details: {
+          walletId,
+          observationCount: observations.length,
+          observedBalancesMinor: observedBalances.sort(),
+          sourceEventIds: observations.map((o) => o.event.id).sort(),
+        },
+      });
+    } else {
+      results.push({
+        subjectKey: walletId,
+        verdict: 'FAIL',
+        reason:
+          `observed wallet balance disagrees with the accepted WALLET_CREDIT ledger sum in ` +
+          `${String(disagreements.length)} of ${String(observations.length)} target-reported ` +
+          `reconciliation(s) (basis: target's own whole-wallet accounting, exact integer minor units)`,
+        completenessBasis: COMPLETENESS_BASES.lineageComplete,
+        details: {
+          walletId,
+          observationCount: observations.length,
+          disagreementCount: disagreements.length,
+          observedBalancesMinor: observedBalances.sort(),
+          disagreementEventIds: disagreements.map((o) => o.event.id).sort(),
+          sourceEventIds: observations.map((o) => o.event.id).sort(),
+        },
+      });
+    }
+  }
+  for (const walletId of unequippedWallets) {
+    results.push({
+      subjectKey: walletId,
+      verdict: 'NOT_EVALUABLE',
+      reason:
+        'wallet observed in lineage evidence but no observation of it carried the target\u2019s own ' +
+        'whole-wallet reconciliation; balance conservation cannot be evaluated',
+      completenessBasis: COMPLETENESS_BASES.deliveryAttributable,
+      details: { walletId, verificationSurface: 'absent' },
+    });
+  }
+  return results;
+}
+
+/**
+ * INV-DF-2 NO_NEGATIVE_BALANCE (docs/controlled-faults.md §6): every
+ * wallet balance observed in the run evidence must be ≥ 0 (integer
+ * minor units). Subjects: every distinct walletId named by a
+ * wallet-state event.
+ *
+ *   PASS  — every observed balance for the wallet is ≥ 0
+ *   FAIL  — at least one observed balance is negative
+ *   NOT_EVALUABLE — no wallet balance was observed at all (run-wide);
+ *           per-wallet subjects exist only when a balance was seen
+ */
+export function evaluateInvDf2(graph: InvariantEvidenceGraph): EvaluationSubjectResult[] {
+  const walletEvents = graph.events.filter(
+    (event) =>
+      event.eventType === 'demo.wallet-state-observed' &&
+      typeof event.payload['walletId'] === 'string' &&
+      toMinorUnits(event.payload['balanceMinor']) !== null,
+  );
+  if (walletEvents.length === 0) {
+    return [
+      {
+        subjectKey: '*',
+        verdict: 'NOT_EVALUABLE',
+        reason:
+          'no wallet balance was observed in the run evidence; the no-negative-balance ' +
+          'invariant cannot be evaluated',
+        completenessBasis: COMPLETENESS_BASES.incomplete,
+        details: { verificationSurface: 'absent' },
+      },
+    ];
+  }
+  const byWallet = new Map<string, bigint[]>();
+  for (const event of walletEvents) {
+    const walletId = event.payload['walletId'] as string;
+    const balance = toMinorUnits(event.payload['balanceMinor']) as bigint;
+    const list = byWallet.get(walletId) ?? [];
+    list.push(balance);
+    byWallet.set(walletId, list);
+  }
+  const results: EvaluationSubjectResult[] = [];
+  for (const [walletId, balances] of byWallet) {
+    balances.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const negative = balances.filter((balance) => balance < 0n);
+    const minimum = balances[0];
+    if (minimum === undefined) {
+      continue; // Unreachable: byWallet lists are never empty.
+    }
+    if (negative.length === 0) {
+      results.push({
+        subjectKey: walletId,
+        verdict: 'PASS',
+        reason: `every observed balance for the wallet is non-negative (${String(balances.length)} observation(s), integer minor units)`,
+        completenessBasis: COMPLETENESS_BASES.lineageComplete,
+        details: {
+          walletId,
+          observationCount: balances.length,
+          minimumObservedBalanceMinor: minimum.toString(10),
+        },
+      });
+    } else {
+      const minimumNegative = negative[0];
+      if (minimumNegative === undefined) {
+        continue; // Unreachable: negative is non-empty here.
+      }
+      results.push({
+        subjectKey: walletId,
+        verdict: 'FAIL',
+        reason:
+          `a negative observed wallet balance violates the no-negative-balance invariant ` +
+          `(minimum observed ${minimumNegative.toString(10)} minor units; integer arithmetic, R-06)`,
+        completenessBasis: COMPLETENESS_BASES.lineageComplete,
+        details: {
+          walletId,
+          observationCount: balances.length,
+          negativeObservationCount: negative.length,
+          minimumObservedBalanceMinor: minimumNegative.toString(10),
+        },
+      });
+    }
+  }
+  return results;
+}

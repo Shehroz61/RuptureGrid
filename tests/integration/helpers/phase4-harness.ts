@@ -34,7 +34,7 @@ export interface RunningWorker {
 /** Starts the REAL compiled worker process with production wiring. */
 export async function startPhase4Worker(
   env: TestEnv,
-  options: { leaseMs?: number } = {},
+  options: { leaseMs?: number; extraEnv?: Record<string, string | undefined> } = {},
 ): Promise<RunningWorker> {
   const child = spawn(process.execPath, ['apps/worker/dist/main.js'], {
     cwd: process.cwd(),
@@ -53,6 +53,9 @@ export async function startPhase4Worker(
       WORKER_CONCURRENCY: '4',
       NODE_ENV: 'test',
       LOG_LEVEL: 'info',
+      // Scenario-specific overrides (e.g. breaking ONLY the fault-status
+      // inspection credential to prove capture-failure honesty).
+      ...options.extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

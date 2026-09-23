@@ -8,7 +8,13 @@
 // trusts that a revision was validated earlier.
 
 import type { PrismaClient } from '@rupturegrid/control-db';
-import { EXECUTION_LIMITS } from '@rupturegrid/shared';
+import {
+  CONTROLLED_FAULT_ACTIVATIONS,
+  CONTROLLED_FAULT_KINDS,
+  CONTROLLED_FAULT_PLAN_VERSION,
+  EXECUTION_LIMITS,
+} from '@rupturegrid/shared';
+import type { ControlledFaultActivation, ControlledFaultKind } from '@rupturegrid/shared';
 import type { TargetRegistration } from './prisma-types.js';
 import type {
   ExperimentDocument,
@@ -336,6 +342,125 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
       );
     }
 
+    // ---- Phase 9: controlled-fault plan (docs/controlled-faults.md) ----
+    // SECURITY GATE (R-14): a faultPlan is accepted ONLY for a mutating
+    // action on the Demo webhook delivery path under the Demo contract,
+    // and only when the registered target is LOCAL_DEVELOPMENT. The
+    // same gate is re-derived at execution time (step-processor) from
+    // the frozen snapshot — defense in depth. STAGING/PRODUCTION
+    // targets can never execute a fault-bearing step.
+    const rawFaultPlan = rawAction['faultPlan'];
+    let faultPlan: ExperimentStep['action']['faultPlan'];
+    if (rawFaultPlan !== undefined) {
+      if (!isRecord(rawFaultPlan)) {
+        issues.push(`steps[${index}].action.faultPlan must be an object`);
+      } else {
+        if (rawFaultPlan['planVersion'] !== CONTROLLED_FAULT_PLAN_VERSION) {
+          issues.push(
+            `steps[${index}].action.faultPlan.planVersion must be "${CONTROLLED_FAULT_PLAN_VERSION}" (got ${JSON.stringify(rawFaultPlan['planVersion'] ?? null)})`,
+          );
+        }
+        const kind = rawFaultPlan['faultKind'];
+        if (
+          typeof kind !== 'string' ||
+          !(CONTROLLED_FAULT_KINDS as readonly string[]).includes(kind)
+        ) {
+          issues.push(
+            `steps[${index}].action.faultPlan.faultKind must be one of: ${CONTROLLED_FAULT_KINDS.join(', ')}`,
+          );
+        }
+        const activation = rawFaultPlan['activation'];
+        if (
+          typeof activation !== 'string' ||
+          !(CONTROLLED_FAULT_ACTIVATIONS as readonly string[]).includes(activation)
+        ) {
+          issues.push(
+            `steps[${index}].action.faultPlan.activation must be one of: ${CONTROLLED_FAULT_ACTIVATIONS.join(', ')}`,
+          );
+        }
+        const maxTriggers = rawFaultPlan['maxTriggers'];
+        if (
+          typeof maxTriggers !== 'number' ||
+          !Number.isInteger(maxTriggers) ||
+          maxTriggers < 1 ||
+          maxTriggers > EXECUTION_LIMITS.maxFaultTriggersPerStep
+        ) {
+          issues.push(
+            `steps[${index}].action.faultPlan.maxTriggers must be an integer in [1, ${EXECUTION_LIMITS.maxFaultTriggersPerStep}]`,
+          );
+        }
+        // ---- Safety gate: target classification + path + contract ----
+        if (input.target.environment !== 'LOCAL_DEVELOPMENT') {
+          issues.push(
+            `steps[${index}].action.faultPlan is only permitted for LOCAL_DEVELOPMENT targets (registered environment: ${input.target.environment}; R-14)`,
+          );
+        }
+        if (rawFaultPlan !== undefined && mutation !== 'MUTATING') {
+          issues.push(
+            `steps[${index}].action.faultPlan requires mutation=MUTATING (fault semantics are defined for mutating deliveries)`,
+          );
+        }
+        if (
+          rawFaultPlan !== undefined &&
+          (contract !== 'DEMO_FINTECH_WEBHOOK' ||
+            (typeof rawPath === 'string' && normalizedPath !== '/webhooks/provider'))
+        ) {
+          issues.push(
+            `steps[${index}].action.faultPlan is only valid for the target's webhook delivery path (/webhooks/provider under contract DEMO_FINTECH_WEBHOOK)`,
+          );
+        }
+        if (
+          typeof kind === 'string' &&
+          (CONTROLLED_FAULT_KINDS as readonly string[]).includes(kind) &&
+          typeof activation === 'string' &&
+          (CONTROLLED_FAULT_ACTIVATIONS as readonly string[]).includes(activation) &&
+          typeof maxTriggers === 'number' &&
+          Number.isInteger(maxTriggers) &&
+          maxTriggers >= 1 &&
+          maxTriggers <= EXECUTION_LIMITS.maxFaultTriggersPerStep &&
+          rawFaultPlan['planVersion'] === CONTROLLED_FAULT_PLAN_VERSION &&
+          input.target.environment === 'LOCAL_DEVELOPMENT' &&
+          mutation === 'MUTATING' &&
+          contract === 'DEMO_FINTECH_WEBHOOK' &&
+          (typeof rawPath === 'string' ? normalizedPath === '/webhooks/provider' : false)
+        ) {
+          faultPlan = {
+            planVersion: CONTROLLED_FAULT_PLAN_VERSION,
+            faultKind: kind as ControlledFaultKind,
+            activation: activation as ControlledFaultActivation,
+            maxTriggers,
+          };
+        }
+      }
+    }
+
+    // ---- Phase 9: deterministic wave stagger ----
+    const rawWaveStaggerMs = rawAction['waveStaggerMs'];
+    let waveStaggerMs: number | undefined;
+    if (rawWaveStaggerMs !== undefined) {
+      if (
+        typeof rawWaveStaggerMs !== 'number' ||
+        !Number.isInteger(rawWaveStaggerMs) ||
+        rawWaveStaggerMs < 0 ||
+        rawWaveStaggerMs > EXECUTION_LIMITS.maxWaveStaggerMs
+      ) {
+        issues.push(
+          `steps[${index}].action.waveStaggerMs must be an integer in [0, ${EXECUTION_LIMITS.maxWaveStaggerMs}]`,
+        );
+      } else if (rawWaveStaggerMs > 0) {
+        waveStaggerMs = rawWaveStaggerMs;
+        const plannedRepeat =
+          typeof rawAction['repeat'] === 'number' && Number.isInteger(rawAction['repeat'])
+            ? rawAction['repeat']
+            : 1;
+        if (plannedRepeat < 2) {
+          issues.push(
+            `steps[${index}].action.waveStaggerMs requires repeat >= 2 (there are no later waves to stagger)`,
+          );
+        }
+      }
+    }
+
     // ---- Numeric limits ----
     const repeat = rawAction['repeat'] ?? 1;
     if (
@@ -442,9 +567,33 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
       ...(body !== undefined ? { body } : {}),
       ...(credentialRefs.length > 0 ? { credentialRefs } : {}),
       ...(evidenceAdapter !== undefined ? { evidenceAdapter } : {}),
+      ...(faultPlan !== undefined ? { faultPlan } : {}),
+      ...(waveStaggerMs !== undefined ? { waveStaggerMs } : {}),
     };
     return { name, action };
   });
+
+  // ---- Phase 9: one faultKind on at most one step per document ----
+  // (docs/controlled-faults.md §2). Arming replaces the target's plan
+  // PER KIND, so two fault-bearing steps declaring the SAME kind in one
+  // run would race for a single target-side budget and make activation
+  // order-dependent — the closed plan semantics require the fault
+  // bearing to be attributable to exactly one step.
+  const faultKindsByStep = new Map<string, number>();
+  for (let index = 0; index < steps.length; index += 1) {
+    const plan = steps[index]?.action.faultPlan;
+    if (plan === undefined) {
+      continue;
+    }
+    const previous = faultKindsByStep.get(plan.faultKind);
+    if (previous !== undefined) {
+      issues.push(
+        `steps[${index}].action.faultPlan duplicates faultKind "${plan.faultKind}" already declared by steps[${previous}] (one faultKind on at most one step per document)`,
+      );
+      continue;
+    }
+    faultKindsByStep.set(plan.faultKind, index);
+  }
 
   if (issues.length > 0) {
     throw new ExperimentValidationError(issues);

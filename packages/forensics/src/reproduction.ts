@@ -66,6 +66,25 @@ export interface DerivedReproductionDefinition {
   readonly credentialRefs: readonly string[];
   readonly invariantBindings: Record<string, unknown>;
   readonly acceptanceExpectations: Record<string, unknown>;
+  /**
+   * Phase 9 (docs/controlled-faults.md §17): the frozen controlled-fault
+   * intent of the snapshot's steps — typed plan fields only (planVersion,
+   * faultKind, activation, maxTriggers, waveStaggerMs), plus the step
+   * name and the credential REFERENCE names the step declares. Values,
+   * URLs, and secrets never enter this structure (ADR-0012); there is
+   * deliberately NO replay engine in v1 — this is durable intent only.
+   */
+  readonly faultIntent: {
+    readonly steps: Array<{
+      readonly stepName: string;
+      readonly planVersion: string;
+      readonly faultKind: string;
+      readonly activation: string;
+      readonly maxTriggers: number;
+      readonly waveStaggerMs: number | null;
+      readonly credentialRefs: readonly string[];
+    }>;
+  } | null;
 }
 
 /**
@@ -119,6 +138,56 @@ export function deriveReproductionDefinition(
       : [...target['credentialRefs']]
           .filter((ref): ref is string => typeof ref === 'string')
           .sort();
+
+  // Phase 9: the frozen controlled-fault intent, derived ONLY from the
+  // snapshot's own steps (docs/controlled-faults.md §17). Typed plan
+  // fields are copied; credential references stay REFERENCE names;
+  // nothing is read from live target state. Steps without a faultPlan
+  // contribute nothing. Ordering follows the snapshot's step order,
+  // which is itself deterministic.
+  const faultIntentSteps: NonNullable<DerivedReproductionDefinition['faultIntent']>['steps'] = [];
+  const snapshotSteps =
+    isRecord(document) && Array.isArray(document['steps']) ? document['steps'] : [];
+  for (const step of snapshotSteps) {
+    {
+      if (!isRecord(step) || !isRecord(step['action']) || typeof step['name'] !== 'string') {
+        continue;
+      }
+      const plan = step['action']['faultPlan'];
+      if (!isRecord(plan)) {
+        continue;
+      }
+      const planVersion = typeof plan['planVersion'] === 'string' ? plan['planVersion'] : null;
+      const faultKind = typeof plan['faultKind'] === 'string' ? plan['faultKind'] : null;
+      const activation = typeof plan['activation'] === 'string' ? plan['activation'] : null;
+      const maxTriggers =
+        typeof plan['maxTriggers'] === 'number' && Number.isInteger(plan['maxTriggers'])
+          ? plan['maxTriggers']
+          : null;
+      if (
+        planVersion === null ||
+        faultKind === null ||
+        activation === null ||
+        maxTriggers === null
+      ) {
+        continue; // Malformed plans are not reinterpreted into intent.
+      }
+      const stagger = step['action']['waveStaggerMs'];
+      const actionRefs = step['action']['credentialRefs'];
+      faultIntentSteps.push({
+        stepName: step['name'],
+        planVersion,
+        faultKind,
+        activation,
+        maxTriggers,
+        waveStaggerMs:
+          typeof stagger === 'number' && Number.isInteger(stagger) && stagger >= 0 ? stagger : null,
+        credentialRefs: Array.isArray(actionRefs)
+          ? actionRefs.filter((ref): ref is string => typeof ref === 'string').sort()
+          : [],
+      });
+    }
+  }
 
   // Invariant bindings: the run's own distinct (key, version) pairs,
   // deterministically ordered. Identity metadata comes from the
@@ -177,6 +246,7 @@ export function deriveReproductionDefinition(
     credentialRefs,
     invariantBindings: { invariants: bindings },
     acceptanceExpectations: { expectations },
+    faultIntent: faultIntentSteps.length === 0 ? null : { steps: faultIntentSteps },
   };
 }
 
@@ -212,6 +282,7 @@ export async function persistReproductionDefinition(
         credentialRefs: [...derived.credentialRefs],
         invariantBindings: derived.invariantBindings as object,
         acceptanceExpectations: derived.acceptanceExpectations as object,
+        ...(derived.faultIntent === null ? {} : { faultIntent: derived.faultIntent as object }),
       },
       select: { id: true },
     });

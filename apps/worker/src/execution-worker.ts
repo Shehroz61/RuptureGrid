@@ -25,9 +25,11 @@ import {
 import {
   createEngineEvidenceSink,
   captureDemoPaymentLineage,
+  captureDemoFaultStatus,
   runRunAnalysis,
   DEMO_LINEAGE_ADAPTER_KIND,
 } from '@rupturegrid/evidence';
+import { createLoggerTelemetry } from '@rupturegrid/engine';
 
 export interface ExecutionWorkerRuntime {
   readonly ready: Promise<void>;
@@ -72,6 +74,12 @@ export async function startExecutionWorkerRuntime(): Promise<ExecutionWorkerRunt
   // failure never blocks execution (honest incompleteness is logged).
   const evidenceSink = createEngineEvidenceSink(controlDb.prisma);
 
+  // Phase 9: fault-control credential (request-time only, R-13). The
+  // Demo admin token is already in validated worker config for demo
+  // operations; fault arming reuses that SAME credential class — no new
+  // secret is introduced.
+  const demoAdminToken = config.DEMO_ADMIN_TOKEN ?? '';
+
   // Phase 4: EXPLICIT target-evidence adapter (§28/§29). Only steps
   // whose frozen action declares evidenceAdapter.kind trigger this.
   // The inspection credential is resolved from validated config at
@@ -102,6 +110,114 @@ export async function startExecutionWorkerRuntime(): Promise<ExecutionWorkerRunt
     });
   };
 
+  // Phase 9 controlled-fault control port (ADR-0014): the engine owns
+  // WHEN to arm/disarm; this adapter owns HOW — the Demo Target's own
+  // admin API over HTTP with the admin credential from validated config.
+  // The credential exists only inside this call frame and is never
+  // logged, persisted, or attached to evidence (R-13). Arming failure is
+  // a hard precondition inside the engine; disarm is best-effort. The
+  // origin is the FROZEN registered target origin from the snapshot —
+  // no target can be faulted other than the one the step already
+  // executes against.
+  //
+  // Fault-path transport rules mirror the executor's (security-
+  // boundaries §3–§6): redirects are NEVER followed (redirect:'manual';
+  // a 3xx is a failure), the final response origin must still be the
+  // registered target origin, and every call is bounded by a timeout.
+  // The fault path therefore cannot be used to bypass the SSRF/
+  // registered-origin rules that gate step execution.
+  const faultControlFetch = async (
+    origin: string,
+    path: string,
+    init: {
+      readonly method: 'PUT' | 'DELETE';
+      readonly body?: string;
+    },
+  ): Promise<Response> => {
+    const response = await fetch(`${origin}${path}`, {
+      method: init.method,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${demoAdminToken}`, // R-13: request-time only
+      },
+      ...(init.body === undefined ? {} : { body: init.body }),
+      redirect: 'manual', // security-boundaries §6: never follow.
+      signal: AbortSignal.timeout(10_000),
+    });
+    const responseOrigin = new URL(response.url).origin;
+    if (responseOrigin !== new URL(origin).origin) {
+      throw new Error(
+        `fault-control response origin ${responseOrigin} does not match the registered target origin`,
+      );
+    }
+    return response;
+  };
+
+  const controlledFaults = {
+    arm: async (input: {
+      readonly faultPlan: unknown;
+      readonly runId: string;
+      readonly stepRunId: string;
+      readonly origin: string;
+    }): Promise<void> => {
+      const plan = input.faultPlan as {
+        faultKind: string;
+        planVersion: string;
+        activation: string;
+        maxTriggers: number;
+      };
+      const response = await faultControlFetch(
+        input.origin,
+        `/demo/admin/faults/${encodeURIComponent(plan.faultKind)}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            planVersion: plan.planVersion,
+            activation: plan.activation,
+            maxTriggers: plan.maxTriggers,
+          }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(
+          `fault arming failed for ${plan.faultKind}: target responded ${String(response.status)}`,
+        );
+      }
+    },
+    disarm: async (input: {
+      readonly faultKind: string;
+      readonly runId: string;
+      readonly stepRunId: string;
+      readonly origin: string;
+    }): Promise<void> => {
+      await faultControlFetch(
+        input.origin,
+        `/demo/admin/faults/${encodeURIComponent(input.faultKind)}`,
+        { method: 'DELETE' },
+      ).catch(() => undefined); // best-effort by contract
+    },
+  };
+
+  // Phase 9: explicit fault-status observation capture (docs/
+  // controlled-faults.md §5) — the target's read-only inspection API
+  // with the inspection credential (request-time only, ADR-0012).
+  const captureFaultStatusAdapter = async (input: {
+    readonly runId: string;
+    readonly stepRunId: string;
+    readonly origin: string;
+    readonly writerOwnerId: string;
+    readonly writerFencingToken: string | null;
+  }): Promise<void> => {
+    await captureDemoFaultStatus(controlDb.prisma, {
+      runId: input.runId,
+      stepRunId: input.stepRunId,
+      origin: input.origin,
+      inspectionToken: config.DEMO_INSPECTION_TOKEN ?? null,
+      writerOwnerId: input.writerOwnerId,
+      writerFencingToken: input.writerFencingToken,
+    });
+  };
+
   const processor = new StepProcessor({
     prisma: controlDb.prisma,
     config: {
@@ -112,6 +228,9 @@ export async function startExecutionWorkerRuntime(): Promise<ExecutionWorkerRunt
     dispatchNextStep,
     evidenceSink,
     captureEvidenceAdapter,
+    controlledFaults,
+    captureFaultStatusAdapter,
+    telemetry: createLoggerTelemetry(logger),
   });
 
   // ---- Reconciler loop (bounded, interval-driven) ----

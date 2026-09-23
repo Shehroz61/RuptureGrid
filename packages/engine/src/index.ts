@@ -70,6 +70,13 @@ export {
 export { noopEvidenceSink } from './evidence-sink.js';
 export type { EvidenceSink, InvocationObservation } from './evidence-sink.js';
 export {
+  createLoggerTelemetry,
+  withOpenTelemetryBridge,
+  noopTelemetry,
+  ENGINE_TELEMETRY_VERSION,
+} from './telemetry.js';
+export type { EngineTelemetry, EngineTelemetryEvent } from './telemetry.js';
+export {
   findUndispatchedSteps,
   resolveExpiredLease,
   settleRuns,

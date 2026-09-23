@@ -77,6 +77,21 @@ export class InvalidModeError extends DemoDomainError {
 }
 
 /**
+ * Phase 9 (docs/controlled-faults.md §4.1): the target's definitive
+ * contract rejection for the controlled PRE_MUTATION_REJECTION fault —
+ * thrown after ALL validation, BEFORE any persistence. Status 409 with
+ * a dedicated honest code so the client-side classification (definitive
+ * 4xx under DEMO_FINTECH_WEBHOOK ⇒ no effect ⇒ KNOWN_ABSENT) is exactly
+ * the accepted Phase 3 table, not a new semantic.
+ */
+export class ControlledFaultRejectionError extends DemoDomainError {
+  public constructor(message: string) {
+    super('CONTROLLED_FAULT_REJECTION', 409, message);
+    this.name = 'ControlledFaultRejectionError';
+  }
+}
+
+/**
  * Processing failed after a valid, authenticated delivery. The failed
  * financial transaction rolled back atomically; the failure is recorded
  * on the delivery/attempt honestly.

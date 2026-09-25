@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "Incident Zero end-to-end golden scenario (Phase 7): canonical experiment definitions, readiness checks, bounded-polling orchestration, and the golden result manifest — one library over accepted Phase 3/4/5 truth",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

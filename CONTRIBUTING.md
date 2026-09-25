@@ -5,8 +5,11 @@ constitution — read [AGENTS.md](AGENTS.md) first. It is binding for all
 contributors, human and AI: phase boundaries (R-01), no fabricated truth
 (R-02/R-03), verification before claims (R-07), data ownership (R-05),
 integer-minor-unit money (R-06), and security boundaries (R-14) are not
-negotiable per-task. This document covers the mechanical how-to; AGENTS.md
-and [docs/engineering-rules.md](docs/engineering-rules.md) cover the why.
+negotiable per-task. RuptureGrid is licensed under **Apache-2.0** — see
+[LICENSE](LICENSE); by contributing you agree that your contributions are
+licensed under the same license. This document covers the mechanical
+how-to; AGENTS.md and [docs/engineering-rules.md](docs/engineering-rules.md)
+cover the why.
 
 ## Prerequisites
 

@@ -4,7 +4,7 @@
   "private": true,
   "description": "RuptureGrid v1.0 — business-correctness failure testing platform (Phase 1 foundation)",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=22.12.0",
     "pnpm": ">=11.0.0"

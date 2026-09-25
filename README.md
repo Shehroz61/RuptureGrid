@@ -1,6 +1,6 @@
 # RuptureGrid v1.0
 
-**Status: PHASES 0–10 ACCEPTED AND FROZEN (tags `phase-0-accepted` … `phase-10-accepted`).** Phase 11 is release preparation: release gates, truthful documentation, CI, and release hygiene — no new product semantics. The platform is **code-ready for a public source release**; publication decisions (license, security contact, public repository URL) are owner decisions and are tracked in [docs/reports/phase-11-self-audit.md](docs/reports/phase-11-self-audit.md).
+**Status: PHASES 0–11 ACCEPTED AND FROZEN (tags `phase-0-accepted` … `phase-11-accepted`).** The platform is **prepared for a public source release**: licensed **Apache-2.0** (see [LICENSE](LICENSE)), published as **source only** — no npm, Docker-image, prebuilt-binary, or bundled-ffmpeg publication is part of v1.0. Remaining publication actions (real public repository URL, GitHub Private Vulnerability Reporting enablement) are owner actions, tracked in [docs/reports/release-checklist.md](docs/reports/release-checklist.md).
 
 RuptureGrid is a developer-infrastructure platform for **discovering business-correctness failures in distributed systems** through controlled failure testing, business invariant verification, forensic analysis, and reproduction/regression replay.
 
@@ -140,3 +140,11 @@ docs/             architecture, product spec, security boundaries, 15 ADRs,
 ## For contributors (human and AI)
 
 Read [AGENTS.md](AGENTS.md) before touching anything. It is the constitution: phase boundaries, truth rules, ownership rules, and verification rules are not negotiable per-task.
+
+## License
+
+RuptureGrid v1.0 is licensed under **Apache-2.0** — see [LICENSE](LICENSE).
+Third-party dependencies retain their own licenses (see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); `ffmpeg-static` is
+development/showcase tooling only and is not bundled or distributed as a
+RuptureGrid release artifact).

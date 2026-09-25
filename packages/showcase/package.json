@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "Phase 8 showcase automation: captures the accepted Phase 6 product UI over real golden execution data produced by the accepted Phase 7 verifier — no separate truth engine, no fabricated artifacts",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

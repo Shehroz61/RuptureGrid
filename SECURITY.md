@@ -2,7 +2,8 @@
 
 ## Supported surface (v1.0)
 
-RuptureGrid v1.0 is a **local-first, source-available developer tool**.
+RuptureGrid v1.0 is a **local-first, source-available developer tool**,
+released as **source only** under **Apache-2.0** (see [LICENSE](LICENSE)).
 The security model assumes:
 
 - You run the stack on your own machine or an isolated environment you
@@ -13,6 +14,9 @@ The security model assumes:
 - **Production and staging targets are denied for experiment execution in
   v1** (server-side denial at run creation and again in the executor).
   The Demo Fintech target is classified `LOCAL_DEVELOPMENT`.
+- **Controlled fault injection remains LOCAL_DEVELOPMENT only.** Fault
+  plans are bounded server-side and production/staging fault targeting is
+  denied — there is no configuration that turns this on for v1.
 - The Demo Target's non-production credentials in `.env.example` are
   placeholders for local development only — they are not secrets and must
   never be reused anywhere real.
@@ -25,29 +29,39 @@ Full model: [docs/security-boundaries.md](docs/security-boundaries.md),
 
 - **DNS rebinding (TOCTOU):** destination validation resolves and checks
   addresses before connecting, but a second, attacker-influenced
-  resolution inside the HTTP stack cannot be fully excluded. The primary
-  control is **network egress isolation** — run executors where they have
-  no route to systems you care about.
+  resolution inside the HTTP stack cannot be fully excluded. This
+  residual is documented, not hand-waved; the primary control is
+  **network egress isolation** — run executors where they have no route
+  to systems you care about.
 - **Evidence integrity is detection, not prevention:** the hash-chained
   evidence log detects post-hoc modification by the application's
-  writers; it is not tamper-proofing, and database records are logically
-  append-only, not immutable.
+  writers. It is detection-oriented integrity, **not** legal
+  non-repudiation, and database records are logically append-only, not
+  immutable.
 - **Fault plans are LOCAL_DEVELOPMENT-only** and bounded server-side
   (max 10 triggers, 15-minute TTL, one active kind per document).
 
 ## Reporting a vulnerability
 
-**Owner decision pending:** the public security contact (dedicated
-mailbox or GitHub Security Advisories enablement) is a release decision
-recorded in `docs/reports/phase-11-self-audit.md` §17 (owner
-decisions). Until a public
-repository exists, report findings directly to the maintainer through
-the private channel agreed with the project owner.
+**Intended public channel: GitHub Private Vulnerability Reporting** on
+the project's public GitHub repository.
+
+- This channel is the intended disclosure mechanism **once the real
+  public repository exists**; it **must be enabled before public
+  publication**. It is not verified as enabled yet — the public
+  repository does not exist at the time of this writing.
+- Until that channel exists, do **not** disclose findings publicly.
+  There is currently **no dedicated security email**; none is invented
+  here on purpose. A real fallback channel, if the owner ever chooses
+  one, will be documented here — never guessed.
+- When the channel is live: report through GitHub Private Vulnerability
+  Reporting only. Do not open public issues containing exploit details,
+  secrets, or credentials — keep proof-of-concept material inside the
+  private report.
 
 Please include: affected component(s), reproduction steps, and — if you
 can — a failing check against the real stack (the project's verifiers
-are the accepted way to prove behavior). Do not open public issues for
-unfixed vulnerabilities.
+are the accepted way to prove behavior).
 
 ## What we will not accept as a vulnerability report
 

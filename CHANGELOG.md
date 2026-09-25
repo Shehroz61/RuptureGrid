@@ -9,13 +9,38 @@ semantic protocol versions and are deliberately NOT release versions.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.0.0] — 2026-09-24 (code-ready)
+## [1.0.0] — 2026-09-25 (prepared for v1.0.0 release)
 
-First public release candidate of RuptureGrid. Everything below was
+Prepared for the v1.0.0 public source release of RuptureGrid — not yet
+published; the tag and repository URL do not exist yet. Everything below was
 delivered through phases 0–10, each independently audited and accepted
 (tags `phase-0-accepted` … `phase-10-accepted`); reports live in
 `docs/reports/`. Phase 11 prepared this release without changing product
 semantics.
+
+### Release policy (publication closure)
+
+- Licensed **Apache-2.0** — the official license text is in `LICENSE`.
+  `license` metadata is `Apache-2.0` in the root manifest and in the three
+  workspace manifests that previously carried `UNLICENSED`
+  (`@rupturegrid/controlled-faults`, `@rupturegrid/incident-zero`,
+  `@rupturegrid/showcase`); the remaining workspace manifests, all
+  `private: true`, declare no license field. No copyright-holder identity
+  was invented.
+- **Source-only release:** v1.0.0 publication consists of source,
+  documentation, migrations, tests, and verifier/showcase source. It
+  does NOT include npm package publication, Docker image publication,
+  prebuilt binaries, bundled FFmpeg binaries, or generated showcase
+  media.
+- Security disclosure is intended to run through **GitHub Private
+  Vulnerability Reporting** on the future public repository, enabled
+  before publication. No security email exists or is invented
+  (see `SECURITY.md`).
+- No repository/homepage/bugs URL is declared anywhere: the real public
+  repository does not exist yet and none is invented.
+- `ffmpeg-static` remains a development/showcase dependency only; no
+  FFmpeg binary is bundled or distributed as a RuptureGrid release
+  artifact (see `THIRD_PARTY_NOTICES.md`).
 
 ### Added — platform
 
@@ -107,8 +132,9 @@ semantics.
 
 See `docs/reports/phase-11-self-audit.md` §"Remaining risks" and
 `docs/security-boundaries.md` §5 (DNS-rebinding TOCTOU honesty, egress
-isolation as primary control). Publication of this repository (license,  public URL, security contact) requires owner decisions recorded in the
-Phase 11 report.
+isolation as primary control). Remaining publication actions (real
+public repository URL, Private Vulnerability Reporting enablement) are
+tracked in `docs/reports/release-checklist.md`.
 
 Version headings above intentionally carry no link targets: no public
 repository URL has been assigned (owner decision), so no comparison links

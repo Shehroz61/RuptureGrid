@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "Phase 9 one-command controlled-faults verifier (docs/controlled-faults.md §8): executes real PRE_MUTATION_REJECTION and POST_MUTATION response-loss scenarios against the real stack and verifies configured/activated counts, transport outcomes, sideEffectKnowledge, retry counts, target inspection, business effect counts, invariant verdicts, Finding counts, timeline, evidence integrity, and reproduction intent",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

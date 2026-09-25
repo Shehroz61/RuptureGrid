@@ -13,7 +13,6 @@
 // (idempotency — no duplicate business executions).
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { execSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createControlDb } from '@rupturegrid/control-db';
@@ -28,6 +27,7 @@ import {
   runReconcileSweep,
 } from '@rupturegrid/engine';
 import { loadTestEnv } from './helpers/env.js';
+import { redisOutageControl } from './helpers/redis-outage.js';
 import {
   getControlPrisma,
   registerLocalFixtureTarget,
@@ -44,8 +44,10 @@ let controlDb: ControlDb;
 let processor: StepProcessor;
 let consumer: ExecutionWorkerHandle | null = null;
 let queue: ReturnType<typeof createExecutionQueue>;
+let outage: ReturnType<typeof redisOutageControl>;
 
 beforeAll(async () => {
+  outage = redisOutageControl();
   server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true, path: new URL(req.url ?? '/', 'http://f').pathname }));
@@ -75,23 +77,18 @@ afterAll(async () => {
 });
 
 function redisContainerStop(): void {
-  // Compose service is "redis"; the container name is the compose-
-  // default (project-service-index). Stop by exact container name so
-  // we never touch unrelated containers.
-  execSync('docker stop rupturegrid-redis-1', { stdio: 'pipe' });
+  // Shared outage-control abstraction: exact resolved target only —
+  // CI job service container (explicit ID) or the repo's own compose
+  // redis container (label-resolved). Never a guessed container name.
+  outage.stop();
 }
 
 function redisContainerStart(): void {
-  execSync('docker start rupturegrid-redis-1', { stdio: 'pipe' });
+  outage.start();
 }
 
 function redisReachable(): boolean {
-  try {
-    execSync('docker exec rupturegrid-redis-1 redis-cli ping', { stdio: 'pipe', timeout: 5_000 });
-    return true;
-  } catch {
-    return false;
-  }
+  return outage.reachable();
 }
 
 describe('Redis outage → durable creation → reconciliation recovery (§40)', () => {

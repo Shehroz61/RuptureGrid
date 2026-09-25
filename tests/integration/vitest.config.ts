@@ -24,8 +24,8 @@ export default defineConfig({
     testTimeout: 30_000,
     hookTimeout: 30_000,
     // Integration files coordinate SHARED infrastructure (e.g. the
-    // Redis outage test stops the compose redis service); they must
-    // not run concurrently with each other.
+    // Redis outage tests stop the resolved exact redis container);
+    // they must not run concurrently with each other.
     fileParallelism: false,
   },
 });

@@ -16,6 +16,7 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { loadTestEnv } from './helpers/env.js';
+import { redisOutageControl } from './helpers/redis-outage.js';
 
 const API_DIST = join('apps', 'api', 'dist', 'main.js');
 // Dedicated test ports, deliberately outside the development range
@@ -157,10 +158,12 @@ describe('API readiness with healthy dependencies', () => {
 
 describe('API readiness when a dependency is unavailable', () => {
   it('reports not_ready with honest per-dependency status when Redis stops', async () => {
-    // Stop Redis for the bounded window of this test only; the compose
-    // service is restored in this test's finally block.
-    const { execSync } = await import('node:child_process');
-    execSync('docker compose stop redis', { cwd: process.cwd(), stdio: 'pipe' });
+    // Take the shared Redis genuinely DOWN for the bounded window of
+    // this test only, by EXACT target (CI job service container or the
+    // repo's compose project — never a guessed name, never an unrelated
+    // container). Restored in this test's finally block.
+    const redis = redisOutageControl();
+    redis.stop();
     try {
       const deadline = Date.now() + 20_000;
       let observedNotReady = false;
@@ -174,7 +177,7 @@ describe('API readiness when a dependency is unavailable', () => {
       }
       expect(observedNotReady).toBe(true);
     } finally {
-      execSync('docker compose start redis', { cwd: process.cwd(), stdio: 'pipe' });
+      redis.start();
     }
 
     // After Redis returns, readiness must recover — bounded poll.

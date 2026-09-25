@@ -28,6 +28,20 @@ function requireValue(name: string, missing: string[]): string {
 }
 
 /**
+ * Explicit Redis outage-control target for CI (portability repair).
+ * GitHub Actions exports the CURRENT JOB's Redis service container ID
+ * via ${{ job.services.redis.id }} (official job-context semantics);
+ * the outage tests then control exactly that container and never any
+ * other. Absent (local development), the shared redis-outage helper
+ * resolves the repo's own compose project redis container by label.
+ * Returns null when unset/empty so "explicit mode" is unambiguous.
+ */
+export function getTestRedisContainerId(): string | null {
+  const value = process.env.RUPTUREGRID_TEST_REDIS_CONTAINER_ID;
+  return value === undefined || value.trim() === '' ? null : value.trim();
+}
+
+/**
  * Loads and returns the integration-test environment. Throws a clear
  * error if the required variables are missing so the failure is
  * actionable rather than mysterious.

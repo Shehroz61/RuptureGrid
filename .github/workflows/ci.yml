@@ -101,6 +101,17 @@ jobs:
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
 
+      # Real Chromium for the REAL browser suites (R-08: no mocked
+      # browser substitutes). Playwright 1.63.0 is a root devDependency;
+      # its registry pins the exact chromium + chromium_headless_shell
+      # revisions it launches (the 1.63.0 failure showed
+      # chromium_headless_shell-1243 missing from the fresh runner).
+      # `--with-deps` also installs the OS libraries those binaries need
+      # on the runner (official Playwright CI guidance), so the browser
+      # tests keep running REAL Chromium in CI.
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
       - name: Format check
         run: pnpm format:check
 
@@ -121,6 +132,14 @@ jobs:
 
       - name: Integration suites (real infrastructure)
         run: pnpm test:integration
+        # Redis-outage control for CI (official job-context semantics:
+        # job.services.<service_id>.id is the CURRENT job's service
+        # container ID). Exporting it makes the outage target EXPLICIT:
+        # the tests stop/start exactly this container and never any
+        # other. Unset locally, where the tests resolve the repo's own
+        # compose project redis container by compose labels instead.
+        env:
+          RUPTUREGRID_TEST_REDIS_CONTAINER_ID: ${{ job.services.redis.id }}
 
       - name: Incident Zero golden verifier
         run: pnpm incident-zero:verify

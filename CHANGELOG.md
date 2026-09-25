@@ -9,11 +9,56 @@ semantic protocol versions and are deliberately NOT release versions.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.0.0] — 2026-09-25 (prepared for v1.0.0 release)
+## [1.0.1] — 2026-09-26 (maintenance release)
 
-Prepared for the v1.0.0 public source release of RuptureGrid — not yet
-published or tagged. Everything below was
-delivered through phases 0–10, each independently audited and accepted
+**Maintenance release — post-v1.0.0 CI/release-pipeline repairs only.**
+v1.0.1 is NOT a product-feature release; it contains only the CI and
+release-pipeline repairs listed below.
+
+- **Product/runtime semantics are unchanged** — no production or runtime
+  behavior change, no new product feature, no protocol change.
+- **Migrations are unchanged** — no schema change ships in this release.
+- **v1.0.0 remains the original release** — the published `v1.0.0` tag is
+  neither moved nor recreated nor modified by this release.
+- **Distribution remains source-only** — source, documentation,
+  migrations, tests, and verifier/showcase source; still no npm package
+  publication, Docker image publication, prebuilt binaries, bundled
+  FFmpeg binaries, or generated showcase media (release policy unchanged
+  from [1.0.0] below).
+- The root `package.json` `version` field is the only release-version
+  string changed (1.0.0 → 1.0.1); protocol/schema version strings
+  (`controlled-fault/v1`, normalizer and derivation versions,
+  `EXECUTION_ENGINE_VERSION`) are untouched.
+
+### Fixed — post-v1.0.0 CI/release-pipeline repairs (no product-semantics change)
+
+- **GitHub Actions workflow schema repair:** removed the invalid empty
+  `jobs.gates.env` mapping that made workflows fail before any job
+  started.
+- **Test classification repair:** the real-PostgreSQL RawObservation
+  identity suite (`packages/evidence/src/observation-identity.test.ts`)
+  was misclassified as a unit test by the root unit glob and failed on
+  clean CI databases (Prisma P2021: relation `control.target_origin` does
+  not exist) because unit tests intentionally run before migrations. The
+  suite moved to `tests/integration/observation-identity.test.ts` on the
+  shared integration harness; the unit suite is now 32 files / 313 tests
+  and the integration suite 24 files / 158 tests. Counts changed only
+  through the reclassification; no assertion was weakened and no
+  migration or production-semantics change shipped.
+- **CI browser portability:** fresh GitHub runners now install Playwright
+  Chromium through the verified CI installation path; browser tests
+  remain real Chromium tests.
+- **Redis outage test portability:** local-compose/hardcoded-container
+  assumptions were removed; the shared Redis outage helper now safely
+  resolves either the exact GitHub Actions service-container ID or the
+  local RuptureGrid Docker Compose Redis. Outage tests remain real
+  infrastructure tests.
+
+## [1.0.0] — 2026-09-25
+
+The v1.0.0 public source release of RuptureGrid — published and tagged
+(`v1.0.0`). Everything below was delivered
+through phases 0–10, each independently audited and accepted
 (tags `phase-0-accepted` … `phase-10-accepted`); reports live in
 `docs/reports/`. Phase 11 prepared this release without changing product
 semantics.
@@ -124,18 +169,6 @@ semantics.
   complete quickstart with no hidden steps, verification-command table,
   current repository layout.
 
-### Fixed — post-publication CI repair
-
-- Test classification: `packages/evidence/src/observation-identity.test.ts`
-  (the real-PostgreSQL RawObservation identity suite) was misclassified as
-  a unit test by the root unit glob and failed on clean CI databases
-  (Prisma P2021: relation `control.target_origin` does not exist) because
-  unit tests intentionally run before migrations. The suite moved to
-  `tests/integration/observation-identity.test.ts` on the shared
-  integration harness; unit = 32 files / 313 tests, integration = 24 files
-  / 158 tests. Counts changed only through the reclassification; no
-  assertion, migration, or production-semantics change.
-
 ### Security
 
 - No secrets are committed; `.env` is gitignored and `.env.example`
@@ -150,6 +183,7 @@ isolation as primary control). The remaining publication to-do list
 lives in `docs/reports/release-checklist.md`.
 
 Version headings above intentionally carry no link targets: `[1.0.0]` is
-the initial release with no prior version to compare against. Comparison
-links in future entries may anchor against the public repository
-(`https://github.com/Shehroz61/RuptureGrid`).
+the initial release with no prior version to compare against, and
+`[1.0.1]` is a maintenance increment containing no product-code change to
+diff against. Comparison links in future entries may anchor against the
+public repository (`https://github.com/Shehroz61/RuptureGrid`).

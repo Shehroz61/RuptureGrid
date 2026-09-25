@@ -68,7 +68,7 @@ Every host port is environment-configurable — see `.env.example`. All first-ru
 | Command | What it proves |
 |---|---|
 | `pnpm verify` | format + lint (workspace **and** root tests) + typecheck (workspace **and** test programs) + unit tests + build |
-| `pnpm test:integration` | 23 real-infrastructure suites over real PostgreSQL ×2, Redis, HTTP, browser — requires `pnpm infra:up` and `pnpm db:migrate` |
+| `pnpm test:integration` | 24 real-infrastructure suites over real PostgreSQL ×2, Redis, HTTP, browser — requires `pnpm infra:up` and `pnpm db:migrate` |
 | `pnpm incident-zero:verify` | the golden Incident Zero scenario end to end, exit 0 only on verified truth |
 | `pnpm controlled-faults:verify` | pre-mutation rejection + post-mutation response-loss fault scenarios, including honest `INDETERMINATE` outcomes and zero unsafe retries |
 | `pnpm showcase:generate` | browser showcase over a fresh real golden run (`--video` composes the H.264 walkthrough); artifacts land in gitignored `.artifacts/showcase/` |

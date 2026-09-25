@@ -21,31 +21,19 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createControlDb } from '@rupturegrid/control-db';
-import type { ControlDb, PrismaClient } from '@rupturegrid/control-db';
+import type { ControlDb } from '@rupturegrid/control-db';
 import { createExperiment, createRun, registerTarget } from '@rupturegrid/engine';
 import { EvidenceIntegrityConflictError, RawObservationStore } from '@rupturegrid/evidence';
-import { loadEnvironment } from '@rupturegrid/config';
+import { loadTestEnv } from './helpers/env.js';
+import { getControlPrisma, uniqueName, uniqueTestOrigin } from './helpers/execution-harness.js';
 
-loadEnvironment();
-const env = {
-  controlDatabaseUrl: requireEnv('CONTROL_DATABASE_URL'),
-};
+const env = loadTestEnv();
+const prisma = getControlPrisma();
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (value === undefined || value === '') {
-    throw new Error(`${name} is required (copy .env.example to .env and run pnpm infra:up)`);
-  }
-  return value;
-}
-
-let db: ControlDb;
-let prisma: PrismaClient;
 let secondDb: ControlDb | null = null;
+let targetId = '';
 
 beforeAll(async () => {
-  db = createControlDb(env.controlDatabaseUrl);
-  prisma = db.prisma;
   // An INDEPENDENT second client proves committed visibility across
   // connections (same host/port/database — verified in the identity
   // probe below, without printing any credential material).
@@ -53,34 +41,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await db?.disconnect();
   await secondDb?.disconnect();
 });
 
-let targetId = '';
-let seq = 0;
-
-/**
- * A collision-free loopback origin for a target this suite never
- * connects to. The previous time-bucketed port collided with other
- * runs' registrations on the persistent shared dev database (origin
- * authority is global by design), so uniqueness is verified against
- * the authoritative table BEFORE registering — bounded regeneration.
- */
-async function uniqueTestOrigin(client: PrismaClient): Promise<string> {
-  for (let attempt = 0; attempt < 16; attempt += 1) {
-    const origin = `http://127.0.0.1:${35000 + Math.floor(Math.random() * 20000)}`;
-    const clash = await client.targetOrigin.findUnique({ where: { origin }, select: { id: true } });
-    if (clash === null) {
-      return origin;
-    }
-  }
-  throw new Error('uniqueTestOrigin: exhausted bounded regeneration attempts');
-}
-
 beforeAll(async () => {
   const target = await registerTarget(prisma, {
-    displayName: `identity-target-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+    displayName: uniqueName('identity-target'),
     environment: 'LOCAL_DEVELOPMENT',
     origins: [await uniqueTestOrigin(prisma)],
     contractKind: 'GENERIC_HTTP',
@@ -89,9 +55,8 @@ beforeAll(async () => {
 });
 
 async function freshRun(): Promise<{ runId: string; stepRunId: string }> {
-  seq += 1;
   const created = await createExperiment(prisma, {
-    name: `identity-experiment-${Date.now()}-${seq}`,
+    name: uniqueName('identity-experiment'),
     targetId,
     document: {
       steps: [

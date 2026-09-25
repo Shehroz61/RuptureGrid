@@ -94,8 +94,8 @@ semantics.
 - Showcase automation (`pnpm showcase:generate`, optional `--video`):
   real browser captures over a fresh verifier-produced run, every artifact
   content-gated and provenance-stamped; all output gitignored.
-- 33 unit test files (319 tests) and 23 real-infrastructure integration
-  test files (152 tests) — real PostgreSQL ×2, real Redis, real TCP HTTP,
+- 32 unit test files (313 tests) and 24 real-infrastructure integration
+  test files (158 tests) — real PostgreSQL ×2, real Redis, real TCP HTTP,
   real browser; no mocks stand in for infrastructure semantics.
 - GitHub Actions CI running the same gates on real PostgreSQL ×2 and Redis
   services (`.github/workflows/ci.yml`).
@@ -123,6 +123,18 @@ semantics.
 - README rewritten to the truthful v1.0 state: accepted phase status,
   complete quickstart with no hidden steps, verification-command table,
   current repository layout.
+
+### Fixed — post-publication CI repair
+
+- Test classification: `packages/evidence/src/observation-identity.test.ts`
+  (the real-PostgreSQL RawObservation identity suite) was misclassified as
+  a unit test by the root unit glob and failed on clean CI databases
+  (Prisma P2021: relation `control.target_origin` does not exist) because
+  unit tests intentionally run before migrations. The suite moved to
+  `tests/integration/observation-identity.test.ts` on the shared
+  integration harness; unit = 32 files / 313 tests, integration = 24 files
+  / 158 tests. Counts changed only through the reclassification; no
+  assertion, migration, or production-semantics change.
 
 ### Security
 

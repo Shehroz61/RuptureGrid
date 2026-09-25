@@ -70,11 +70,6 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
-    env:
-      # Non-production dummy credentials, identical to .env.example —
-      # CI runs the exact documented local configuration. The .env file
-      # is materialized from the template in the first run step below.
-
     steps:
       - uses: actions/checkout@v4
 
@@ -88,8 +83,8 @@ jobs:
           cache: pnpm
 
       # The .env template already documents the CI-identical non-production
-      # credentials; copy it verbatim so environment loading is the same
-      # code path as a fresh clone (no CI-specific env construction).
+      # dummy credentials; copy it verbatim so environment loading is the
+      # same code path as a fresh clone (no CI-specific env construction).
       - name: Write non-production .env from template
         run: cp .env.example .env
 

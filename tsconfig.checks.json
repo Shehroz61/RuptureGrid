@@ -1,0 +1,48 @@
+{
+  // Phase 11 release gate: typecheck for everything the package tsconfigs
+  // exclude. Covers tests/unit/**, tests/integration/** (incl. helpers) and
+  // every package-local *.test.ts — closing the Phase 10 audit blind spot
+  // (AUDIT-1 class): test files were previously invisible to `pnpm typecheck`.
+  //
+  // Source-of-truth rules for this file:
+  // - noEmit: typecheck only, never emits artifacts (no double compilation).
+  // - strictness is inherited unchanged from tsconfig.base.json — never loosened.
+  // - workspace packages resolve from SOURCE via paths, mirroring the vitest
+  //   aliases in vitest.config.ts / tests/integration/vitest.config.ts, so no
+  //   package build is required before test typechecking.
+  // - Prisma generated clients must exist first (pnpm db:generate, part of
+  //   `pnpm typecheck`).
+  // - `types` is intentionally NOT restricted: type packages resolve from the
+  //   workspace packages that declare them (root has no @types/* by design).
+  // - Decorator options match apps/api/tsconfig.json: several integration
+  //   suites embed the real NestJS Control Plane API in-process by importing
+  //   apps/api/src sources directly, so this program must typecheck those
+  //   files with the same options their own package uses. No other tracked
+  //   file uses decorators; the flags only enable (never weaken) checking.
+  // - apps/web sources are NOT included here: the web presentation modules
+  //   are bundler-context ESM (apps/web/tsconfig.json uses module esnext /
+  //   bundler resolution / dom lib) and cannot compile under NodeNext. The
+  //   single UI-semantics contract test that imports them is typechecked by
+  //   tsconfig.checks.ui.json with apps/web's own options.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "baseUrl": ".",
+    "paths": {
+      "@rupturegrid/shared": ["packages/shared/src/index.ts"],
+      "@rupturegrid/config": ["packages/config/src/index.ts"],
+      "@rupturegrid/logger": ["packages/logger/src/index.ts"],
+      "@rupturegrid/control-db": ["packages/control-db/src/index.ts"],
+      "@rupturegrid/demo-db": ["packages/demo-db/src/index.ts"],
+      "@rupturegrid/queue": ["packages/queue/src/index.ts"],
+      "@rupturegrid/engine": ["packages/engine/src/index.ts"],
+      "@rupturegrid/evidence": ["packages/evidence/src/index.ts"],
+      "@rupturegrid/forensics": ["packages/forensics/src/index.ts"],
+      "@rupturegrid/incident-zero": ["packages/incident-zero/src/index.ts"]
+    }
+  },
+  "include": ["tests/**/*.ts", "packages/*/src/**/*.test.ts", "packages/*/src/**/*.d.ts"],
+  "exclude": ["tests/unit/ui-semantics.test.ts"]
+}

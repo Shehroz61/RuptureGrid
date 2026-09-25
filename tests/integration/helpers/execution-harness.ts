@@ -26,6 +26,18 @@ export function getControlPrisma(): PrismaClient {
   return cachedPrisma;
 }
 
+/**
+ * Narrows an optional id for use in a typed Prisma where-clause. Fails
+ * the suite with an explicit prerequisite error instead of silently
+ * querying with an undefined id.
+ */
+export function requireId(value: string | undefined, label: string): string {
+  if (value === undefined || value === '') {
+    throw new Error(`prerequisite missing: ${label} has no id`);
+  }
+  return value;
+}
+
 /** Poll until the predicate holds (bounded). */
 export async function waitFor<T>(
   predicate: () => Promise<T | null | undefined | false>,

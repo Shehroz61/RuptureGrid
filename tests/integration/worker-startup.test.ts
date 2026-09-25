@@ -13,8 +13,6 @@ import { describe, expect, it } from 'vitest';
 import { startWorker } from '../../apps/worker/dist/lifecycle.js';
 import { loadTestEnv } from './helpers/env.js';
 
-let env: ReturnType<typeof loadTestEnv>;
-
 describe('worker lifecycle with healthy dependencies', () => {
   it('emits a structured ready event after successful startup and shuts down cleanly', async () => {
     process.env.CONTROL_DATABASE_URL = loadTestEnv().controlDatabaseUrl;

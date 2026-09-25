@@ -19,7 +19,7 @@ import { RawObservationStore, runRunAnalysis, verifyRunEvidenceChain } from '@ru
 import { loadTestEnv } from './helpers/env.js';
 import { startDemoProcess, createDemoClient } from './helpers/demo-harness.js';
 import type { DemoClient, RunningDemo } from './helpers/demo-harness.js';
-import { getControlPrisma, waitFor } from './helpers/execution-harness.js';
+import { getControlPrisma, requireId, waitFor } from './helpers/execution-harness.js';
 import {
   createAndDispatchRun,
   incidentZeroSteps,
@@ -92,7 +92,7 @@ async function runIncidentZero(
     incidentZeroSteps({ mode, repeat, concurrency, captureLineage: true }),
   );
   const createInvocation = await prisma.stepInvocation.findFirstOrThrow({
-    where: { stepRunId: made.stepRunIds[2], responseBody: { not: null } },
+    where: { stepRunId: requireId(made.stepRunIds[2], 'create step'), responseBody: { not: null } },
     orderBy: { sequence: 'asc' },
   });
   const body = JSON.parse(createInvocation.responseBody ?? '{}') as {
@@ -200,9 +200,15 @@ describe('INV-IZ-1 real-scenario verdicts', () => {
           },
         },
       });
+      const setupSteps = incidentZeroSteps({ mode: 'VULNERABLE', captureLineage: false });
+      const setupStep0 = setupSteps[0];
+      const setupStep1 = setupSteps[1];
+      if (setupStep0 === undefined || setupStep1 === undefined) {
+        throw new Error('prerequisite missing: incident-zero setup steps missing');
+      }
       const made = await runAndWait('p4-two-payments', [
-        incidentZeroSteps({ mode: 'VULNERABLE', captureLineage: false })[0],
-        incidentZeroSteps({ mode: 'VULNERABLE', captureLineage: false })[1],
+        setupStep0,
+        setupStep1,
         paymentStep('create-payment-a'),
         deliverStep('deliver-a', 'create-payment-a'),
         paymentStep('create-payment-b'),
@@ -211,11 +217,17 @@ describe('INV-IZ-1 real-scenario verdicts', () => {
         lineageStep('create-payment-b'),
       ]);
       const createA = await prisma.stepInvocation.findFirstOrThrow({
-        where: { stepRunId: made.stepRunIds[2], responseBody: { not: null } },
+        where: {
+          stepRunId: requireId(made.stepRunIds[2], 'create-a step'),
+          responseBody: { not: null },
+        },
         orderBy: { sequence: 'asc' },
       });
       const createB = await prisma.stepInvocation.findFirstOrThrow({
-        where: { stepRunId: made.stepRunIds[4], responseBody: { not: null } },
+        where: {
+          stepRunId: requireId(made.stepRunIds[4], 'create-b step'),
+          responseBody: { not: null },
+        },
         orderBy: { sequence: 'asc' },
       });
       const paymentA =
@@ -265,7 +277,10 @@ describe('INV-IZ-1 real-scenario verdicts', () => {
         incidentZeroSteps({ mode: 'SECURE', repeat: 1, concurrency: 1, captureLineage: false }),
       );
       const createInvocation = await prisma.stepInvocation.findFirstOrThrow({
-        where: { stepRunId: partial.stepRunIds[2], responseBody: { not: null } },
+        where: {
+          stepRunId: requireId(partial.stepRunIds[2], 'create step'),
+          responseBody: { not: null },
+        },
         orderBy: { sequence: 'asc' },
       });
       const partialPaymentId =
@@ -468,13 +483,17 @@ describe('Phase 4 APIs (deterministic evidence/evaluation surfaces)', () => {
     const base = 'http://127.0.0.1:3131';
 
     try {
-      const observations = await (await fetch(`${base}/api/v1/runs/${runId}/observations`)).json();
+      const observations = (await (
+        await fetch(`${base}/api/v1/runs/${runId}/observations`)
+      ).json()) as { count: number };
       expect(observations.count).toBeGreaterThanOrEqual(7);
-      const events = await (await fetch(`${base}/api/v1/runs/${runId}/events`)).json();
+      const events = (await (await fetch(`${base}/api/v1/runs/${runId}/events`)).json()) as {
+        count: number;
+      };
       expect(events.count).toBeGreaterThan(0);
-      const relationships = await (
+      const relationships = (await (
         await fetch(`${base}/api/v1/runs/${runId}/relationships`)
-      ).json();
+      ).json()) as { count: number };
       expect(relationships.count).toBeGreaterThan(0);
       const analysis = await fetch(`${base}/api/v1/runs/${runId}/analyze`, { method: 'POST' });
       expect(analysis.status).toBe(201);
@@ -484,7 +503,9 @@ describe('Phase 4 APIs (deterministic evidence/evaluation surfaces)', () => {
       expect(
         analysisBody.evaluations.some((e) => e.subjectKey === paymentId && e.verdict === 'FAIL'),
       ).toBe(true);
-      const invariants = await (await fetch(`${base}/api/v1/runs/${runId}/invariants`)).json();
+      const invariants = (await (
+        await fetch(`${base}/api/v1/runs/${runId}/invariants`)
+      ).json()) as { batches: Array<{ invariantKey?: string }> };
       // Phase 9: analysis is multi-invariant — one batch per registered
       // invariant (INV-IZ-1 plus the Phase 9 INV-DF evaluators). The
       // INV-IZ-1 FAIL expectation above is unchanged and authoritative.
@@ -494,7 +515,9 @@ describe('Phase 4 APIs (deterministic evidence/evaluation surfaces)', () => {
           (batch: { invariantKey?: string }) => batch.invariantKey === 'INV-IZ-1',
         ),
       ).toBe(true);
-      const integrity = await (await fetch(`${base}/api/v1/runs/${runId}/integrity`)).json();
+      const integrity = (await (await fetch(`${base}/api/v1/runs/${runId}/integrity`)).json()) as {
+        chainValid: boolean;
+      };
       expect(integrity.chainValid).toBe(true);
 
       // Vocabulary boundary: no Finding/CRITICAL/SURVIVED concept exists

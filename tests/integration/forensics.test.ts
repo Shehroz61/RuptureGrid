@@ -27,20 +27,17 @@ import { createExecutionQueue } from '@rupturegrid/queue';
 import { runRunAnalysis } from '@rupturegrid/evidence';
 import {
   deriveRunForensics,
-  loadFindingProof,
   compareRuns,
   RunComparisonError,
   FINDING_RULE_VERSION,
-  TIMELINE_DERIVATION_VERSION,
   FINDING_REASON_CODES,
   TIMELINE_ENTRY_KINDS,
-  TIMELINE_ORDERING_BASES,
 } from '@rupturegrid/forensics';
 import { createExperiment, createRun, markRunDispatching } from '@rupturegrid/engine';
 import { loadTestEnv } from './helpers/env.js';
 import { startDemoProcess, createDemoClient } from './helpers/demo-harness.js';
 import type { DemoClient, RunningDemo } from './helpers/demo-harness.js';
-import { getControlPrisma, uniqueName, waitFor } from './helpers/execution-harness.js';
+import { getControlPrisma, requireId, uniqueName, waitFor } from './helpers/execution-harness.js';
 import {
   createAndDispatchRun,
   incidentZeroSteps,
@@ -106,7 +103,7 @@ async function runIncidentZero(
     incidentZeroSteps({ mode, repeat, concurrency, captureLineage: true }),
   );
   const createInvocation = await prisma.stepInvocation.findFirstOrThrow({
-    where: { stepRunId: made.stepRunIds[2], responseBody: { not: null } },
+    where: { stepRunId: requireId(made.stepRunIds[2], 'create step'), responseBody: { not: null } },
     orderBy: { sequence: 'asc' },
   });
   const body = JSON.parse(createInvocation.responseBody ?? '{}') as {
@@ -143,6 +140,9 @@ describe('Phase 5 — VULNERABLE: FAIL evaluation ⇒ one deterministic Finding 
       const result = await deriveRunForensics(prisma, runId);
       expect(result.findings).toHaveLength(1);
       const finding = result.findings[0];
+      if (finding === undefined) {
+        throw new Error('prerequisite missing: expected exactly one finding');
+      }
       expect(finding.subjectKey).toBe(paymentId);
       expect(finding.reasonCode).toBe(FINDING_REASON_CODES.duplicateEquivalentFinancialEffect);
       expect(finding.invariantEvaluationId).toBe(
@@ -346,8 +346,12 @@ describe('Phase 5 — idempotency and concurrency (§50/§66/§68)', () => {
       const first = await deriveRunForensics(prisma, runId);
       const second = await deriveRunForensics(prisma, runId);
       expect(second.findings).toHaveLength(1);
-      expect(second.findings[0].id).toBe(first.findings[0].id);
-      expect(second.findings[0].created).toBe(false);
+      const firstFinding = first.findings[0];
+      if (firstFinding === undefined) {
+        throw new Error('prerequisite missing: expected exactly one finding');
+      }
+      expect(second.findings[0]?.id).toBe(firstFinding.id);
+      expect(second.findings[0]?.created).toBe(false);
 
       // Parallel callers race the same unique constraints; every caller
       // converges on the SAME rows (P2002 handled precisely, §70).
@@ -358,7 +362,7 @@ describe('Phase 5 — idempotency and concurrency (§50/§66/§68)', () => {
       ]);
       for (const result of [a, b, c]) {
         expect(result.findings).toHaveLength(1);
-        expect(result.findings[0].id).toBe(first.findings[0].id);
+        expect(result.findings[0]?.id).toBe(firstFinding.id);
       }
       expect(await prisma.finding.count({ where: { runId } })).toBe(1);
       const entryCount = await prisma.forensicTimelineEntry.count({ where: { runId } });
@@ -396,9 +400,13 @@ describe('Phase 5 — idempotency and concurrency (§50/§66/§68)', () => {
         deriveRunForensics(prisma, runId),
         deriveRunForensics(prisma, runId),
       ]);
+      const aFinding = a.findings[0];
+      if (aFinding === undefined) {
+        throw new Error('prerequisite missing: expected exactly one finding');
+      }
       for (const result of [a, b, c]) {
         expect(result.findings).toHaveLength(1);
-        expect(result.findings[0].id).toBe(a.findings[0]?.id);
+        expect(result.findings[0]?.id).toBe(aFinding.id);
       }
       expect(await prisma.finding.count({ where: { runId } })).toBe(1);
       expect(await prisma.reproductionDefinition.count({ where: { runId } })).toBe(1);
@@ -434,7 +442,7 @@ describe('Phase 5 — offline derivation (§77/§78)', () => {
 
       const result = await deriveRunForensics(prisma, runId);
       expect(result.findings).toHaveLength(1);
-      expect(result.findings[0].subjectKey).toBe(paymentId);
+      expect(result.findings[0]?.subjectKey).toBe(paymentId);
       expect(await prisma.forensicTimelineEntry.count({ where: { runId } })).toBeGreaterThan(0);
 
       // Restart the demo for the remaining tests / teardown.
@@ -501,7 +509,12 @@ describe('Phase 5 — timeline ordering and API pagination (§22/§61)', () => {
       );
       expect(all.length).toBeGreaterThan(10);
       for (let i = 1; i < sorted.length; i++) {
-        expect(keyOf(sorted[i]) >= keyOf(sorted[i - 1])).toBe(true);
+        const current = sorted[i];
+        const previous = sorted[i - 1];
+        if (current === undefined || previous === undefined) {
+          throw new Error('prerequisite missing: timeline entry unexpectedly missing');
+        }
+        expect(keyOf(current) >= keyOf(previous)).toBe(true);
       }
 
       // Real API (same construction as the Phase 4 API test).
@@ -562,7 +575,12 @@ describe('Phase 5 — timeline ordering and API pagination (§22/§61)', () => {
         expect(seen).toHaveLength(all.length);
         // Ordered walk, no duplicates.
         for (let i = 1; i < seen.length; i++) {
-          expect(seen[i].occurredAt >= seen[i - 1].occurredAt).toBe(true);
+          const current = seen[i];
+          const previous = seen[i - 1];
+          if (current === undefined || previous === undefined) {
+            throw new Error('prerequisite missing: timeline page entry unexpectedly missing');
+          }
+          expect(current.occurredAt >= previous.occurredAt).toBe(true);
         }
         expect(new Set(seen.map((entry) => entry.occurredAt)).size).toBeGreaterThan(0);
 
@@ -573,7 +591,7 @@ describe('Phase 5 — timeline ordering and API pagination (§22/§61)', () => {
         // Finding detail: full proof via the API.
         expect(findings.count).toBe(1);
         const detail = (await (
-          await fetch(`${base}/api/v1/runs/${runId}/forensics/findings/${findings.findings[0].id}`)
+          await fetch(`${base}/api/v1/runs/${runId}/forensics/findings/${findings.findings[0]?.id}`)
         ).json()) as {
           evaluation: { verdict: string; invariantKey: string };
           evidenceRefs: Array<{ subject: string; sourceId: string }>;
@@ -672,7 +690,10 @@ describe('Phase 5 — run comparison (incident-replay §6)', () => {
         void label;
         await runRunAnalysis(prisma, run.runId);
         const createInvocation = await prisma.stepInvocation.findFirstOrThrow({
-          where: { stepRunId: run.stepRunIds[2], responseBody: { not: null } },
+          where: {
+            stepRunId: requireId(run.stepRunIds[2], 'create step'),
+            responseBody: { not: null },
+          },
           orderBy: { sequence: 'asc' },
         });
         const body = JSON.parse(createInvocation.responseBody ?? '{}') as {

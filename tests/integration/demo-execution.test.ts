@@ -22,6 +22,7 @@
 //     back through the Demo's own inspection API only (R-05)
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { ChildProcess } from 'node:child_process';
 import { createControlDb } from '@rupturegrid/control-db';
 import type { ControlDb } from '@rupturegrid/control-db';
 import { createExecutionQueue } from '@rupturegrid/queue';
@@ -34,7 +35,7 @@ import {
 import { loadTestEnv } from './helpers/env.js';
 import { startDemoProcess, createDemoClient } from './helpers/demo-harness.js';
 import type { DemoClient, RunningDemo } from './helpers/demo-harness.js';
-import { getControlPrisma, uniqueName, waitFor } from './helpers/execution-harness.js';
+import { getControlPrisma, requireId, uniqueName, waitFor } from './helpers/execution-harness.js';
 
 const env = loadTestEnv();
 const prisma = getControlPrisma();
@@ -48,7 +49,7 @@ let client: DemoClient;
 let controlDb: ControlDb;
 let queue: ReturnType<typeof createExecutionQueue>;
 let targetId = '';
-let workerChild: import('node:child_process').ChildProcess | null = null;
+let workerChild: ChildProcess | null = null;
 
 beforeAll(async () => {
   controlDb = createControlDb(env.controlDatabaseUrl);
@@ -247,15 +248,18 @@ describe('execution against the REAL Demo Fintech target (§36/§57)', () => {
       // §63: a deliveryAttemptId per physical invocation was sent (the
       // executor generates it); the Demo APPLIED exactly one event.
       const invocation = await prisma.stepInvocation.findFirstOrThrow({
-        where: { stepRunId: delivery?.id },
+        where: { stepRunId: requireId(delivery?.id, 'delivery step') },
         orderBy: { sequence: 'asc' },
       });
+      if (invocation.invocationIdentity === null) {
+        throw new Error('prerequisite missing: delivery invocation has no invocationIdentity');
+      }
       expect(invocation.invocationIdentity.length).toBeGreaterThanOrEqual(8);
 
       // Demo truth read back through the Demo's OWN inspection API —
       // never the Demo DB (R-05).
       const createInvocation = await prisma.stepInvocation.findFirstOrThrow({
-        where: { stepRunId: steps[2]?.id },
+        where: { stepRunId: requireId(steps[2]?.id, 'create step') },
         orderBy: { sequence: 'asc' },
       });
       const payment = JSON.parse(createInvocation.responseBody ?? '{}') as {
@@ -282,6 +286,9 @@ describe('execution against the REAL Demo Fintech target (§36/§57)', () => {
       const scenario = await client.createCanonicalPayment();
       const event0 = scenario.events[0];
       const event1 = scenario.events[1];
+      if (event0 === undefined || event1 === undefined) {
+        throw new Error('prerequisite missing: canonical scenario must expose both events');
+      }
 
       const repeat = 5;
       const made = await runExperiment('exec-demo-repeat', [
@@ -332,7 +339,7 @@ describe('execution against the REAL Demo Fintech target (§36/§57)', () => {
 
       // 6 physical invocations, 6 distinct deliveryAttemptIds.
       const invocations = await prisma.stepInvocation.findMany({
-        where: { stepRunId: made.stepRunIds[0] },
+        where: { stepRunId: requireId(made.stepRunIds[0], 'repeat step') },
         orderBy: { sequence: 'asc' },
       });
       expect(invocations).toHaveLength(repeat);

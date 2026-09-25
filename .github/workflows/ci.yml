@@ -1,0 +1,134 @@
+# RuptureGrid v1.0 — CI release gates
+#
+# Reproduces the Phase 11 release verification on real infrastructure
+# (R-08: real PostgreSQL x2, real Redis, real HTTP, real queue — never
+# mocked substitutes for infrastructure semantics):
+#
+#   format -> lint (workspace + root tests) -> typecheck (workspace +
+#   test-check programs) -> unit tests -> build -> migrations against
+#   real databases -> integration suites -> Incident Zero verifier ->
+#   Controlled Faults verifier.
+#
+# Every command is the same one a contributor runs locally (see README
+# "Verification commands"); CI adds only infrastructure services and
+# environment plumbing. No secrets are required: the workflow writes a
+# non-production .env from the committed template with fixed dummy dev
+# credentials (the same values .env.example already documents).
+
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# Read-only token: CI runs tests only — no publish, no release, no
+# package/artifact writes (GITHUB_TOKEN defaults could otherwise be
+# broader than needed).
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    services:
+      control-postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: rupturegrid
+          POSTGRES_PASSWORD: rupturegrid_dev_password
+          POSTGRES_DB: rupturegrid
+        ports:
+          - 5443:5432
+        options: >-
+          --health-cmd "pg_isready -U rupturegrid"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      demo-postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: demo
+          POSTGRES_PASSWORD: demo_dev_password
+          POSTGRES_DB: demo_fintech
+        ports:
+          - 5444:5432
+        options: >-
+          --health-cmd "pg_isready -U demo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:8.4
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Non-production dummy credentials, identical to .env.example —
+      # CI runs the exact documented local configuration. The .env file
+      # is materialized from the template in the first run step below.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # Version comes from package.json "packageManager" (pnpm@11.9.0);
+        # no version pin is duplicated here.
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The .env template already documents the CI-identical non-production
+      # credentials; copy it verbatim so environment loading is the same
+      # code path as a fresh clone (no CI-specific env construction).
+      - name: Write non-production .env from template
+        run: cp .env.example .env
+
+      # Create the shadow databases the template's *_SHADOW_DATABASE_URL
+      # entries expect (compose creates them locally; CI services cannot).
+      # PGPASSWORD is the standard non-interactive password channel for
+      # the preinstalled psql client; the init process creates only the
+      # POSTGRES_DB database, so the shadow databases are created here.
+      - name: Create shadow databases
+        run: |
+          psql "postgresql://rupturegrid:rupturegrid_dev_password@127.0.0.1:5443/rupturegrid" -c 'CREATE DATABASE rupturegrid_shadow;'
+          psql "postgresql://demo:demo_dev_password@127.0.0.1:5444/demo_fintech" -c 'CREATE DATABASE demo_fintech_shadow;'
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Lint (workspace + root tests)
+        run: pnpm lint
+
+      - name: Typecheck (workspace + test-check programs)
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test:unit
+
+      - name: Build
+        run: pnpm build
+
+      - name: Apply migrations to real databases
+        run: pnpm db:migrate
+
+      - name: Integration suites (real infrastructure)
+        run: pnpm test:integration
+
+      - name: Incident Zero golden verifier
+        run: pnpm incident-zero:verify
+
+      - name: Controlled Faults verifier
+        run: pnpm controlled-faults:verify

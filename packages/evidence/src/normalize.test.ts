@@ -190,12 +190,14 @@ describe('lineage normalizer', () => {
     expect(types).toContain('demo.wallet-state-observed');
     for (const event of events) {
       expect(event.subjectKey).toBe('PP-canary-payment-000001');
-      expect(event.originNote).toBeUndefined();
+      expect((event.payload as Record<string, unknown>)['originNote']).toBeUndefined();
     }
     const effect = events.find((event) => event.eventType === 'demo.financial-effect-observed');
-    expect(effect?.payload['providerPaymentId']).toBe('PP-canary-payment-000001');
-    expect(effect?.payload['processingAttemptId']).toBe('PA-0001');
-    expect(effect?.payload['amountMinor']).toBe('500000');
+    expect((effect?.payload as Record<string, unknown>)['providerPaymentId']).toBe(
+      'PP-canary-payment-000001',
+    );
+    expect((effect?.payload as Record<string, unknown>)['processingAttemptId']).toBe('PA-0001');
+    expect((effect?.payload as Record<string, unknown>)['amountMinor']).toBe('500000');
   });
 
   it('is deterministic across repeated runs', () => {

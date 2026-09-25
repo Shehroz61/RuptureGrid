@@ -63,8 +63,6 @@ describe('data-ownership separation (contract)', () => {
     // table; its presence proves migrations (not db push) created the
     // schema state.
     const env = loadTestEnv();
-    const { PrismaClient } = await import('@rupturegrid/control-db');
-    void PrismaClient;
     expect(env.controlDatabaseUrl).toBeTruthy();
     expect(env.demoDatabaseUrl).toBeTruthy();
     await expect(controlDb.ping()).resolves.toBeUndefined();

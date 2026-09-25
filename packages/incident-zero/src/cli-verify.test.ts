@@ -30,7 +30,7 @@ import {
   evaluationAssertions,
   frozenIntentAssertions,
 } from './verify-core.js';
-import type { ModeCounts, ModeExpectation } from './verify-core.js';
+import type { ModeCounts } from './verify-core.js';
 
 /** A fully canonical SYNTHETIC vulnerable-mode result (never a real run). */
 function syntheticVulnerableResult(overrides: Partial<GoldenRunResult> = {}): GoldenRunResult {

@@ -9,16 +9,18 @@
 // (docs/controlled-faults.md §3, ADR-0014).
 
 import { describe, expect, it } from 'vitest';
-import { validateExperimentDocument, ExperimentValidationError } from './validate.js';
+import { validateExperimentDocument } from './validate.js';
+import { ExperimentValidationError } from './types.js';
 import { CONTROLLED_FAULT_PLAN_VERSION } from '@rupturegrid/shared';
 
 const LOCAL_TARGET = {
   id: '11111111-1111-1111-1111-111111111111',
-  name: 'demo-target',
-  contractKind: 'DEMO_FINTECH_WEBHOOK',
+  displayName: 'demo-target',
+  contractKind: 'DEMO_FINTECH_WEBHOOK' as const,
   environment: 'LOCAL_DEVELOPMENT' as const,
   credentialRefs: ['DEMO_INSPECTION_TOKEN'],
   origins: [{ origin: 'http://127.0.0.1:45001' }],
+  createdAt: new Date('2026-01-01T00:00:00.000Z'),
 };
 
 function documentWithAction(action: Record<string, unknown>): unknown {

@@ -122,7 +122,9 @@ function attributedLineage(
     payload: { providerEventId: providerEvent.id, providerPaymentId: subjectKey },
     inputHash: id('hash'),
   };
-  gAny.graph.events.push(pe);
+  // The synthetic builder appends into the graph's (readonly-typed) event
+  // list; the mutable alias is test construction, not production mutation.
+  (gAny.graph.events as Array<typeof pe>).push(pe);
   g.relate(payment.id, pe.id, 'describes-payment');
 
   let lastAttemptId: { id: string } | null = null;

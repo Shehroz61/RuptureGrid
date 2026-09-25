@@ -19,7 +19,7 @@ import { canonicalEvidenceHash, verifyRunEvidenceChain } from '@rupturegrid/evid
 import { loadTestEnv } from './helpers/env.js';
 import { startDemoProcess, createDemoClient } from './helpers/demo-harness.js';
 import type { DemoClient, RunningDemo } from './helpers/demo-harness.js';
-import { getControlPrisma, waitFor } from './helpers/execution-harness.js';
+import { getControlPrisma, requireId, waitFor } from './helpers/execution-harness.js';
 import {
   createAndDispatchRun,
   incidentZeroSteps,
@@ -207,7 +207,7 @@ describe('Phase 4 evidence capture (real full stack)', () => {
     const store = new RawObservationStore(prisma);
     const observation = {
       runId: made.runId,
-      stepRunId: made.stepRunIds[0],
+      stepRunId: requireId(made.stepRunIds[0], 'first step run'),
       invocationId: null,
       invocationIdentity: `D-appendonly-${Date.now()}`,
       sequence: 0,

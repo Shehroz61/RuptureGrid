@@ -274,6 +274,9 @@ describe('timeline ordering — time-primary with deterministic ties (§22)', ()
     for (let i = 1; i < ordered.length; i++) {
       const previous = ordered[i - 1];
       const current = ordered[i];
+      if (previous === undefined || current === undefined) {
+        throw new Error('ordered entry unexpectedly missing');
+      }
       const keyPair = (entry: TimelineEntrySpec): string =>
         [
           entry.occurredAt.getTime(),

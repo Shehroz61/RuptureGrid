@@ -59,7 +59,7 @@ describe('redaction policy', () => {
     expect(nested['apiKey']).toBe(REDACTED_MARKER);
     expect(nested['keep']).toBe('plain business value');
     const deeper = (nested['deeper'] as Array<Record<string, unknown>>)[0];
-    expect(deeper['providerSigningSecret']).toBe(REDACTED_MARKER);
+    expect(deeper?.['providerSigningSecret']).toBe(REDACTED_MARKER);
     expect(JSON.stringify(redacted)).not.toContain('canary-secret-value');
     expect(JSON.stringify(redacted)).not.toContain('hunter2canary');
   });

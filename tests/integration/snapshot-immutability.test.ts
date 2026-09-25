@@ -5,14 +5,9 @@
 // after the experiment definition is mutated; Run B sees the new one.
 // Also proves production denial (§12) and content-addressed snapshots.
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { createExperiment, createRun, registerTarget, RunCreationError } from '@rupturegrid/engine';
-import {
-  getControlPrisma,
-  uniqueName,
-  uniqueTestOrigin,
-  waitFor,
-} from './helpers/execution-harness.js';
+import { getControlPrisma, uniqueName, uniqueTestOrigin } from './helpers/execution-harness.js';
 
 const prisma = getControlPrisma();
 

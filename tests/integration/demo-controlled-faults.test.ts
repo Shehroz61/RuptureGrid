@@ -18,7 +18,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadTestEnv } from './helpers/env.js';
 import type { TestEnv } from './helpers/env.js';
-import { createDemoClient, startDemoProcess } from './helpers/demo-harness.js';
+import { createDemoClient, scenarioEvent, startDemoProcess } from './helpers/demo-harness.js';
 import type { DemoClient, RunningDemo } from './helpers/demo-harness.js';
 import { CONTROLLED_FAULT_PLAN_VERSION } from '@rupturegrid/shared';
 
@@ -171,9 +171,9 @@ describe('phase 9 demo fault hooks (real TCP sockets)', () => {
     await armFault('PRE_MUTATION_REJECTION', 1);
 
     const outcome = await deliverRawSocketOutcome(
-      scenario.events[0].payload,
+      scenarioEvent(scenario, 0).payload,
       'D-p9-pre-00000001',
-      scenario.events[0].signature,
+      scenarioEvent(scenario, 0).signature,
     );
     // Clean, definitive contract rejection — not a transport error.
     expect(outcome.error).toBeNull();
@@ -192,7 +192,10 @@ describe('phase 9 demo fault hooks (real TCP sockets)', () => {
     expect(plan?.triggersUsed).toBe(1);
 
     // Budget exhausted: the next identical delivery succeeds normally.
-    const second = await client.deliverSigned(scenario.events[0].payload, 'D-p9-pre-00000002');
+    const second = await client.deliverSigned(
+      scenarioEvent(scenario, 0).payload,
+      'D-p9-pre-00000002',
+    );
     expect(second.status).toBe(200);
 
     await disarmFault('PRE_MUTATION_REJECTION');
@@ -205,9 +208,9 @@ describe('phase 9 demo fault hooks (real TCP sockets)', () => {
     await armFault('RESPONSE_TRUNCATION', 1);
 
     const outcome = await deliverRawSocketOutcome(
-      scenario.events[0].payload,
+      scenarioEvent(scenario, 0).payload,
       'D-p9-trunc-00000001',
-      scenario.events[0].signature,
+      scenarioEvent(scenario, 0).signature,
     );
     // The client observes a REAL transport failure — never a normal
     // success or a JSON error response.
@@ -241,9 +244,9 @@ describe('phase 9 demo fault hooks (real TCP sockets)', () => {
     await armFault('CRASH_MID_PROCESSING', 1);
 
     const outcome = await deliverRawSocketOutcome(
-      scenario.events[0].payload,
+      scenarioEvent(scenario, 0).payload,
       'D-p9-crash-00000001',
-      scenario.events[0].signature,
+      scenarioEvent(scenario, 0).signature,
     );
     expect(outcome.error).not.toBeNull();
 
@@ -264,25 +267,25 @@ describe('phase 9 demo fault hooks (real TCP sockets)', () => {
     await armFault('PRE_MUTATION_REJECTION', 2);
 
     const first = await deliverRawSocketOutcome(
-      scenario.events[0].payload,
+      scenarioEvent(scenario, 0).payload,
       'D-p9-budget-00000001',
-      scenario.events[0].signature,
+      scenarioEvent(scenario, 0).signature,
     );
     expect(first.status).toBe(409);
 
     // A duplicate deliveryAttemptId would be a contract conflict, so
     // the second trigger uses the OTHER logical event's payload.
     const second = await deliverRawSocketOutcome(
-      scenario.events[1].payload,
+      scenarioEvent(scenario, 1).payload,
       'D-p9-budget-00000002',
-      scenario.events[1].signature,
+      scenarioEvent(scenario, 1).signature,
     );
     expect(second.status).toBe(409);
 
     const third = await deliverRawSocketOutcome(
-      scenario.events[0].payload,
+      scenarioEvent(scenario, 0).payload,
       'D-p9-budget-00000003',
-      scenario.events[0].signature,
+      scenarioEvent(scenario, 0).signature,
     );
     expect(third.status).toBe(200);
 

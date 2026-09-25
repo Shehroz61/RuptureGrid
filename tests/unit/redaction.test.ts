@@ -4,7 +4,6 @@ import {
   maskSensitiveFields,
   maskValue,
   redactUrlPassword,
-  redactUrlLikeStrings,
 } from '@rupturegrid/shared';
 
 describe('redaction — sensitive keys', () => {

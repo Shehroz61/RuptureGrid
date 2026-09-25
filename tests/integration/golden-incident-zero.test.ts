@@ -20,6 +20,19 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+
+// Minimal structural shape of the express middleware factories used to
+// embed the real Control Plane API in-process. Typed locally so the test
+// never needs express type packages to describe this seam.
+type ExpressJsonMiddleware = (options?: {
+  limit?: string;
+  [key: string]: unknown;
+}) => (request: unknown, response: unknown, next: () => void) => void;
+type ExpressUrlencodedMiddleware = (options?: {
+  extended?: boolean;
+  limit?: string;
+  [key: string]: unknown;
+}) => (request: unknown, response: unknown, next: () => void) => void;
 import { createControlDb } from '@rupturegrid/control-db';
 import type { ControlDb } from '@rupturegrid/control-db';
 import { createExecutionQueue } from '@rupturegrid/queue';
@@ -35,7 +48,7 @@ import {
 } from '@rupturegrid/incident-zero';
 import { runGoldenScenario, ensureGoldenTargetRegistration } from '@rupturegrid/incident-zero';
 import { loadTestEnv } from './helpers/env.js';
-import { createDemoClient, startDemoProcess, startPhase4Worker } from './helpers/golden-harness.js';
+import { startDemoProcess, startPhase4Worker } from './helpers/golden-harness.js';
 import type { RunningDemo } from './helpers/demo-harness.js';
 import type { RunningWorker } from './helpers/phase4-harness.js';
 import { uniqueName } from './helpers/execution-harness.js';
@@ -168,16 +181,21 @@ async function startWeb(): Promise<string> {
 // The API origin for UI assertions — the REAL Control Plane API is
 // embedded in-process (same construction as the Phase 5 API test).
 const API_P7_PORT = Number(process.env.API_P7_TEST_PORT ?? '3129');
-let apiBase = `http://127.0.0.1:${API_P7_PORT}`;
+const apiBase = `http://127.0.0.1:${API_P7_PORT}`;
 let apiStarted = false;
 
 async function ensureApi(): Promise<string> {
   if (apiStarted) {
     return apiBase;
   }
+  // Deep import through the api app's own dependency graph (pnpm's
+  // virtual store is not visible from tests/). The module ships no
+  // declaration file at that deep path; the import is typed via the
+  // local structural aliases above.
+  // @ts-expect-error — express deep JS path has no declaration file.
   const expressModule = (await import('../../apps/api/node_modules/express/index.js')) as {
-    json: typeof import('express').json;
-    urlencoded: typeof import('express').urlencoded;
+    json: ExpressJsonMiddleware;
+    urlencoded: ExpressUrlencodedMiddleware;
   };
   const { NestFactory } = await import('../../apps/api/node_modules/@nestjs/core/index.js');
   const { buildAppModule } = await import('../../apps/api/src/app.module.js');
@@ -350,9 +368,13 @@ describe('Phase 7 — vulnerable golden durable truth (outcomes + timeline pagin
       expect(outcomes).toHaveLength(TOTAL_DELIVERIES);
       const byOutcome = new Map<string, number>();
       for (const row of outcomes) {
-        const outcome = (row.payload as Record<string, unknown> | null)['outcome'];
-        expect(typeof outcome).toBe('string');
-        byOutcome.set(outcome as string, (byOutcome.get(outcome as string) ?? 0) + 1);
+        if (row === undefined) {
+          throw new Error('prerequisite missing: outcome row unexpectedly missing');
+        }
+        const outcome = (row.payload as Record<string, unknown> | null) ?? {};
+        const outcomeKind = outcome['outcome'];
+        expect(typeof outcomeKind).toBe('string');
+        byOutcome.set(outcomeKind as string, (byOutcome.get(outcomeKind as string) ?? 0) + 1);
       }
       expect(byOutcome.get('APPLIED')).toBe(VULNERABLE_EXPECTED_EQUIVALENT_EFFECTS);
       expect(byOutcome.get('IDEMPOTENT_DUPLICATE')).toBe(

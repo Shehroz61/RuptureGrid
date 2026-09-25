@@ -18,6 +18,19 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// Minimal structural shape of the express middleware factories used to
+// embed the real Control Plane API in-process. Typed locally so the test
+// never needs express type packages to describe this seam.
+type ExpressJsonMiddleware = (options?: {
+  limit?: string;
+  [key: string]: unknown;
+}) => (request: unknown, response: unknown, next: () => void) => void;
+type ExpressUrlencodedMiddleware = (options?: {
+  extended?: boolean;
+  limit?: string;
+  [key: string]: unknown;
+}) => (request: unknown, response: unknown, next: () => void) => void;
 import { createControlDb } from '@rupturegrid/control-db';
 import type { ControlDb } from '@rupturegrid/control-db';
 import { runGoldenScenario, ensureGoldenTargetRegistration } from '@rupturegrid/incident-zero';
@@ -27,7 +40,6 @@ import { startDemoProcess, startPhase4Worker } from './helpers/golden-harness.js
 import type { RunningDemo } from './helpers/demo-harness.js';
 import type { RunningWorker } from './helpers/phase4-harness.js';
 import { uniqueName } from './helpers/execution-harness.js';
-import { VULNERABLE_EXPERIMENT_NAME } from '@rupturegrid/incident-zero';
 import { parsePngDimensions, PNG_SIGNATURE } from '../../packages/showcase/dist/validate.js';
 import {
   SHOWCASE_DEVICE_SCALE,
@@ -92,9 +104,14 @@ describe('Phase 8 — real browser capture over a real golden run', () => {
       expect(golden.evaluation?.verdict).toBe('FAIL');
 
       // --- 2. REAL API (embedded in-process, same as Phase 7) -------
+      // Deep import through the api app's own dependency graph (pnpm's
+      // virtual store is not visible from tests/). The module ships no
+      // declaration file at that deep path; typed via the local
+      // structural aliases above.
+      // @ts-expect-error — express deep JS path has no declaration file.
       const expressModule = (await import('../../apps/api/node_modules/express/index.js')) as {
-        json: typeof import('express').json;
-        urlencoded: typeof import('express').urlencoded;
+        json: ExpressJsonMiddleware;
+        urlencoded: ExpressUrlencodedMiddleware;
       };
       const { NestFactory } = await import('../../apps/api/node_modules/@nestjs/core/index.js');
       const { buildAppModule } = await import('../../apps/api/src/app.module.js');

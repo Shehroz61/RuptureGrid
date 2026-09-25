@@ -144,6 +144,9 @@ describe('Finding rule — minimal proof set (§29)', () => {
     for (let i = 1; i < a.proofReferences.length; i++) {
       const previous = a.proofReferences[i - 1];
       const current = a.proofReferences[i];
+      if (previous === undefined || current === undefined) {
+        throw new Error('proof reference unexpectedly missing');
+      }
       if (previous.subject === current.subject) {
         expect(current.sourceId >= previous.sourceId).toBe(true);
       }

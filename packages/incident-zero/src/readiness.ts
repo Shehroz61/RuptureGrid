@@ -115,7 +115,7 @@ export async function verifyGoldenReadiness(
 
   // 4. Demo Target readiness endpoint — real HTTP GET (unauthenticated).
   let demoReady = false;
-  let demoReadyDetail = '';
+  let demoReadyDetail: string;
   try {
     const response = await fetch(`${input.origin}/health/ready`, {
       signal: AbortSignal.timeout(5_000),
@@ -136,7 +136,7 @@ export async function verifyGoldenReadiness(
   // will use. Probed WITHOUT credentials here (a 401 proves the route
   // is served; presenting the credential value is execution's business).
   let adminServed = false;
-  let adminDetail = '';
+  let adminDetail: string;
   try {
     const response = await fetch(`${input.origin}/demo/admin/status`, {
       signal: AbortSignal.timeout(5_000),

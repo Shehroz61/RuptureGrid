@@ -2,7 +2,7 @@
   "name": "@rupturegrid/demo-db",
   "version": "1.0.0",
   "private": true,
-  "description": "Demo Fintech PostgreSQL ownership boundary (target-owned; RuptureGrid never receives these credentials)",
+  "description": "Demo Fintech PostgreSQL ownership boundary (target-owned; RuptureGrid never receives these credentials). prisma.config.ts loads the environment through @rupturegrid/config (declared devDependency).",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -30,6 +30,7 @@
     "@prisma/client": "^7.10.0"
   },
   "devDependencies": {
+    "@rupturegrid/config": "workspace:*",
     "prisma": "^7.10.0",
     "typescript": "^5.9.3"
   }

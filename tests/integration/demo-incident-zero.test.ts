@@ -14,6 +14,7 @@ import type { TestEnv } from './helpers/env.js';
 import {
   createDemoClient,
   deliverManyConcurrent,
+  scenarioEvent,
   startDemoProcess,
 } from './helpers/demo-harness.js';
 import type { DemoClient, RunningDemo } from './helpers/demo-harness.js';
@@ -142,21 +143,21 @@ describe('D. provider authenticity (HMAC over exact raw bytes)', () => {
   });
 
   it('a signed event is accepted', async () => {
-    const event = scenario.events[0];
+    const event = scenarioEvent(scenario, 0);
     const result = await client.deliverSigned(event.payload, 'D-auth-valid-000000000001');
     expect(result.status).toBe(200);
     expect(result.body['outcome']).toBe('APPLIED');
   });
 
   it('an invalid signature produces 401 and NO financial side effect', async () => {
-    const raw = Buffer.from(JSON.stringify(scenario.events[1].payload), 'utf8');
+    const raw = Buffer.from(JSON.stringify(scenarioEvent(scenario, 1).payload), 'utf8');
     const result = await client.deliverRaw(raw, 'D-auth-invalid-00000001', 'ff'.repeat(32));
     expect(result.status).toBe(401);
     expect(result.body['error']).toMatchObject({ code: 'PROVIDER_AUTHENTICATION_FAILED' });
   });
 
   it('a missing signature produces 401 and NO financial side effect', async () => {
-    const raw = Buffer.from(JSON.stringify(scenario.events[1].payload), 'utf8');
+    const raw = Buffer.from(JSON.stringify(scenarioEvent(scenario, 1).payload), 'utf8');
     const response = await fetch(`${demo.baseUrl}/webhooks/provider`, {
       method: 'POST',
       headers: {
@@ -169,7 +170,7 @@ describe('D. provider authenticity (HMAC over exact raw bytes)', () => {
   });
 
   it('the signature binds payload content: mutate after signing → rejected (§106)', async () => {
-    const event = scenario.events[1];
+    const event = scenarioEvent(scenario, 1);
     const original = Buffer.from(JSON.stringify(event.payload), 'utf8');
     const signature = createHmacHex(env.demoProviderSigningSecret, original);
     const mutated = Buffer.from(
@@ -204,11 +205,11 @@ describe('G. canonical VULNERABLE scenario (20 deliveries, concurrency 8)', () =
     scenario = await client.createCanonicalPayment();
     // 20 physical deliveries: 10 per logical event, all with distinct
     // deliveryAttemptIds, real overlap, measured (§40, §44).
-    const wave1 = await deliverManyConcurrent(demo, scenario.events[0].payload, {
+    const wave1 = await deliverManyConcurrent(demo, scenarioEvent(scenario, 0).payload, {
       count: 10,
       concurrency: 8,
     });
-    const wave2 = await deliverManyConcurrent(demo, scenario.events[1].payload, {
+    const wave2 = await deliverManyConcurrent(demo, scenarioEvent(scenario, 1).payload, {
       count: 10,
       concurrency: 8,
     });
@@ -286,11 +287,11 @@ describe('H. canonical SECURE scenario (same workload, idempotent)', () => {
     await client.reset();
     await client.setMode('SECURE');
     scenario = await client.createCanonicalPayment();
-    const wave1 = await deliverManyConcurrent(demo, scenario.events[0].payload, {
+    const wave1 = await deliverManyConcurrent(demo, scenarioEvent(scenario, 0).payload, {
       count: 10,
       concurrency: 8,
     });
-    const wave2 = await deliverManyConcurrent(demo, scenario.events[1].payload, {
+    const wave2 = await deliverManyConcurrent(demo, scenarioEvent(scenario, 1).payload, {
       count: 10,
       concurrency: 8,
     });
@@ -388,7 +389,7 @@ describe('F. delivery identity semantics (§64, §25)', () => {
   });
 
   it('same providerEventId + many unique deliveryAttemptIds → many deliveries/attempts, ONE effect', async () => {
-    const event = scenario.events[0];
+    const event = scenarioEvent(scenario, 0);
     for (let i = 1; i <= 5; i += 1) {
       const result = await client.deliverSigned(
         event.payload,
@@ -403,7 +404,7 @@ describe('F. delivery identity semantics (§64, §25)', () => {
   });
 
   it('reusing a deliveryAttemptId is a 409 conflict and creates NO second delivery', async () => {
-    const event = scenario.events[0];
+    const event = scenarioEvent(scenario, 0);
     // Exactly the id used by the first redelivery above (padStart 12).
     const result = await client.deliverSigned(event.payload, 'D-identity-redeliver-000000000001');
     expect(result.status).toBe(409);
@@ -428,7 +429,7 @@ describe('F. delivery identity semantics (§64, §25)', () => {
   });
 
   it('amount mismatch against the registered payment → 409 (no effect, §70)', async () => {
-    const event = scenario.events[0];
+    const event = scenarioEvent(scenario, 0);
     const result = await client.deliverSigned(
       { ...event.payload, amountMinor: '499999' },
       'D-identity-amountmismatch-1',
@@ -441,7 +442,7 @@ describe('F. delivery identity semantics (§64, §25)', () => {
     // The demo target is PKR-only at payload validation (§56), so a
     // non-PKR payload can never reach business resolution — the
     // rejection (and zero financial residue) is what §70 mandates.
-    const event = scenario.events[0];
+    const event = scenarioEvent(scenario, 0);
     const result = await client.deliverSigned(
       { ...event.payload, currency: 'USD' },
       'D-identity-currencymismatch-1',
@@ -451,7 +452,7 @@ describe('F. delivery identity semantics (§64, §25)', () => {
   });
 
   it('event/payment identity mismatch → 409 (no effect, §70)', async () => {
-    const event = scenario.events[0];
+    const event = scenarioEvent(scenario, 0);
     const result = await client.deliverSigned(
       { ...event.payload, providerPaymentId: 'pp-other-0000000000000001' },
       'D-identity-paymismatch-00001',
@@ -476,8 +477,8 @@ describe('M. mode switching is target-owned and flips behavior (§73)', () => {
     await client.setMode('VULNERABLE');
     expect(await client.getMode()).toBe('VULNERABLE');
     const vulnerable = await client.createCanonicalPayment();
-    await client.deliverSigned(vulnerable.events[0].payload, 'D-modeswitch-v1-000000001');
-    await client.deliverSigned(vulnerable.events[1].payload, 'D-modeswitch-v2-000000001');
+    await client.deliverSigned(scenarioEvent(vulnerable, 0).payload, 'D-modeswitch-v1-000000001');
+    await client.deliverSigned(scenarioEvent(vulnerable, 1).payload, 'D-modeswitch-v2-000000001');
     const lineageV = await client.inspectionLineage(vulnerable.payment.providerPaymentId);
     expect(lineageV.counts.financialEffects).toBe(2);
     expect(lineageV.wallet.balanceMinor).toBe('1000000');
@@ -486,8 +487,8 @@ describe('M. mode switching is target-owned and flips behavior (§73)', () => {
     await client.setMode('SECURE');
     expect(await client.getMode()).toBe('SECURE');
     const secure = await client.createCanonicalPayment();
-    await client.deliverSigned(secure.events[0].payload, 'D-modeswitch-s1-000000001');
-    await client.deliverSigned(secure.events[1].payload, 'D-modeswitch-s2-000000001');
+    await client.deliverSigned(scenarioEvent(secure, 0).payload, 'D-modeswitch-s1-000000001');
+    await client.deliverSigned(scenarioEvent(secure, 1).payload, 'D-modeswitch-s2-000000001');
     const lineageS = await client.inspectionLineage(secure.payment.providerPaymentId);
     expect(lineageS.counts.financialEffects).toBe(1);
     expect(lineageS.wallet.balanceMinor).toBe('500000');

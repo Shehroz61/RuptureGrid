@@ -26,7 +26,7 @@ import {
   startPhase4Worker,
 } from './helpers/phase4-harness.js';
 import type { RunningWorker } from './helpers/phase4-harness.js';
-import { waitFor, uniqueName } from './helpers/execution-harness.js';
+import { requireId, waitFor, uniqueName } from './helpers/execution-harness.js';
 
 const SCENARIO_TIMEOUT = 240_000;
 
@@ -196,11 +196,12 @@ describe('phase 9 controlled faults (real stack)', () => {
   it('denies fault plans on PRODUCTION targets at definition time (server-side gate)', () => {
     const productionTarget = {
       id: '11111111-1111-1111-1111-111111111111',
-      name: 'prod-lookalike',
-      contractKind: 'DEMO_FINTECH_WEBHOOK',
+      displayName: 'prod-lookalike',
+      contractKind: 'DEMO_FINTECH_WEBHOOK' as const,
       environment: 'PRODUCTION' as const,
       credentialRefs: ['DEMO_ADMIN_TOKEN'],
       origins: [{ origin: demo.baseUrl }],
+      createdAt: new Date(0),
     };
     const document = {
       steps: [
@@ -230,11 +231,12 @@ describe('phase 9 controlled faults (real stack)', () => {
   it('rejects invalid fault plans (bad version / kind / budget) before any run exists', () => {
     const localTarget = {
       id: '22222222-2222-2222-2222-222222222222',
-      name: 'local-lookalike',
-      contractKind: 'DEMO_FINTECH_WEBHOOK',
+      displayName: 'local-lookalike',
+      contractKind: 'DEMO_FINTECH_WEBHOOK' as const,
       environment: 'LOCAL_DEVELOPMENT' as const,
       credentialRefs: ['DEMO_ADMIN_TOKEN'],
       origins: [{ origin: demo.baseUrl }],
+      createdAt: new Date(0),
     };
     const action = (faultPlan: Record<string, unknown>): unknown => ({
       steps: [
@@ -385,7 +387,7 @@ describe('phase 9 controlled faults (real stack)', () => {
       // later evidence are separate facts (ADR-0008) — the engine never
       // rewrites the invocation retroactively.
       const invocation = await prisma.stepInvocation.findFirst({
-        where: { stepRunId: faultStep?.id },
+        where: { stepRunId: requireId(faultStep?.id, 'fault step') },
         orderBy: { sequence: 'desc' },
       });
       expect(invocation?.sideEffectKnowledge).toBe('INDETERMINATE');

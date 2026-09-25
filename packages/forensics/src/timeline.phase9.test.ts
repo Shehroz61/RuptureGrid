@@ -15,7 +15,13 @@ import { deriveTimeline, faultPlanEntryKindsFor, TIMELINE_ENTRY_KINDS } from './
 import type { TimelineDerivationInput } from './timeline.js';
 import { TIMELINE_DERIVATION_VERSION } from './versions.js';
 
-function baseInput(): TimelineDerivationInput {
+// A locally-mutable view of the derivation input: tests assemble fixtures
+// incrementally; deriveTimeline only needs the readonly contract.
+type MutableTimelineInput = Omit<TimelineDerivationInput, 'events'> & {
+  events: Array<TimelineDerivationInput['events'][number]>;
+};
+
+function baseInput(): MutableTimelineInput {
   return {
     run: { id: 'r-1', state: 'COMPLETED', terminalAt: null },
     steps: [],
@@ -27,6 +33,7 @@ function baseInput(): TimelineDerivationInput {
         kind: 'target_observation' as const,
         adapterKind: 'demo-fintech-fault-status',
         observedAt: new Date('2026-09-21T10:05:00Z'),
+        invocationIdentity: null,
         payload: {},
       },
     ],

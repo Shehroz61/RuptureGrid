@@ -1,0 +1,35 @@
+{
+  // Phase 11 release gate: typecheck for the UI-semantics contract test
+  // (tests/unit/ui-semantics.test.ts), which imports the REAL web
+  // presentation module (apps/web/lib/semantics.ts). That module is
+  // bundler-context ESM and must be checked under apps/web's own compiler
+  // options (module esnext / bundler resolution / dom lib); it cannot be
+  // compiled under the NodeNext options of tsconfig.checks.json.
+  // Options below mirror apps/web/tsconfig.json — the check is as strict
+  // as the web package's own typecheck, never weaker.
+  "compilerOptions": {
+    "noEmit": true,
+    "target": "ES2023",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "exactOptionalPropertyTypes": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    // Node types resolve from apps/web's own devDependencies (the root
+    // declares none); no new dependency is introduced.
+    "typeRoots": ["./node_modules/@types", "apps/web/node_modules/@types"],
+    "types": ["node"]
+  },
+  "include": ["tests/unit/ui-semantics.test.ts", "apps/web/lib/**/*.ts"]
+}

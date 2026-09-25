@@ -15,7 +15,6 @@ import {
   heartbeatStep,
   LeaseLostError,
   markExecuting,
-  recordStaleWriter,
   registerTarget,
   writeTerminalState,
 } from '@rupturegrid/engine';

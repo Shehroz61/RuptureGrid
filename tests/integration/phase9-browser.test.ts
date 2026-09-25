@@ -39,9 +39,8 @@ import {
   startPhase4Worker,
 } from './helpers/phase4-harness.js';
 import type { RunningWorker } from './helpers/phase4-harness.js';
-import { uniqueName } from './helpers/execution-harness.js';
+import { requireId, uniqueName } from './helpers/execution-harness.js';
 
-const env = loadTestEnv();
 const DEMO_P9B_PORT = Number(process.env.DEMO_P9B_TEST_PORT ?? '3137');
 const API_P9B_PORT = Number(process.env.API_P9B_TEST_PORT ?? '3138');
 const WEB_P9B_PORT = Number(process.env.WEB_P9B_TEST_PORT ?? '3139');
@@ -361,7 +360,7 @@ describe('phase 9 real browser over real fault runs', () => {
       const faultStep = steps.find((step) => step.state === 'FAILED');
       expect(faultStep?.sideEffectKnowledge).toBe('INDETERMINATE');
       const invocation = await prisma.stepInvocation.findFirst({
-        where: { stepRunId: faultStep?.id },
+        where: { stepRunId: requireId(faultStep?.id, 'fault step') },
         orderBy: { sequence: 'desc' },
       });
       expect(invocation?.sideEffectKnowledge).toBe('INDETERMINATE');

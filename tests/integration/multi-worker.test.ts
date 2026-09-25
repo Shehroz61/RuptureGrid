@@ -40,7 +40,7 @@ let queue: ReturnType<typeof createExecutionQueue>;
 const workers: ChildProcess[] = [];
 
 beforeAll(async () => {
-  server = createServer((req, res) => {
+  server = createServer((_req, res) => {
     hitCount += 1;
     if (hangRequested) {
       return; // mid-flight hang: the worker will crash while in flight

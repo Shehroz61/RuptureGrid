@@ -86,8 +86,8 @@ describe('lineage normalizer v1→v2 compatibility', () => {
     });
     const wallet = events.find((event) => event.eventType === 'demo.wallet-state-observed');
     expect(wallet).toBeDefined();
-    expect(wallet?.payload['walletLedgerCreditSumMinor']).toBeNull();
-    expect(wallet?.payload['walletBalanceDifferenceMinor']).toBeNull();
+    expect((wallet?.payload as Record<string, unknown>)['walletLedgerCreditSumMinor']).toBeNull();
+    expect((wallet?.payload as Record<string, unknown>)['walletBalanceDifferenceMinor']).toBeNull();
   });
 
   it('normalizes a v2 payload carrying the reconciliation fields verbatim', () => {
@@ -98,8 +98,10 @@ describe('lineage normalizer v1→v2 compatibility', () => {
       payload,
     });
     const wallet = events.find((event) => event.eventType === 'demo.wallet-state-observed');
-    expect(wallet?.payload['walletLedgerCreditSumMinor']).toBe('1000000');
-    expect(wallet?.payload['walletBalanceDifferenceMinor']).toBe('0');
+    expect((wallet?.payload as Record<string, unknown>)['walletLedgerCreditSumMinor']).toBe(
+      '1000000',
+    );
+    expect((wallet?.payload as Record<string, unknown>)['walletBalanceDifferenceMinor']).toBe('0');
     expect(wallet?.normalizerVersion).toBe('v2');
   });
 
@@ -143,9 +145,9 @@ describe('fault-status normalizer (configured vs activated)', () => {
     });
     expect(events).toHaveLength(2);
     const triggered = events.find((event) => event.subjectKey === 'PRE_MUTATION_REJECTION');
-    expect(triggered?.payload['triggersUsed']).toBe(1); // activation basis
+    expect((triggered?.payload as Record<string, unknown>)['triggersUsed']).toBe(1); // activation basis
     const configuredOnly = events.find((event) => event.subjectKey === 'CRASH_MID_PROCESSING');
-    expect(configuredOnly?.payload['triggersUsed']).toBe(0); // configured, never activated
+    expect((configuredOnly?.payload as Record<string, unknown>)['triggersUsed']).toBe(0); // configured, never activated
   });
 
   it('emits nothing for a malformed payload (no meaning invented)', () => {

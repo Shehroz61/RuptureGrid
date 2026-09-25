@@ -5,7 +5,7 @@
 // §47) and the session gate (required files, byte agreement — §46).
 
 import { afterAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

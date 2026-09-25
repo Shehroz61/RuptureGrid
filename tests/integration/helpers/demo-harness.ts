@@ -116,16 +116,35 @@ export interface DemoClient {
 }
 
 export interface SimulatedScenarioClient {
-  providerPaymentId: string;
-  amountMinor: string;
-  currency: string;
-  walletId: string;
+  payment: {
+    providerPaymentId: string;
+    amountMinor: string;
+    currency: string;
+    walletId: string;
+  };
   events: Array<{
     providerEventId: string;
     eventType: string;
     payload: Record<string, unknown>;
     signature: string;
   }>;
+}
+
+/**
+ * Narrows a canonical scenario's logical event by index. The provider
+ * simulator contract guarantees exactly two events (confirmed + settled);
+ * a missing event is a prerequisite failure, not a valid test subject —
+ * fail the suite explicitly rather than dereference undefined.
+ */
+export function scenarioEvent(
+  scenario: SimulatedScenarioClient,
+  index: 0 | 1,
+): SimulatedScenarioClient['events'][number] {
+  const event = scenario.events[index];
+  if (event === undefined) {
+    throw new Error(`prerequisite missing: canonical scenario event ${index}`);
+  }
+  return event;
 }
 
 export interface LineageClient {

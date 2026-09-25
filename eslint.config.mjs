@@ -1,5 +1,12 @@
 // RuptureGrid — ESLint flat config (ESLint 10 + typescript-eslint).
 // Deliberately small: strict typing, no unused code, no dangerous escapes.
+//
+// Phase 11 release gate: the default block below matches every tracked
+// TypeScript file in the repository (tests/** included — closing the Phase
+// 10 lint blind spot AUDIT-4, where tests/integration/** accumulated
+// invisible lint debt). The per-package `lint` scripts still lint exactly
+// their own src; this root config adds repository-wide coverage without
+// loosening anything.
 import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
@@ -24,6 +31,14 @@ export default tseslint.config(
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/consistent-type-imports': 'error',
+    },
+  },
+  {
+    files: ['tests/**/*.ts', 'packages/*/src/**/*.test.ts'],
+    rules: {
+      // Vitest tests legitimately reference globals (describe/it/expect) via
+      // imports only; this repo intentionally does not enable the
+      // vitest globals plugin. No test-specific relaxations are granted.
     },
   },
   // Ownership boundaries (ADR-0002, AGENTS R-05): RuptureGrid applications

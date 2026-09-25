@@ -28,15 +28,16 @@ engineering tree itself is recorded in
 
 ## Remaining publication actions (owner, in order)
 
-1. [ ] **Create/confirm the actual public GitHub repository** for
-       RuptureGrid (URL currently unknown; no URL may be invented).
-2. [ ] **Enable GitHub Private Vulnerability Reporting** on that public
-       repository **before public publication** (the intended
-       vulnerability-disclosure channel; see [SECURITY.md](../../SECURITY.md)).
-3. [ ] **Fill repository/homepage metadata only with the real URL** —
-       add `repository`/`homepage` to the root `package.json` (and
-       replace the intentionally link-less CHANGELOG headings, if
-       desired) once, and only once, the real URL exists.
+1. [x] **Public GitHub repository created and confirmed live** —
+       <https://github.com/Shehroz61/RuptureGrid>
+       (clone: `https://github.com/Shehroz61/RuptureGrid.git`).
+2. [x] **GitHub Private Vulnerability Reporting enabled** on that public
+       repository by the owner (the intended vulnerability-disclosure
+       channel; see [SECURITY.md](../../SECURITY.md)).
+3. [x] **Repository/homepage/bugs metadata filled with the real URL** —
+       `repository`/`homepage`/`bugs` added to the root `package.json`
+       only. CHANGELOG version headings remain intentionally link-less
+       for the initial release (no prior version to compare against).
 4. [ ] **Run final release verification** — `pnpm release:verify` plus
        integration suites on the final tree (see
        [docs/reports/v1.0-publication-closure.md](v1.0-publication-closure.md)

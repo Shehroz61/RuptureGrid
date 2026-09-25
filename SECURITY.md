@@ -43,21 +43,17 @@ Full model: [docs/security-boundaries.md](docs/security-boundaries.md),
 
 ## Reporting a vulnerability
 
-**Intended public channel: GitHub Private Vulnerability Reporting** on
-the project's public GitHub repository.
+**Active channel: GitHub Private Vulnerability Reporting**, enabled by
+the repository owner on the public GitHub repository:
+<https://github.com/Shehroz61/RuptureGrid>
 
-- This channel is the intended disclosure mechanism **once the real
-  public repository exists**; it **must be enabled before public
-  publication**. It is not verified as enabled yet — the public
-  repository does not exist at the time of this writing.
-- Until that channel exists, do **not** disclose findings publicly.
-  There is currently **no dedicated security email**; none is invented
-  here on purpose. A real fallback channel, if the owner ever chooses
-  one, will be documented here — never guessed.
-- When the channel is live: report through GitHub Private Vulnerability
-  Reporting only. Do not open public issues containing exploit details,
-  secrets, or credentials — keep proof-of-concept material inside the
-  private report.
+- Report through GitHub Private Vulnerability Reporting **only**.
+- Do **not** disclose vulnerabilities publicly: do not open public
+  issues containing exploit details, secrets, or credentials — keep
+  proof-of-concept material inside the private report.
+- There is no dedicated security email; none is invented here on
+  purpose. If the owner ever chooses a fallback channel, it will be
+  documented here — never guessed.
 
 Please include: affected component(s), reproduction steps, and — if you
 can — a failing check against the real stack (the project's verifiers

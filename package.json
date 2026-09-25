@@ -5,6 +5,14 @@
   "description": "RuptureGrid v1.0 — business-correctness failure testing platform (Phase 1 foundation)",
   "type": "module",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shehroz61/RuptureGrid.git"
+  },
+  "homepage": "https://github.com/Shehroz61/RuptureGrid#readme",
+  "bugs": {
+    "url": "https://github.com/Shehroz61/RuptureGrid/issues"
+  },
   "engines": {
     "node": ">=22.12.0",
     "pnpm": ">=11.0.0"

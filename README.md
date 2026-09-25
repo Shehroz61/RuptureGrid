@@ -1,6 +1,6 @@
 # RuptureGrid v1.0
 
-**Status: PHASES 0–11 ACCEPTED AND FROZEN (tags `phase-0-accepted` … `phase-11-accepted`).** The platform is **prepared for a public source release**: licensed **Apache-2.0** (see [LICENSE](LICENSE)), published as **source only** — no npm, Docker-image, prebuilt-binary, or bundled-ffmpeg publication is part of v1.0. Remaining publication actions (real public repository URL, GitHub Private Vulnerability Reporting enablement) are owner actions, tracked in [docs/reports/release-checklist.md](docs/reports/release-checklist.md).
+**Status: PHASES 0–11 ACCEPTED AND FROZEN (tags `phase-0-accepted` … `phase-11-accepted`).** The platform is **prepared for a public source release**: licensed **Apache-2.0** (see [LICENSE](LICENSE)), published as **source only** — no npm, Docker-image, prebuilt-binary, or bundled-ffmpeg publication is part of v1.0. Public repository: [github.com/Shehroz61/RuptureGrid](https://github.com/Shehroz61/RuptureGrid) — vulnerability disclosure runs through GitHub Private Vulnerability Reporting there (see [SECURITY.md](SECURITY.md)).
 
 RuptureGrid is a developer-infrastructure platform for **discovering business-correctness failures in distributed systems** through controlled failure testing, business invariant verification, forensic analysis, and reproduction/regression replay.
 

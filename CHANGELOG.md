@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [1.0.0] — 2026-09-25 (prepared for v1.0.0 release)
 
 Prepared for the v1.0.0 public source release of RuptureGrid — not yet
-published; the tag and repository URL do not exist yet. Everything below was
+published or tagged. Everything below was
 delivered through phases 0–10, each independently audited and accepted
 (tags `phase-0-accepted` … `phase-10-accepted`); reports live in
 `docs/reports/`. Phase 11 prepared this release without changing product
@@ -32,12 +32,14 @@ semantics.
   does NOT include npm package publication, Docker image publication,
   prebuilt binaries, bundled FFmpeg binaries, or generated showcase
   media.
-- Security disclosure is intended to run through **GitHub Private
-  Vulnerability Reporting** on the future public repository, enabled
-  before publication. No security email exists or is invented
-  (see `SECURITY.md`).
-- No repository/homepage/bugs URL is declared anywhere: the real public
-  repository does not exist yet and none is invented.
+- Security disclosure runs through **GitHub Private
+  Vulnerability Reporting**, enabled by the repository owner on the
+  public repository (see `SECURITY.md`). No security email exists or is
+  invented.
+- The real public repository is `https://github.com/Shehroz61/RuptureGrid`;
+  the root `package.json` declares it as `repository`, `homepage`, and
+  `bugs` metadata. Workspace manifests remain `private: true` and carry
+  no repository metadata.
 - `ffmpeg-static` remains a development/showcase dependency only; no
   FFmpeg binary is bundled or distributed as a RuptureGrid release
   artifact (see `THIRD_PARTY_NOTICES.md`).
@@ -116,8 +118,8 @@ semantics.
   workspace hoisting; lockfile regenerated through pnpm and re-proven
   with a frozen install.
 - Root metadata completed: version, engines, packageManager, release
-  scripts. No repository URL is declared anywhere in package metadata —
-  assigning one is an owner decision and none is invented here.
+  scripts. Repository/homepage/bugs URLs were added to the root manifest
+  after Phase 11, when the real public repository was created.
 - README rewritten to the truthful v1.0 state: accepted phase status,
   complete quickstart with no hidden steps, verification-command table,
   current repository layout.
@@ -132,10 +134,10 @@ semantics.
 
 See `docs/reports/phase-11-self-audit.md` §"Remaining risks" and
 `docs/security-boundaries.md` §5 (DNS-rebinding TOCTOU honesty, egress
-isolation as primary control). Remaining publication actions (real
-public repository URL, Private Vulnerability Reporting enablement) are
-tracked in `docs/reports/release-checklist.md`.
+isolation as primary control). The remaining publication to-do list
+lives in `docs/reports/release-checklist.md`.
 
-Version headings above intentionally carry no link targets: no public
-repository URL has been assigned (owner decision), so no comparison links
-can be defined. Do not invent one.
+Version headings above intentionally carry no link targets: `[1.0.0]` is
+the initial release with no prior version to compare against. Comparison
+links in future entries may anchor against the public repository
+(`https://github.com/Shehroz61/RuptureGrid`).

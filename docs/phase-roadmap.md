@@ -195,7 +195,8 @@ an adoption-readiness test, not evidence that any third party adopted RuptureGri
 
 ## Phase 14 — Generic Inspection + Causal Derivation
 
-- **Goal:** inspection/v1 evidence adapter and manifest-driven typed derivation (ADR-0017).
+- **Goal:** inspection/v1 evidence adapter and manifest-driven typed derivation (ADR-0017; the
+  inspection/v1 entity-binding and response-shape closure is ADR-0021).
 - **Scope:** `packages/evidence` (adapter registry, generic inspection adapter, generic normalizer emitting typed events, causal derivation by declared exact-equality edges with `identity-direct`/`identity-chain` bases); `apps/worker` adapter invocation seam.
 - **Non-scope:** invariant registry (Phase 15); finding registry (Phase 15); UI changes; demo-commerce.
 - **Prerequisites:** Phase 13.

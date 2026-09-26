@@ -36,6 +36,7 @@ function manifestFor(overrides: Record<string, unknown> = {}): Record<string, un
     inspection: [
       {
         queryId: 'q1',
+        roleId: 'payment',
         description: 'd',
         path: '/inspection/x',
         fields: { a: 'string' },

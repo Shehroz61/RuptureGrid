@@ -63,6 +63,7 @@ function validManifest(overrides: Record<string, unknown> = {}): Record<string, 
     inspection: [
       {
         queryId: 'orderById',
+        roleId: 'payment',
         description: 'Fetch one order by id',
         path: '/inspection/orders?orderId=${orderId}',
         fields: { orderId: 'string', status: 'string', totalMinorUnits: 'integer-minor-units' },
@@ -141,11 +142,85 @@ describe('target-manifest/v1 accepted shapes', () => {
           causalEdges: [],
           effectRoleIds: ['thing'],
         },
+        inspection: [
+          {
+            queryId: 'orderById',
+            roleId: 'thing',
+            description: 'Fetch one order by id',
+            path: '/inspection/orders?orderId=${orderId}',
+            fields: { orderId: 'string', status: 'string', totalMinorUnits: 'integer-minor-units' },
+            identityFields: ['orderId'],
+          },
+        ],
       }),
     );
     expect(manifest.identityModel.nodes).toHaveLength(1);
     expect(manifest.identityModel.causalEdges).toHaveLength(0);
     expect(manifest.identityModel.subjectRoleId).toBeUndefined();
+  });
+
+  it('preserves the declared query → role binding on the validated manifest (ADR-0021)', () => {
+    const manifest = validateTargetManifest(validManifest());
+    expect(manifest.inspection[0]?.roleId).toBe('payment');
+    expect(
+      manifest.identityModel.nodes.some((node) => node.roleId === manifest.inspection[0]?.roleId),
+    ).toBe(true);
+  });
+
+  it('accepts two queries bound to different declared roles (declaration decides, not shape)', () => {
+    const manifest = validateTargetManifest(
+      validManifest({
+        inspection: [
+          {
+            queryId: 'paymentById',
+            roleId: 'payment',
+            description: 'Fetch one payment by id',
+            path: '/inspection/payments',
+            fields: { providerPaymentId: 'string', status: 'string' },
+            identityFields: ['providerPaymentId'],
+          },
+          {
+            queryId: 'effectsByPayment',
+            roleId: 'financialEffect',
+            description: 'Fetch effects for a payment',
+            path: '/inspection/effects',
+            fields: { providerPaymentId: 'string', amountMinorUnits: 'integer-minor-units' },
+            identityFields: ['providerPaymentId'],
+          },
+        ],
+      }),
+    );
+    expect(manifest.inspection).toHaveLength(2);
+    expect(manifest.inspection.map((query) => query.roleId)).toEqual([
+      'payment',
+      'financialEffect',
+    ]);
+  });
+
+  it('accepts a query bound to a role with no declared edge to any other role', () => {
+    const manifest = validateTargetManifest(
+      validManifest({
+        identityModel: {
+          nodes: [
+            { roleId: 'payment', description: 'x', fields: { providerPaymentId: 'string' } },
+            { roleId: 'orphan', description: 'x', fields: { orphanId: 'string' } },
+          ],
+          causalEdges: [],
+          effectRoleIds: ['payment'],
+        },
+        inspection: [
+          {
+            queryId: 'orphanById',
+            roleId: 'orphan',
+            description: 'Fetch one orphan entity by id',
+            path: '/inspection/orphans',
+            fields: { orphanId: 'string' },
+            identityFields: ['orphanId'],
+          },
+        ],
+      }),
+    );
+    expect(manifest.inspection[0]?.roleId).toBe('orphan');
   });
 });
 
@@ -208,6 +283,55 @@ describe('target-manifest/v1 closed-schema rejections', () => {
         ],
       }),
       /unknown inspection\[0\] field "z"/,
+    );
+  });
+
+  it('rejects an inspection query without a declared roleId binding (ADR-0021)', () => {
+    // Every pre-ADR-0021 inspection declaration form is now invalid: the
+    // binding is declared, never inferred.
+    expectRejected(
+      validManifest({
+        inspection: [
+          {
+            queryId: 'q',
+            description: 'd',
+            path: '/x',
+            fields: { a: 'string' },
+            identityFields: ['a'],
+          },
+        ],
+      }),
+      /inspection\[0\]\.roleId must be exactly one declared identityModel role id/,
+    );
+    expectRejected(
+      validManifest({
+        inspection: [
+          {
+            queryId: 'q',
+            roleId: null,
+            description: 'd',
+            path: '/x',
+            fields: { a: 'string' },
+            identityFields: ['a'],
+          },
+        ],
+      }),
+      /inspection\[0\]\.roleId must be exactly one declared identityModel role id/,
+    );
+    expectRejected(
+      validManifest({
+        inspection: [
+          {
+            queryId: 'q',
+            roleId: 'payment payment',
+            description: 'd',
+            path: '/x',
+            fields: { a: 'string' },
+            identityFields: ['a'],
+          },
+        ],
+      }),
+      /inspection\[0\]\.roleId must be exactly one declared identityModel role id/,
     );
   });
 
@@ -344,6 +468,7 @@ describe('target-manifest/v1 adversarial rejections', () => {
         inspection: [
           {
             queryId: 'q',
+            roleId: 'payment',
             description: 'd',
             path: 'https://evil.example/x',
             fields: {},
@@ -358,6 +483,7 @@ describe('target-manifest/v1 adversarial rejections', () => {
         inspection: [
           {
             queryId: 'q',
+            roleId: 'payment',
             description: 'd',
             path: '//evil.example/x',
             fields: {},
@@ -385,6 +511,7 @@ describe('target-manifest/v1 adversarial rejections', () => {
         inspection: [
           {
             queryId: 'q',
+            roleId: 'payment',
             description: 'd',
             path: '/x',
             fields: { a: 'string' },
@@ -397,11 +524,89 @@ describe('target-manifest/v1 adversarial rejections', () => {
     expectRejected(
       validManifest({
         inspection: [
-          { queryId: 'q', description: 'd', path: '/x', fields: {}, identityFields: [] },
-          { queryId: 'q', description: 'd', path: '/y', fields: {}, identityFields: [] },
+          {
+            queryId: 'q',
+            roleId: 'payment',
+            description: 'd',
+            path: '/x',
+            fields: {},
+            identityFields: [],
+          },
+          {
+            queryId: 'q',
+            roleId: 'payment',
+            description: 'd',
+            path: '/y',
+            fields: {},
+            identityFields: [],
+          },
         ],
       }),
       /duplicates an earlier query id/,
+    );
+  });
+
+  it('rejects a query roleId referencing an undeclared role (no inference fallback — ADR-0021)', () => {
+    expectRejected(
+      validManifest({
+        inspection: [
+          {
+            queryId: 'q',
+            roleId: 'ghost',
+            description: 'd',
+            path: '/x',
+            fields: { a: 'string' },
+            identityFields: ['a'],
+          },
+        ],
+      }),
+      /inspection\[0\]\.roleId "ghost" references an undeclared identityModel role/,
+    );
+  });
+
+  it('never infers the role from identity-field overlap (ADR-0021 declaration-only rule)', () => {
+    // The query's fields intentionally overlap NOTHING: `a` shares no
+    // name with any declared node field (`providerPaymentId`), the query
+    // id does not resemble any role id, and there is exactly one declared
+    // node. If any inference fallback existed, this manifest would pass
+    // with an inferred binding — it must fail on the missing binding.
+    expectRejected(
+      validManifest({
+        inspection: [
+          {
+            queryId: 'q',
+            description: 'd',
+            path: '/x',
+            fields: { a: 'string' },
+            identityFields: ['a'],
+          },
+        ],
+      }),
+      /inspection\[0\]\.roleId must be exactly one declared identityModel role id/,
+    );
+  });
+
+  it('never infers the role when exactly one identity node exists (ADR-0021)', () => {
+    // A single declared node is the strongest possible inference
+    // candidate; even then the binding must be explicit or rejected.
+    expectRejected(
+      validManifest({
+        identityModel: {
+          nodes: [{ roleId: 'onlyRole', description: 'x', fields: { a: 'string' } }],
+          causalEdges: [],
+          effectRoleIds: ['onlyRole'],
+        },
+        inspection: [
+          {
+            queryId: 'q',
+            description: 'd',
+            path: '/x',
+            fields: { a: 'string' },
+            identityFields: ['a'],
+          },
+        ],
+      }),
+      /inspection\[0\]\.roleId must be exactly one declared identityModel role id/,
     );
   });
 
@@ -502,6 +707,7 @@ describe('target-manifest/v1 adversarial rejections', () => {
         inspection: [
           {
             queryId: 'process.exit(1)',
+            roleId: 'payment',
             description: 'd',
             path: '/x',
             fields: {},

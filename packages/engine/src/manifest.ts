@@ -1,5 +1,6 @@
 // =====================================================================
-// RuptureGrid v1.1 Phase 13 — target-manifest/v1 (ADR-0016, ADR-0017)
+// RuptureGrid v1.1 Phase 13 — target-manifest/v1 (ADR-0016, ADR-0017;
+// inspection query → role binding per ADR-0021)
 // =====================================================================
 // The SINGLE authoritative validation boundary for target manifests.
 // Registration, snapshot freezing, and definition-time policy all
@@ -106,6 +107,12 @@ export interface ManifestIdentityModel {
 export interface ManifestInspectionQuery {
   /** Stable target-chosen query identifier (unique across queries). */
   readonly queryId: string;
+  /**
+   * The declared identity-model role these entities represent (ADR-0021):
+   * exactly one declared `identityModel.nodes[].roleId`. The binding is
+   * declared, NEVER inferred — no field/shape/queryId heuristic exists.
+   */
+  readonly roleId: string;
   readonly description: string;
   /** Read-only relative path on the target's registered origins. */
   readonly path: string;
@@ -583,8 +590,20 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
     }
   }
 
-  // ---- inspection (named read-only query declarations; structural) ----
-  let inspection: ManifestInspectionQuery[] = [];
+  // ---- inspection (named read-only lineage query declarations) ----
+  // Per-query parsed declarations. The declared-role binding check
+  // (ADR-0021) runs after identityModel parsing, which fills
+  // `declaredRoleIds`.
+  const inspection: ManifestInspectionQuery[] = [];
+  const queryDrafts: {
+    index: number;
+    queryId: string;
+    description: string;
+    path: string;
+    fields: Record<string, ManifestFieldType>;
+    identityFields: string[];
+    roleId: string;
+  }[] = [];
   const rawInspection = raw['inspection'];
   if (rawInspection === undefined) {
     issues.push('missing required field "inspection"');
@@ -595,7 +614,6 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
       issues.push(`inspection exceeds the ${MANIFEST_LIMITS.maxInspectionQueries}-query limit`);
     }
     const seenQueryIds = new Set<string>();
-    const acceptedQueries: ManifestInspectionQuery[] = [];
     for (let index = 0; index < rawInspection.length; index += 1) {
       const where = `inspection[${index}]`;
       const rawQuery = rawInspection[index];
@@ -604,7 +622,9 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
         continue;
       }
       for (const key of Object.keys(rawQuery)) {
-        if (!['queryId', 'description', 'path', 'fields', 'identityFields'].includes(key)) {
+        if (
+          !['queryId', 'roleId', 'description', 'path', 'fields', 'identityFields'].includes(key)
+        ) {
           issues.push(`unknown ${where} field "${key}" (the inspection-query schema is closed)`);
         }
       }
@@ -617,6 +637,19 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
       } else {
         seenQueryIds.add(rawQueryId);
         queryId = rawQueryId;
+      }
+      // ADR-0021: the query's identity-node role is DECLARED — exactly one
+      // roleId referencing identityModel.nodes. Syntax is checked here;
+      // the declared-role reference check runs after identityModel
+      // parsing (below). There is no inference fallback.
+      let roleId = '';
+      const rawRoleId = rawQuery['roleId'];
+      if (!isPlainString(rawRoleId) || !IDENTIFIER_PATTERN.test(rawRoleId)) {
+        issues.push(
+          `${where}.roleId must be exactly one declared identityModel role id (must match ${IDENTIFIER_PATTERN}; ADR-0021)`,
+        );
+      } else {
+        roleId = rawRoleId;
       }
       let description = '';
       const rawDescription = rawQuery['description'];
@@ -680,11 +713,15 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
         identityFields = accepted;
       }
       if (queryId !== '' && description !== '' && path !== '') {
-        acceptedQueries.push({ queryId, description, path, fields, identityFields });
+        queryDrafts.push({ index, queryId, description, path, fields, identityFields, roleId });
       }
     }
-    inspection = acceptedQueries;
   }
+
+  // Declared identity-model role ids (filled while parsing
+  // identityModel.nodes; consumed by the inspection → identity binding
+  // check below — ADR-0021).
+  const declaredRoleIds = new Set<string>();
 
   // ---- identityModel (typed declarations; structural only in Phase 13) ----
   let identityModel: ManifestIdentityModel | undefined;
@@ -702,7 +739,6 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
     // Nodes: one minimum (ADR-0017); the count cap is a PAYLOAD SAFETY
     // limit, never a claim about valid identity-graph shapes.
     const nodes: ManifestIdentityNode[] = [];
-    const roleIds = new Set<string>();
     const rolesFields = new Map<string, Record<string, ManifestFieldType>>();
     const rawNodes = rawIdentityModel['nodes'];
     if (rawNodes === undefined) {
@@ -735,10 +771,10 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
         const rawRoleId = rawNode['roleId'];
         if (!isPlainString(rawRoleId) || !IDENTIFIER_PATTERN.test(rawRoleId)) {
           issues.push(`${where}.roleId must match ${IDENTIFIER_PATTERN}`);
-        } else if (roleIds.has(rawRoleId)) {
+        } else if (declaredRoleIds.has(rawRoleId)) {
           issues.push(`${where}.roleId "${rawRoleId}" duplicates an earlier role id`);
         } else {
-          roleIds.add(rawRoleId);
+          declaredRoleIds.add(rawRoleId);
           roleId = rawRoleId;
         }
         let description = '';
@@ -798,7 +834,7 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
         const rawFrom = rawEdge['fromRoleId'];
         if (!isPlainString(rawFrom) || !IDENTIFIER_PATTERN.test(rawFrom)) {
           issues.push(`${where}.fromRoleId must match ${IDENTIFIER_PATTERN}`);
-        } else if (!roleIds.has(rawFrom)) {
+        } else if (!declaredRoleIds.has(rawFrom)) {
           issues.push(`${where}.fromRoleId "${rawFrom}" references an undeclared role`);
         } else {
           fromRoleId = rawFrom;
@@ -807,7 +843,7 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
         const rawTo = rawEdge['toRoleId'];
         if (!isPlainString(rawTo) || !IDENTIFIER_PATTERN.test(rawTo)) {
           issues.push(`${where}.toRoleId must match ${IDENTIFIER_PATTERN}`);
-        } else if (!roleIds.has(rawTo)) {
+        } else if (!declaredRoleIds.has(rawTo)) {
           issues.push(`${where}.toRoleId "${rawTo}" references an undeclared role`);
         } else {
           toRoleId = rawTo;
@@ -888,7 +924,7 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
           issues.push('identityModel.effectRoleIds entries must be declared role ids');
           continue;
         }
-        if (!roleIds.has(entry)) {
+        if (!declaredRoleIds.has(entry)) {
           issues.push(`identityModel.effectRoleIds references undeclared role "${entry}"`);
           continue;
         }
@@ -907,7 +943,7 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
     if (rawSubjectRoleId !== undefined) {
       if (!isPlainString(rawSubjectRoleId) || !IDENTIFIER_PATTERN.test(rawSubjectRoleId)) {
         issues.push('identityModel.subjectRoleId must be a declared role id');
-      } else if (!roleIds.has(rawSubjectRoleId)) {
+      } else if (!declaredRoleIds.has(rawSubjectRoleId)) {
         issues.push(`identityModel.subjectRoleId references undeclared role "${rawSubjectRoleId}"`);
       } else {
         subjectRoleId = rawSubjectRoleId;
@@ -922,6 +958,32 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
         ...(subjectRoleId === undefined ? {} : { subjectRoleId }),
       };
     }
+  }
+
+  // ---- inspection → identity binding (ADR-0021) ----
+  // Each query is bound to exactly one DECLARED identity-model role.
+  // There is no inference fallback: field names, identity-field overlap,
+  // field counts, queryId naming, and timestamps never select a role —
+  // the declaration is the only mapping, so an undeclared roleId is a
+  // registration rejection.
+  for (const draft of queryDrafts) {
+    if (draft.roleId === '') {
+      continue; // parse-time issue already recorded above
+    }
+    if (!declaredRoleIds.has(draft.roleId)) {
+      issues.push(
+        `inspection[${draft.index}].roleId "${draft.roleId}" references an undeclared identityModel role (the query-role binding is declared, never inferred; ADR-0021)`,
+      );
+      continue;
+    }
+    inspection.push({
+      queryId: draft.queryId,
+      roleId: draft.roleId,
+      description: draft.description,
+      path: draft.path,
+      fields: draft.fields,
+      identityFields: draft.identityFields,
+    });
   }
 
   // ---- sensitiveFields (the target's redaction-registry extension) ----

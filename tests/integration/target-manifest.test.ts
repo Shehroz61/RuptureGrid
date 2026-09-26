@@ -49,6 +49,7 @@ const MANIFEST = {
   inspection: [
     {
       queryId: 'orderById',
+      roleId: 'checkoutIntent',
       description: 'Fetch one order by id',
       path: '/inspection/orders',
       fields: { orderId: 'string', status: 'string', totalMinorUnits: 'integer-minor-units' },

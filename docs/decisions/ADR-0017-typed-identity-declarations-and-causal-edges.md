@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (Phase 12 — design freeze; implementation in Phase 14).
+Accepted (Phase 12 — design freeze; implementation in Phase 14). Forward reference: the
+inspection/v1 query → identity-node role binding and response-shape closure are decided in
+[ADR-0021](ADR-0021-phase-14-inspection-entity-binding.md) (pre-Phase-14 contract closure).
 
 ## Context
 

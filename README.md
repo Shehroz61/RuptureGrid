@@ -1,6 +1,6 @@
 # RuptureGrid v1.0
 
-**Status: PHASES 0–11 ACCEPTED AND FROZEN (tags `phase-0-accepted` … `phase-11-accepted`).** The platform is **prepared for a public source release**: licensed **Apache-2.0** (see [LICENSE](LICENSE)), published as **source only** — no npm, Docker-image, prebuilt-binary, or bundled-ffmpeg publication is part of v1.0. Public repository: [github.com/Shehroz61/RuptureGrid](https://github.com/Shehroz61/RuptureGrid) — vulnerability disclosure runs through GitHub Private Vulnerability Reporting there (see [SECURITY.md](SECURITY.md)).
+**Status: PHASES 0–11 ACCEPTED AND FROZEN (tags `phase-0-accepted` … `phase-11-accepted`).** **v1.0.1 is published and CI-green**: licensed **Apache-2.0** (see [LICENSE](LICENSE)), released as **source only** — no npm, Docker-image, prebuilt-binary, or bundled-ffmpeg publication is part of the release, and that policy is unchanged. Public repository: [github.com/Shehroz61/RuptureGrid](https://github.com/Shehroz61/RuptureGrid) — vulnerability disclosure runs through GitHub Private Vulnerability Reporting there (see [SECURITY.md](SECURITY.md)).
 
 RuptureGrid is a developer-infrastructure platform for **discovering business-correctness failures in distributed systems** through controlled failure testing, business invariant verification, forensic analysis, and reproduction/regression replay.
 
@@ -133,7 +133,7 @@ tests/
   unit/           config validation, redaction, UI semantics (vitest)
   integration/    real PostgreSQL / Redis / HTTP / process / browser suites,
                   incl. Incident Zero and controlled-faults black-box suites
-docs/             architecture, product spec, security boundaries, 15 ADRs,
+docs/             architecture, product spec, security boundaries, decision records (ADRs),
                   phase roadmap, incident/scenario docs, per-phase audit reports
 ```
 

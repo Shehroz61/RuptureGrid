@@ -1,6 +1,6 @@
 # RuptureGrid v1.0 — Security Boundaries
 
-Status: **Phase 0 — threat model and contracts only. No runtime implementation exists.**
+Status: **Living contract — accepted through Phase 11 (released v1.0.1). Phases 0–11 accepted and frozen.**
 Authoritative for: target authorization, destination/SSRF/DNS/redirect contracts, credential handling and redaction, blast-radius limits.
 
 Related: [architecture.md](architecture.md) §5 (target ownership), [evidence-model.md](evidence-model.md) §5, ADR-0011, ADR-0012, [product-spec.md](product-spec.md) §8 (non-goals).
@@ -13,7 +13,7 @@ Related: [architecture.md](architecture.md) §5 (target ownership), [evidence-mo
 - **Deny by default.** Nothing is executable against a target that was not explicitly registered and authorized for the requested environment class.
 - **Legitimate interfaces only.** Failures are created through the target's own APIs — never by secret mutation of target state ([architecture.md](architecture.md) §5).
 - **Server-side enforcement.** UI validation is convenience, never a security control; every limit in this document is enforced in the Control Plane and re-checked in the executor.
-- **Honest scoping.** Phase 0 documents contracts; it implements nothing. Each mitigation names the phase that must deliver it ([phase-roadmap.md](phase-roadmap.md)).
+- **Honest scoping.** Contracts are documented before they are implemented; each mitigation names the phase that delivered it (or must deliver it) ([phase-roadmap.md](phase-roadmap.md)).
 
 ## 2. Target authorization model
 

@@ -1,7 +1,7 @@
 # RuptureGrid v1.0 — Phase Roadmap
 
-Status: **Phase 0 — roadmap definition only.**
-This document is the ordered, gated plan from Phase 0 to public-ready product. Later phases must not begin until the prior phase's exit criteria are met ([AGENTS.md](../AGENTS.md) R-01, ADR-0013).
+Status: **v1.0 phases 0–11 accepted and frozen (released v1.0.1); v1.1 design frozen in Phase 12 — Phases 13–19 defined, not implemented.**
+This document is the ordered, gated plan from Phase 0 through the v1.0 release (Phases 0–11, accepted and frozen) and the v1.1 **Second-Domain Generalization Proof** (Phases 12–19). Later phases must not begin until the prior phase's exit criteria are met ([AGENTS.md](../AGENTS.md) R-01, ADR-0013).
 
 ---
 
@@ -151,4 +151,120 @@ This document is the ordered, gated plan from Phase 0 to public-ready product. L
 
 ---
 
-**Post-v1 directions (not scheduled):** CI/CD integration mode, self-hosted multi-user deployment, private-network execution agent, SaaS control plane ([product-spec.md](product-spec.md) §6) — each requires its own architecture phase and ADRs. Production fault targeting remains **denied** unless a dedicated future security architecture explicitly enables it.
+---
+
+# v1.1 — Second-Domain Generalization Proof (Phases 12–19)
+
+Theme: prove RuptureGrid tests business correctness for a second, independent domain that was NOT
+designed around Incident Zero — through a data-only target manifest, a closed declarative
+invariant registry, a headless CLI with honest exit semantics, a machine-readable report, and a
+replay/regression lifecycle. Design frozen in Phase 12 (ADR-0016 … ADR-0020,
+[checkout-zero.md](checkout-zero.md)). No phase below may begin before the prior phase's audit gate.
+
+Honest scope of the v1.1 proof: it establishes **cross-domain generalization** (the truth chain,
+attribution rules, and uncertainty semantics hold on a second, independent domain),
+**external-in-kind target integration** (a target integrates through a data-only manifest over
+its own HTTP interfaces with no RuptureGrid imports and no shared database), and **onboarding
+readiness from documentation** (the Phase 19 stranger test). It does NOT establish independent
+third-party adoption, production adoption, or external organization usage — the stranger test is
+an adoption-readiness test, not evidence that any third party adopted RuptureGrid.
+
+## Phase 12 — v1.1 Design Freeze + Living-Documentation Repair (this phase)
+
+- **Goal:** freeze the v1.1 design contract BEFORE any implementation; repair living-documentation staleness left by the v1.0.1 release.
+- **Scope (files/components likely touched):** ADRs 0016–0020 (target-manifest/v1; typed identity declarations + causal edges; business-invariant/v1 closed registry with corrected conservation semantics; headless CLI + rupturegrid-report/v1 + replay lifecycle + distribution honesty; Checkout Zero + repeat-not-retry safety model); new [checkout-zero.md](checkout-zero.md); status-banner and staleness repair across the living core docs (README publication status, root package.json description, Phase-0 banners, machine-specific path wording, this roadmap's v1.1 section).
+- **Non-scope (explicit non-goals):** any runtime implementation; any migration; CHANGELOG entries (they belong to the Phase 19 release); rewriting anything under `docs/reports/` (historical evidence, byte-for-byte untouched); no third invariant kind; no reference-target example (ADR-0016 Decision 4).
+- **Prerequisites:** v1.0.1 published and CI-green; roadmap direction accepted with mandated corrections (repeat ≠ retry; corrected conservation model; target claims never create truth; no hard-coded five-identity chain; source-only CLI honesty; no redundant reference target).
+- **Acceptance:** all v1.1 documents internally consistent with the constitution and with each other; validation gates green (`format:check`, `lint`, `typecheck`, `unit`, `build`, `git diff --check`) with zero runtime changes.
+- **Testing:** none (documentation phase) — consistency is verified by the gates above and the Phase 12 audit.
+- **Security:** the design-level security deltas are fixed inside the ADRs (conservative generic contract semantics; target-declared metadata can never yield `KNOWN_ABSENT`; manifest ingestion is closed-schema data-only; fault-gate generalization keeps the LOCAL_DEVELOPMENT-only rule; the report is a canary-scanned secret-free surface).
+- **Deliverables:** five ADRs, checkout-zero.md, updated roadmap, corrected living docs.
+- **Exit criteria:** verdict "READY FOR INDEPENDENT PHASE 12 AUDIT" from the builder; independent audit pending (builder cannot self-accept).
+
+## Phase 13 — Target Manifest + Control-Plane Support
+
+- **Goal:** target-manifest/v1 registered, stored, and enforced end to end (ADR-0016).
+- **Scope:** `packages/control-db` additive migration (manifest storage as registration provenance); `apps/api` registration endpoint accepting manifests; `packages/engine` validation changes (manifest-driven header/signature policy, conservative `GENERIC_HTTP` contract semantics, fault-gate generalization from the hard-coded `/webhooks/provider` path to the manifest-declared hook — environment gate unchanged); `packages/shared`/`packages/config` limits.
+- **Non-scope:** generic inspection adapter/normalizer (Phase 14); invariant registry (Phase 15); demo-commerce (Phase 16); CLI (Phase 17).
+- **Prerequisites:** Phase 12 accepted.
+- **Acceptance:** enumerated manifest accept/reject cases (closed schema, unknown fields, size caps, refused versions); the golden Incident Zero and controlled-faults suites pass **unchanged** (back-compat proven by execution, never assumed — R-07); staging/production denial re-probed; a target-declared `noEffectOnRejection` demonstrably never produces `KNOWN_ABSENT` by itself.
+- **Testing:** unit + integration + adversarial (destination/validation probes per testing-strategy §4.7).
+- **Security:** security review gate per security-boundaries §10 — manifest ingestion and the generalized fault gate are the audited deltas.
+- **Deliverables:** manifest schema, storage, registration API, engine policy changes.
+- **Exit criteria:** independent audit including the security review.
+
+## Phase 14 — Generic Inspection + Causal Derivation
+
+- **Goal:** inspection/v1 evidence adapter and manifest-driven typed derivation (ADR-0017).
+- **Scope:** `packages/evidence` (adapter registry, generic inspection adapter, generic normalizer emitting typed events, causal derivation by declared exact-equality edges with `identity-direct`/`identity-chain` bases); `apps/worker` adapter invocation seam.
+- **Non-scope:** invariant registry (Phase 15); finding registry (Phase 15); UI changes; demo-commerce.
+- **Prerequisites:** Phase 13.
+- **Acceptance:** determinism (same observations ⇒ same events/relationships, idempotent derivation); undeclared/unknown shapes produce **no events**; the demo lineage adapter path is behavior-identical (frozen golden suites green); no timestamp, fuzzy, or inferred linkage anywhere in the new path.
+- **Testing:** unit (normalizer/derivator purity) + integration (real evidence chain) + adversarial (identity mismatch ⇒ NOT_EVALUABLE inputs, malformed declarations).
+- **Security:** read-only adapter posture; redaction-before-persistence unchanged; adapter use recorded as evidence provenance.
+- **Deliverables:** generic adapter + manifest-driven derivation.
+- **Exit criteria:** audit traces a foreign-manifest evidence set end-to-end from raw observations to causal relationships.
+
+## Phase 15 — Invariant Registry + Finding Registry
+
+- **Goal:** business-invariant/v1 with exactly two kinds, plus the finding-rule registry (ADR-0018).
+- **Scope:** `packages/evidence` (invariant registry: `atMostOneAcceptedEffect`, `resourceConservation` with the corrected conservation model); `packages/forensics` (finding-rule registry, new bounded reason codes); `packages/control-db` additive migration (new enum values); `apps/api` analysis wiring; the Phase 15 conformance suite.
+- **Non-scope:** a third invariant kind; user code/SQL/expressions; UI scenario builders; modifying the frozen INV-IZ-1 evaluator.
+- **Prerequisites:** Phase 14.
+- **Acceptance:** pure-evaluator truth tables for both kinds (exact PASS/FAIL/NOT_EVALUABLE rules incl. missing-baseline ⇒ NOT_EVALUABLE, never inferred); definition-time validation reject-cases (undeclared event types/fields, malformed params); **conformance test proves the generic `atMostOneAcceptedEffect` evaluator agrees with the frozen INV-IZ-1 evaluator on canonical Incident Zero fixtures, including NOT_EVALUABLE attribution-gap cases**; PASS/NOT_EVALUABLE produce no findings.
+- **Testing:** unit truth tables + integration + adversarial (attribution gaps, fabricated-but-inconsistent remaining-state figures).
+- **Security:** no new execution surface (evaluation is pure over persisted evidence); audit re-runs evaluations from persisted evidence.
+- **Deliverables:** invariant registry, finding registry, conformance suite.
+- **Exit criteria:** independent audit re-derives verdicts from persisted evidence.
+
+## Phase 16 — Demo Commerce Target
+
+- **Goal:** the second external-in-kind target (ADR-0020): `apps/demo-commerce`.
+- **Scope:** `apps/demo-commerce` (checkout/inventory domain: checkout intents, request/processing attempts, orders, reservations, SKU stock) with its **own PostgreSQL instance** (compose service; own migrations); VULNERABLE/SECURE modes via the target's own admin API; inspection/v1 read-only API; `controlled-fault/v1` hooks at the manifest-declared fault surface; its target manifest; `packages/config` env schema; root lint rule (no RuptureGrid app imports the commerce DB — mirroring the demo-db rule).
+- **Non-scope:** RuptureGrid-side scenario wiring (Phase 17); new fault kinds beyond `controlled-fault/v1`; UI.
+- **Prerequisites:** Phase 15.
+- **Acceptance:** external-ownership boundary proven (no commerce-DB credentials in any RuptureGrid app; lint-enforced); both modes behave per checkout-zero.md under deliberate concurrent duplicate submissions with measured overlap from persisted processing timestamps (testing-strategy §6 — barriers + authoritative state, never `Promise.all` optimism); inspection API read-only; **the audit confirms the target implements its own business logic and was not built around its invariant** (the invariant is RuptureGrid-side).
+- **Testing:** real HTTP; concurrency measured; mode-switch; integer-unit tests (R-06).
+- **Security:** LOCAL_DEVELOPMENT classification; staging fault-execution denial probed for the new target.
+- **Deliverables:** demo-commerce app, migrations, compose service, manifest.
+- **Exit criteria:** independent audit of external ownership and mode behavior.
+
+## Phase 17 — Checkout Zero + Headless CLI + Report
+
+- **Goal:** the golden v1.1 scenario executable headlessly with honest reporting (ADR-0019, ADR-0020).
+- **Scope:** `packages/cli` (validate/run flow: revision → snapshot → dispatch → bounded-poll wait → idempotent analysis → evidence-integrity check → report → exit; the five-way exit contract); scenario-document loader + closed-schema validation; `rupturegrid-report/v1` emitter + published JSON Schema; Checkout Zero golden definitions for both modes; documentation.
+- **Non-scope:** replay command (Phase 18); UI; public CLI distribution (deferred — source-only policy stands).
+- **Prerequisites:** Phase 16.
+- **Acceptance:** both modes produce deterministic, evidence-backed verdicts via the CLI alone; all five exit classes verified, including forced `NOT_EVALUABLE` and forced `EXECUTION_FAILURE` paths; the report validates against the published schema and is canary-clean (R-13); the canonical path proves repeat ≠ retry (duplicate pressure from declared concurrent repeats; **no automatic retry anywhere**); the separate response-loss proof shows INDETERMINATE persisted and zero unsafe retries.
+- **Testing:** E2E over real processes (real HTTP, real queue, real PostgreSQL); exit-code decision table; report schema round-trip.
+- **Security:** full destination/redaction validation on the new path; report included in canary leak-scan surfaces.
+- **Deliverables:** CLI, report emitter, golden scenario.
+- **Exit criteria:** independent audit reruns the scenario from scratch and re-derives every report number from durable Control-Plane truth.
+
+## Phase 18 — Replay/Regression Lifecycle
+
+- **Goal:** close the failure → reproduction → fix → replay → regression-proof loop (ADR-0019 Decision 4).
+- **Scope:** `packages/cli` replay command (new run from the same hash-pinned snapshot); acceptance-expectation assertions; run-comparison surfacing; committed regression suites for BOTH domains; the external-CI recipe documentation (checkout-invoked, per the distribution-honesty rule).
+- **Non-scope:** detecting scheduling variance beyond the incident-replay §4–§5 honesty table; automatic fix verification services.
+- **Prerequisites:** Phase 17.
+- **Acceptance:** the full lifecycle demonstrated on demo-commerce: discovered failure → reproduction definition → target fix through its own interfaces → same-snapshot replay → PASS; cross-intent comparison refused; credential-rotation fail-fast re-proven; both regression suites committed and green (vulnerable ⇒ deterministic FAIL + Finding; secure ⇒ PASS + 0 Findings).
+- **Testing:** E2E replay + determinism checks.
+- **Security:** replay authorization unchanged; credential references only, never values.
+- **Deliverables:** replay command, regression suites, CI recipe.
+- **Exit criteria:** independent audit performs the lifecycle end-to-end.
+
+## Phase 19 — Independent v1.1 Audit + Release
+
+- **Goal:** prove v1.1 against the constitution; release v1.1.0.
+- **Scope:** full adversarial + security re-audit across both targets; the **stranger onboarding test via demo-commerce only** (a fresh contributor connects the target and runs one scenario using only its registered HTTP interface, manifest, inspection contract, credential references, and scenario definition); documentation truth-pass; version bump; CHANGELOG for v1.1.0; release per the source-only policy.
+- **Non-scope:** production fault targeting (denied, unchanged); public npm/Docker/binary publication; third target domain (seat-booking exclusivity is the designated next proof); SaaS/multi-tenancy.
+- **Prerequisites:** Phase 18.
+- **Acceptance:** cross-target generalization suites green; production denial intact; canary + secrets scans clean; a stranger completes onboarding from docs alone; `pnpm release:verify` equivalent green on the release tree.
+- **Testing:** fresh-environment E2E as the release gate.
+- **Security:** final review; release artifacts verified (source-only).
+- **Deliverables:** audit reports, release v1.1.0.
+- **Exit criteria:** independent audit sign-off; tag + release per R-16.
+
+---
+
+**Post-v1.1 directions (not scheduled):** third target domain (reservation/seat exclusivity as a third invariant shape), public CLI distribution (npm/Docker/binary — requires its own release-policy ADR), self-hosted multi-user deployment, private-network execution agent, SaaS control plane ([product-spec.md](product-spec.md) §6) — each requires its own architecture phase and ADRs. Production fault targeting remains **denied** unless a dedicated future security architecture explicitly enables it.

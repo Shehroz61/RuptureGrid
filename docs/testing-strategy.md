@@ -1,6 +1,6 @@
 # RuptureGrid v1.0 — Testing Strategy
 
-Status: **Phase 0 — testing constitution only. No tests or runtime implementation exist.**
+Status: **Living contract — in force; the test taxonomy below is implemented and CI-enforced (accepted through Phase 11, released v1.0.1: unit 32 files/313 tests, integration 24 files/158 tests over real PostgreSQL ×2, Redis, HTTP, browser). Phases 0–11 accepted and frozen.**
 Authoritative for: test taxonomy, real-infrastructure mandates, adversarial testing, concurrency testing rules, permanent regression policy.
 
 Related: [architecture.md](architecture.md), [incident-zero.md](incident-zero.md) §9, [engineering-rules.md](engineering-rules.md) §1, ADR-0013.

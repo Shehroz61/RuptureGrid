@@ -1,6 +1,6 @@
 # RuptureGrid v1.0 — Incident Replay & Reproducibility
 
-Status: **Phase 0 — contract design only. No runtime implementation exists.**
+Status: **Living contract — accepted through Phase 11 (released v1.0.1). Phases 0–11 accepted and frozen.**
 Authoritative for: reproduction definitions, snapshot semantics, replay modes, and the honest limits of replay.
 
 Related: [architecture.md](architecture.md) §11, [evidence-model.md](evidence-model.md) §1 (reproduction definition), ADR-0010, [incident-zero.md](incident-zero.md), [testing-strategy.md](testing-strategy.md) §8.

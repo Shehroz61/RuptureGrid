@@ -1,6 +1,6 @@
 # RuptureGrid v1.0 — Product Design (UI Philosophy & Contracts)
 
-Status: **Phase 0 — design philosophy and contracts only. No UI implementation exists.**
+Status: **Living contract — implemented and accepted through Phase 6 (independent visual/product audit passed); maintained through Phase 11 (released v1.0.1). Phases 0–11 accepted and frozen.**
 Authoritative for: design philosophy, explicit anti-patterns, information architecture, the signature investigation UX, accessibility/responsiveness contracts, and the UI quality gate.
 
 Related: [product-spec.md](product-spec.md), [evidence-model.md](evidence-model.md) §9 (timeline rules), [phase-roadmap.md](phase-roadmap.md) Phase 6/8.

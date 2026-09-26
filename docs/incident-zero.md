@@ -1,6 +1,6 @@
 # RuptureGrid v1.0 — Incident Zero (Flagship Scenario)
 
-Status: **Phase 0 — scenario design only. No runtime implementation exists.**
+Status: **Living contract — implemented and accepted (Phase 7; regression-permanent since Phase 7, tags `phase-7-accepted` … `phase-11-accepted`). Phases 0–11 accepted and frozen (released v1.0.1).**
 Incident Zero is the flagship demonstration and permanent regression scenario: a purpose-built fintech target that either duplicates a payment credit under duplicate delivery (vulnerable mode) or stays business-correct (secure mode), with RuptureGrid proving which happened from real evidence.
 
 Related: [product-spec.md](product-spec.md) §7 (identity model), [evidence-model.md](evidence-model.md), [architecture.md](architecture.md) §5 (target ownership), ADR-0004, ADR-0005.

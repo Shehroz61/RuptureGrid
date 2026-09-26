@@ -2,7 +2,7 @@
   "name": "rupturegrid-monorepo",
   "version": "1.0.1",
   "private": true,
-  "description": "RuptureGrid v1.0 — business-correctness failure testing platform (Phase 1 foundation)",
+  "description": "RuptureGrid v1.0 — business-correctness failure testing platform (v1.0.1 published; phases 0–11 accepted)",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {

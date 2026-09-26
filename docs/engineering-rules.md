@@ -1,6 +1,6 @@
 # RuptureGrid v1.0 — Engineering Rules
 
-Status: **Phase 0 — process contract only.**
+Status: **Living contract — in force (accepted through Phase 11, released v1.0.1). Phases 0–11 accepted and frozen.**
 Authoritative for: the development flow per phase, definitions of done, verification rules, Git discipline, migrations, observability, dependency governance.
 
 Related: [AGENTS.md](../AGENTS.md) (hard rules — this document expands, never contradicts), [testing-strategy.md](testing-strategy.md), [security-boundaries.md](security-boundaries.md) §10, ADR-0013.

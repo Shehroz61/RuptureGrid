@@ -1,6 +1,6 @@
 # RuptureGrid v1.0 — Architecture
 
-Status: **Phase 0 — architectural design only. No runtime implementation exists.**
+Status: **Living contract — accepted through Phase 11 (released v1.0.1). Phases 0–11 accepted and frozen.**
 Authoritative for: bounded contexts, physical topology, data ownership, execution semantics, durability, coordination, failure semantics, and snapshots.
 
 Related: [product-spec.md](product-spec.md), [evidence-model.md](evidence-model.md), [incident-replay.md](incident-replay.md), [security-boundaries.md](security-boundaries.md), ADRs in [decisions/](decisions/).
@@ -245,7 +245,7 @@ Workers capture observations at execution time (HTTP wire facts, timing, executo
 ## 13. Portability and configuration
 
 - No hard-coded paths, machine-specific database locations, or checked-in secrets. All runtime configuration is environment-driven with validated schemas; startup fails fast on missing/invalid configuration (engineering-rules.md §3).
-- The repository lives at `E:\RuptureGrid-v1.0` on this machine; **nothing in the implementation may assume that path** or any other machine-specific detail (ADR-0001, engineering-rules.md §6).
+- The repository is a portable pnpm workspace: no hard-coded paths, machine-specific locations, or machine assumptions anywhere in implementation or configuration.
 - Local development targets (including the Demo Target) use containerized infrastructure via Docker Compose in later phases; ports, credentials, and URLs come from environment configuration, never from source constants.
 
 ## 14. Technology direction

@@ -1,6 +1,6 @@
 # RuptureGrid v1.0 — Product Specification
 
-Status: **Phase 0 — definition only. No runtime implementation exists.**
+Status: **Living contract — accepted through Phase 11 (released v1.0.1). Phases 0–11 accepted and frozen.**
 Authoritative for: what RuptureGrid is, what it is not, the identity model, the money model, and the truth hierarchy.
 
 Related documents: [architecture.md](architecture.md), [evidence-model.md](evidence-model.md), [incident-zero.md](incident-zero.md), [security-boundaries.md](security-boundaries.md), [phase-roadmap.md](phase-roadmap.md).

@@ -9,6 +9,7 @@
 // freeze (ADR-0010).
 
 import type { ContractKind } from './target.js';
+import type { ManifestExecutionPolicy } from './manifest.js';
 import type { ControlledFaultActivation, ControlledFaultKind } from '@rupturegrid/shared';
 
 /** The only HTTP methods the v1 executor accepts. */
@@ -121,6 +122,14 @@ export interface RunSnapshotDocument {
     readonly contractKind: ContractKind;
     /** Credential REFERENCE names only — never values (ADR-0012). */
     readonly credentialRefs: readonly string[];
+    /**
+     * Phase 13 (ADR-0016): the manifest-derived execution policy frozen
+     * at snapshot time. Present ONLY for manifest-declaring targets;
+     * legacy (v1.0) snapshots carry no policy block and are unchanged.
+     * Live registration state is never consulted at execution time —
+     * this frozen block is the only manifest policy a run can use.
+     */
+    readonly manifestPolicy?: ManifestExecutionPolicy;
   };
   readonly experiment: {
     readonly definitionId: string;

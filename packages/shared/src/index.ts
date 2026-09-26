@@ -179,6 +179,79 @@ export type ExecutionLimits = typeof EXECUTION_LIMITS;
 export const SAFE_RETRY_MAX_ATTEMPTS = 3;
 
 // ---------------------------------------------------------------------
+// Phase 13 — target-manifest/v1 constants and server-side limits
+// (ADR-0016, ADR-0017; security-boundaries §8 discipline: manifest-
+// controlled structures are bounded SERVER-SIDE, never client-trusted).
+// ---------------------------------------------------------------------
+
+/** The exact manifest version Phase 13 accepts. Unknown versions are REJECTED, never guessed. */
+export const TARGET_MANIFEST_VERSION = 'target-manifest/v1';
+
+/**
+ * Manifest-declarable environments in v1.x (ADR-0016 §2). Production
+ * registration is REFUSED — unchanged from ADR-0011 — so production is
+ * deliberately absent from this vocabulary.
+ */
+export const TARGET_MANIFEST_ENVIRONMENTS = ['LOCAL_DEVELOPMENT', 'STAGING'] as const;
+export type TargetManifestEnvironment = (typeof TARGET_MANIFEST_ENVIRONMENTS)[number];
+
+/**
+ * Identity-node field declared primitive types (ADR-0017 Decision 1).
+ * Money-like fields are always `integer-minor-units` with an explicit
+ * currency field — floats are forbidden everywhere (R-06, ADR-0004).
+ */
+export const MANIFEST_FIELD_TYPES = [
+  'string',
+  'integer-minor-units',
+  'timestamp',
+  'boolean',
+] as const;
+export type ManifestFieldType = (typeof MANIFEST_FIELD_TYPES)[number];
+
+/**
+ * Server-side resource/security caps for manifest-declared structures.
+ * These bound the NETWORK PAYLOAD a registrant may submit (security-
+ * boundaries §8 discipline) — they are NOT semantic claims about valid
+ * identity models: ADR-0017 deliberately fixes no conceptual chain
+ * length, and these caps may be raised through reviewed config change
+ * without any change to identity semantics.
+ */
+export const MANIFEST_LIMITS = {
+  /** Maximum serialized JSON size of one manifest submission (bytes). */
+  maxSerializedBytes: 64_000,
+  /** Maximum displayName length (characters). */
+  maxDisplayNameChars: 120,
+  /** Maximum registered origins per manifest. */
+  maxOrigins: 16,
+  /** Maximum credential REFERENCE names per manifest (names only). */
+  maxCredentialRefs: 16,
+  /** Maximum declared sensitive-field names per manifest. */
+  maxSensitiveFields: 64,
+  /** Maximum identity nodes per manifest (payload safety cap, not semantics). */
+  maxIdentityNodes: 64,
+  /** Maximum causal edges per manifest (payload safety cap, not semantics). */
+  maxCausalEdges: 128,
+  /** Maximum declared fields per identity node. */
+  maxFieldsPerIdentityNode: 32,
+  /** Maximum named inspection queries per manifest. */
+  maxInspectionQueries: 64,
+  /** Maximum declared fields per inspection query. */
+  maxFieldsPerInspectionQuery: 64,
+  /** Maximum identity link fields per causal edge (exact-equality basis). */
+  maxLinkFieldsPerEdge: 8,
+  /** Maximum length of a declared role/query/field identifier (characters). */
+  maxIdentifierChars: 64,
+  /** Maximum length of a declared description string (characters). */
+  maxDescriptionChars: 500,
+  /** Maximum length of a declared signature-header name (characters). */
+  maxHeaderNameChars: 128,
+  /** Maximum length of a declared fault-hook path (characters). */
+  maxFaultHookPathChars: 512,
+} as const;
+
+export type ManifestLimits = typeof MANIFEST_LIMITS;
+
+// ---------------------------------------------------------------------
 // Money is always an integer amount of minor units (paisa for PKR) with
 // an explicit currency code — never a float (AGENTS R-06, ADR-0004).
 // Phase 1 establishes the type contract; business logic arrives later.

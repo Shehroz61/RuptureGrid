@@ -20,6 +20,7 @@ const LOCAL_TARGET = {
   environment: 'LOCAL_DEVELOPMENT' as const,
   credentialRefs: ['DEMO_INSPECTION_TOKEN'],
   origins: [{ origin: 'http://127.0.0.1:45001' }],
+  manifestJson: null,
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
 };
 

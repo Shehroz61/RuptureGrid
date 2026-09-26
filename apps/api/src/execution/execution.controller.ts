@@ -34,6 +34,7 @@ import {
   TargetRegistrationError,
   ExperimentValidationError,
   RunCreationError,
+  ManifestValidationError,
 } from '@rupturegrid/engine';
 import type { TargetRegistrationResult, CreatedRun } from '@rupturegrid/engine';
 // createExecutionQueue is used via a lazy import inside dispatch to
@@ -89,7 +90,8 @@ export class ExecutionController {
     if (
       error instanceof TargetRegistrationError ||
       error instanceof ExperimentValidationError ||
-      error instanceof RunCreationError
+      error instanceof RunCreationError ||
+      error instanceof ManifestValidationError
     ) {
       throw new HttpException(
         { error: { code: 'VALIDATION_FAILED', message: error.message } },
@@ -182,6 +184,8 @@ export class ExecutionController {
       origins?: unknown;
       contractKind?: unknown;
       credentialRefs?: unknown;
+      /** Phase 13: the target-manifest/v1 document, validated engine-side. */
+      manifest?: unknown;
     };
     try {
       return await registerTarget(this.controlDb.prisma, {
@@ -192,6 +196,9 @@ export class ExecutionController {
         ...(Array.isArray(input.credentialRefs)
           ? { credentialRefs: input.credentialRefs as string[] }
           : {}),
+        // Passed through UNTOUCHED: the engine's manifest boundary is the
+        // single validation authority (closed schema, limits, version).
+        ...(input.manifest === undefined ? {} : { manifest: input.manifest }),
       });
     } catch (error) {
       this.mapError(error);

@@ -13,6 +13,25 @@ export {
   getTarget,
 } from './target.js';
 export {
+  validateTargetManifest,
+  deriveExecutionPolicy,
+  effectiveSignatureHeader,
+  effectiveFaultHook,
+  ManifestValidationError,
+  LEGACY_SIGNATURE_HEADER,
+  LEGACY_DEMO_FAULT_HOOK_PATH,
+} from './manifest.js';
+export type {
+  TargetManifest,
+  ManifestIdentityNode,
+  ManifestCausalEdge,
+  ManifestIdentityModel,
+  ManifestInspectionQuery,
+  TargetManifestContractMetadata,
+  ManifestExecutionPolicy,
+  EffectiveFaultHook,
+} from './manifest.js';
+export {
   validateExperimentDocument,
   validateRelativePath,
   createExperiment,

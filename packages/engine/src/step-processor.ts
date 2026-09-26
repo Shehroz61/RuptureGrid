@@ -16,12 +16,14 @@ import type { PrismaClient } from '@rupturegrid/control-db';
 import type { WorkerConfig } from '@rupturegrid/config';
 import { SAFE_RETRY_MAX_ATTEMPTS, EXECUTION_LIMITS } from '@rupturegrid/shared';
 import type { RunSnapshotDocument, ExperimentStep } from './types.js';
+import type { ContractKind } from './target.js';
 import { claimStep, heartbeatStep, LeaseLostError } from './claim.js';
 import type { ClaimResult } from './claim.js';
 import { markExecuting, recordInvocation, writeTerminalState } from './transitions.js';
 import type { FencingContext } from './transitions.js';
 import { classifyInvocation, decideRetry } from './classify.js';
 import type { ClassifyResult } from './classify.js';
+import { effectiveFaultHook, effectiveSignatureHeader } from './manifest.js';
 import { noopEvidenceSink } from './evidence-sink.js';
 import type { EvidenceSink } from './evidence-sink.js';
 import { executeHttp, CredentialResolutionError } from './executor.js';
@@ -79,6 +81,13 @@ export interface StepProcessorDeps {
       readonly stepRunId: string;
       /** The FROZEN registered target origin (faults arm only there). */
       readonly origin: string;
+      /**
+       * The FROZEN contract kind of the target (Phase 13): adapters own
+       * target-specific fault-control protocols and may refuse kinds of
+       * target they do not implement (arming failure fails the step
+       * BEFORE any delivery — nothing is ever sent un-faulted).
+       */
+      readonly contractKind: ContractKind;
     }) => Promise<void>;
     readonly disarm: (input: {
       readonly faultKind: NonNullable<ExperimentStep['action']['faultPlan']>['faultKind'];
@@ -284,6 +293,41 @@ export class StepProcessor {
       return 'FAILED';
     }
 
+    // ---- Phase 13 execution-time fault-hook gate (defense in depth) ----
+    // The hook path and kinds are re-derived from the FROZEN manifest
+    // policy in this run's snapshot — never from live registration state
+    // (a later re-registration can never mutate a historical run's
+    // execution policy). Legacy snapshots keep the v1.0 gate exactly.
+    if (action.faultPlan !== undefined) {
+      const hook = effectiveFaultHook(
+        snapshotDocument.target.manifestPolicy,
+        snapshotDocument.target.contractKind,
+      );
+      const hookFailure =
+        hook === null
+          ? 'controlled fault denied: the target declared no controlled-fault hook (ADR-0016)'
+          : action.relativePath !== hook.path
+            ? `controlled fault denied: step path is not the declared fault hook (${hook.path}; ADR-0016)`
+            : hook.kinds.includes(action.faultPlan.faultKind)
+              ? null
+              : `controlled fault denied: fault kind ${action.faultPlan.faultKind} is not declared by the target's fault hook (ADR-0016)`;
+      if (hookFailure !== null) {
+        await writeTerminalState(
+          prisma,
+          claim.stepRunId,
+          {
+            state: 'FAILED',
+            intentOutcome: 'FAILED',
+            sideEffectKnowledge: 'KNOWN_ABSENT',
+            attemptCount: 0,
+            error: hookFailure,
+          },
+          ctx,
+        );
+        return 'FAILED';
+      }
+    }
+
     await markExecuting(this.prisma, claim.stepRunId, ctx);
     this.telemetry.record({
       kind: 'step.lifecycle',
@@ -343,6 +387,7 @@ export class StepProcessor {
             runId: claim.runId,
             stepRunId: claim.stepRunId,
             origin: snapshotDocument.target.origin,
+            contractKind: snapshotDocument.target.contractKind,
           });
           faultPlanArmed = action.faultPlan;
           this.telemetry.record({
@@ -722,6 +767,10 @@ export class StepProcessor {
         environment: document.target.environment,
         invocationIdentity: identity,
         credentials: this.credentials,
+        // The executor-owned signature header NAME for THIS target, from
+        // the frozen snapshot policy (manifest-declared), falling back to
+        // the v1.0 legacy Demo provider-signature header.
+        signatureHeader: effectiveSignatureHeader(document.target.manifestPolicy),
         ...(resolvedBody === undefined ? {} : { resolvedBody }),
       });
       let classified: ClassifyResult;

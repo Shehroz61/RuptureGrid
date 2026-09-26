@@ -16,6 +16,7 @@ import {
 } from '@rupturegrid/shared';
 import type { ControlledFaultActivation, ControlledFaultKind } from '@rupturegrid/shared';
 import type { TargetRegistration } from './prisma-types.js';
+import { deriveExecutionPolicy, effectiveFaultHook, effectiveSignatureHeader } from './manifest.js';
 import type {
   ExperimentDocument,
   ExperimentStep,
@@ -239,6 +240,14 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
     // ---- Headers ----
     const rawHeaders = rawAction['headers'];
     const headers: Record<string, string> = {};
+    // Phase 13 (ADR-0016 §2): the signature header NAME is manifest-
+    // derived — the legacy Demo name for manifest-less targets, the
+    // declared name under a stored manifest policy, or none. Only that
+    // name may carry the literal ${signature} token; the executor
+    // computes the value at request time (secret never in the document).
+    const signatureHeaderName = effectiveSignatureHeader(
+      deriveExecutionPolicy(input.target.manifestJson),
+    );
     if (rawHeaders !== undefined) {
       if (!isRecord(rawHeaders)) {
         issues.push(`steps[${index}].action.headers must be an object`);
@@ -257,17 +266,24 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
             );
             continue;
           }
-          if (!ALLOWED_HEADER_NAMES.has(lower)) {
+          if (
+            !ALLOWED_HEADER_NAMES.has(lower) &&
+            !(signatureHeaderName !== null && lower === signatureHeaderName)
+          ) {
             issues.push(
-              `steps[${index}].action.headers["${headerName}"] is not in the allowlist (${[...ALLOWED_HEADER_NAMES].join(', ')})`,
+              `steps[${index}].action.headers["${headerName}"] is not in the allowlist (${[...ALLOWED_HEADER_NAMES].join(', ')}${signatureHeaderName === null ? '' : `, ${signatureHeaderName} (manifest-declared signature header)`})`,
             );
             continue;
           }
-          // The provider-signature header may ONLY carry the literal
-          // ${signature} token (executor signs over the final bytes).
-          if (lower === 'x-rupturegrid-provider-signature' && headerValue !== '${signature}') {
+          // The signature header (legacy or manifest-declared) may ONLY
+          // carry the literal ${signature} token (the executor computes it).
+          if (
+            signatureHeaderName !== null &&
+            lower === signatureHeaderName &&
+            headerValue !== '${signature}'
+          ) {
             issues.push(
-              `steps[${index}].action.headers["x-rupturegrid-provider-signature"] must be the literal "\${signature}" token (the executor computes it)`,
+              `steps[${index}].action.headers["${headerName}"] must be the literal "\${signature}" token (the executor computes it over the final body bytes)`,
             );
             continue;
           }
@@ -389,7 +405,20 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
             `steps[${index}].action.faultPlan.maxTriggers must be an integer in [1, ${EXECUTION_LIMITS.maxFaultTriggersPerStep}]`,
           );
         }
-        // ---- Safety gate: target classification + path + contract ----
+        // ---- Safety gate: target classification + declared hook + contract ----
+        // Phase 13 (ADR-0016 §2): the hard-coded /webhooks/provider gate
+        // generalizes to the manifest-declared faultHook — a fault plan is
+        // accepted ONLY against the hook path and kinds the target itself
+        // declared (derived from its STORED registration provenance, never
+        // from live request input). The environment gate is UNCHANGED:
+        // LOCAL_DEVELOPMENT-only in every path (R-14, ADR-0011/0014).
+        // Legacy targets keep the v1.0 gate exactly (DEMO_FINTECH_WEBHOOK
+        // + /webhooks/provider + the full kind vocabulary).
+        const faultHook = effectiveFaultHook(
+          deriveExecutionPolicy(input.target.manifestJson),
+          targetContract,
+        );
+        const hookPath = faultHook?.path ?? '<no declared fault hook>';
         if (input.target.environment !== 'LOCAL_DEVELOPMENT') {
           issues.push(
             `steps[${index}].action.faultPlan is only permitted for LOCAL_DEVELOPMENT targets (registered environment: ${input.target.environment}; R-14)`,
@@ -400,14 +429,33 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
             `steps[${index}].action.faultPlan requires mutation=MUTATING (fault semantics are defined for mutating deliveries)`,
           );
         }
-        if (
-          rawFaultPlan !== undefined &&
-          (contract !== 'DEMO_FINTECH_WEBHOOK' ||
-            (typeof rawPath === 'string' && normalizedPath !== '/webhooks/provider'))
-        ) {
+        if (faultHook === null) {
           issues.push(
-            `steps[${index}].action.faultPlan is only valid for the target's webhook delivery path (/webhooks/provider under contract DEMO_FINTECH_WEBHOOK)`,
+            `steps[${index}].action.faultPlan is invalid: the target declared no controlled-fault hook (a fault plan can only target the manifest-declared hook of a manifest-declaring target)`,
           );
+        } else {
+          if (
+            rawFaultPlan !== undefined &&
+            (contract !== targetContract ||
+              (typeof rawPath === 'string' && normalizedPath !== hookPath))
+          ) {
+            issues.push(
+              `steps[${index}].action.faultPlan is only valid for the target's declared fault-controlled delivery path (${hookPath})`,
+            );
+          }
+          // A kind the target never declared can never be armed: reject
+          // explicitly (never silently dropped — the plan is not accepted
+          // "without" the kind; the definition never persists).
+          if (
+            rawFaultPlan !== undefined &&
+            typeof kind === 'string' &&
+            (CONTROLLED_FAULT_KINDS as readonly string[]).includes(kind) &&
+            !faultHook.kinds.includes(kind as ControlledFaultKind)
+          ) {
+            issues.push(
+              `steps[${index}].action.faultPlan.faultKind "${kind}" is not declared by the target's fault hook (declared kinds: ${faultHook.kinds.join(', ')})`,
+            );
+          }
         }
         if (
           typeof kind === 'string' &&
@@ -421,8 +469,10 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
           rawFaultPlan['planVersion'] === CONTROLLED_FAULT_PLAN_VERSION &&
           input.target.environment === 'LOCAL_DEVELOPMENT' &&
           mutation === 'MUTATING' &&
-          contract === 'DEMO_FINTECH_WEBHOOK' &&
-          (typeof rawPath === 'string' ? normalizedPath === '/webhooks/provider' : false)
+          contract === targetContract &&
+          faultHook !== null &&
+          faultHook.kinds.includes(kind as ControlledFaultKind) &&
+          (typeof rawPath === 'string' ? normalizedPath === hookPath : false)
         ) {
           faultPlan = {
             planVersion: CONTROLLED_FAULT_PLAN_VERSION,

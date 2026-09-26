@@ -201,6 +201,7 @@ describe('phase 9 controlled faults (real stack)', () => {
       environment: 'PRODUCTION' as const,
       credentialRefs: ['DEMO_ADMIN_TOKEN'],
       origins: [{ origin: demo.baseUrl }],
+      manifestJson: null,
       createdAt: new Date(0),
     };
     const document = {
@@ -236,6 +237,7 @@ describe('phase 9 controlled faults (real stack)', () => {
       environment: 'LOCAL_DEVELOPMENT' as const,
       credentialRefs: ['DEMO_ADMIN_TOKEN'],
       origins: [{ origin: demo.baseUrl }],
+      manifestJson: null,
       createdAt: new Date(0),
     };
     const action = (faultPlan: Record<string, unknown>): unknown => ({

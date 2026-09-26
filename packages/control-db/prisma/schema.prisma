@@ -183,6 +183,12 @@ model TargetRegistration {
   /// Response-interpretation contract used by side-effect
   /// classification (architecture §7.1, prompt §27).
   contractKind ContractKind
+  /// Phase 13 (ADR-0016): the registered target-manifest/v1 document —
+  /// REGISTRATION PROVENANCE. Data-only, closed-schema, validated
+  /// server-side before any row is written. NULL for legacy (v1.0)
+  /// targets registered without a manifest; credential VALUES can
+  /// never be present (manifests carry reference NAMES only — ADR-0012).
+  manifestJson Json?
   createdAt    DateTime          @default(now()) @db.Timestamptz(6)
 
   origins   TargetOrigin[]

@@ -20,6 +20,7 @@ import { isIP } from 'node:net';
 import { EXECUTION_LIMITS } from '@rupturegrid/shared';
 import type { TargetEnvironment } from '@rupturegrid/shared';
 import type { ContractKind } from './target.js';
+import { LEGACY_SIGNATURE_HEADER } from './manifest.js';
 import type { HttpActionTemplate } from './types.js';
 
 export type TransportStage =
@@ -78,6 +79,13 @@ export interface ExecuteInput {
   /** Per-invocation identity (e.g. deliveryAttemptId), already generated. */
   readonly invocationIdentity: string;
   readonly credentials: CredentialResolver;
+  /**
+   * The executor-owned signature header NAME for this target: the
+   * manifest-declared name under a frozen manifest policy, the v1.0
+   * Demo provider-signature name for legacy targets, or null when no
+   * signature seam exists. Step headers never choose it.
+   */
+  readonly signatureHeader?: string | null;
   /**
    * Resolved variable references for THIS invocation (`${steps.…}`),
    * supplied by the step processor from prior invocation results
@@ -207,10 +215,12 @@ function failureStage(error: unknown, aborted: boolean): { stage: TransportStage
  * Host is ALWAYS derived from the registered origin — step headers
  * cannot set it (validation forbids it; the executor re-derives it).
  *
- * The Demo contract's provider-signature header may carry the literal
- * token `${signature}`: it is computed here over the FINAL body bytes
- * with the resolved signing secret (the secret exists only inside
- * this call frame — ADR-0012).
+ * The signature header carries the literal token `${signature}`: it is
+ * computed here over the FINAL body bytes with the resolved signing
+ * secret (the secret exists only inside this call frame — ADR-0012).
+ * The header NAME is the manifest-declared one when the frozen target
+ * policy declares one; the v1.0 Demo contract keeps its hard-coded
+ * provider-signature name (byte-identical legacy path).
  */
 function buildHeaders(
   action: HttpActionTemplate,
@@ -218,6 +228,7 @@ function buildHeaders(
   invocationIdentity: string,
   credentials: CredentialResolver,
   finalBody: string | undefined,
+  signatureHeader: string | null,
 ): Record<string, string> {
   const originUrl = new URL(origin);
   const headers: Record<string, string> = {
@@ -232,14 +243,16 @@ function buildHeaders(
     if (lower === 'x-rupturegrid-delivery-attempt-id') {
       continue; // Executor-owned identity — never step-overridden.
     }
-    if (lower === 'x-rupturegrid-provider-signature' && rawValue === SIGNATURE_TOKEN) {
+    if (signatureHeader !== null && lower === signatureHeader && rawValue === SIGNATURE_TOKEN) {
       if (finalBody === undefined) {
         throw new ExecutorSecurityError(
-          '${signature} token requires a request body (Demo webhook contract)',
+          '${signature} token requires a request body (the signature signs the final body bytes)',
         );
       }
-      const secret = credentials.resolve('DEMO_PROVIDER_SIGNING_SECRET');
-      headers[lower] = signDemoWebhookBody(finalBody, secret);
+      headers[lower] = signDemoWebhookBody(
+        finalBody,
+        credentials.resolve('DEMO_PROVIDER_SIGNING_SECRET'),
+      );
       continue;
     }
     headers[lower] = substituteCredentials(rawValue, credentials);
@@ -301,6 +314,9 @@ export async function executeHttp(input: ExecuteInput): Promise<ExecutorOutcome>
     input.invocationIdentity,
     input.credentials,
     body,
+    // Default (legacy) targets keep the v1.0 Demo provider-signature
+    // name; a frozen manifest policy names its own header or none.
+    input.signatureHeader === undefined ? LEGACY_SIGNATURE_HEADER : input.signatureHeader,
   );
   // Address-class policy BEFORE any connection attempt (security-
   // boundaries §5). A denial here is provably pre-send.

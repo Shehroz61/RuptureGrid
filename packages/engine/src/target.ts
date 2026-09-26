@@ -15,6 +15,7 @@ import type { TargetEnvironment } from '@rupturegrid/shared';
 import { TARGET_ENVIRONMENTS } from '@rupturegrid/shared';
 import type { PrismaClient } from '@rupturegrid/control-db';
 import type { TargetRegistration } from './prisma-types.js';
+import { validateTargetManifest } from './manifest.js';
 
 export const CONTRACT_KINDS = ['DEMO_FINTECH_WEBHOOK', 'GENERIC_HTTP'] as const;
 export type ContractKind = (typeof CONTRACT_KINDS)[number];
@@ -32,6 +33,14 @@ export interface RegisterTargetInput {
   readonly origins: readonly string[];
   readonly contractKind: ContractKind;
   readonly credentialRefs?: readonly string[];
+  /**
+   * Phase 13 (ADR-0016): the target-manifest/v1 document. When present
+   * it is validated against the authoritative closed-schema boundary
+   * and stored EXACTLY as submitted (registration provenance). Legacy
+   * (manifest-less) registration — the v1.0 Demo Fintech path — is
+   * unchanged: no manifest row content, no manifest-derived policy.
+   */
+  readonly manifest?: unknown;
 }
 
 /**
@@ -88,6 +97,8 @@ export interface TargetRegistrationResult {
   readonly contractKind: ContractKind;
   readonly credentialRefs: readonly string[];
   readonly origins: readonly string[];
+  /** The stored manifest provenance, when the target registered with one. */
+  readonly manifestJson?: unknown;
 }
 
 /**
@@ -131,6 +142,55 @@ export async function registerTarget(
     throw new TargetRegistrationError(`duplicate origins in request: ${duplicate}`);
   }
 
+  // ---- Phase 13: manifest validation + consistency (ADR-0016) ----
+  // The manifest is validated by the SINGLE authoritative boundary
+  // (manifest.ts) BEFORE any row is written. Its declarations must
+  // agree with the registration's own fields — a manifest is provenance
+  // about THIS target, not an alternative input channel that could
+  // diverge from what the registration actually grants.
+  let manifestJson: object | undefined;
+  if (input.manifest !== undefined) {
+    const manifest = validateTargetManifest(input.manifest);
+    if (manifest.displayName !== input.displayName) {
+      throw new TargetRegistrationError(
+        'manifest.displayName must equal the registration displayName (a manifest describes exactly this target)',
+      );
+    }
+    if (manifest.environment !== input.environment) {
+      throw new TargetRegistrationError(
+        `manifest.environment (${manifest.environment}) must equal the registration environment (${input.environment}); PRODUCTION is refused in v1.x (ADR-0016)`,
+      );
+    }
+    const manifestOriginSet = [...manifest.origins].sort();
+    const inputOriginSet = [...normalized].sort();
+    if (
+      manifestOriginSet.length !== inputOriginSet.length ||
+      manifestOriginSet.some((origin, index) => origin !== inputOriginSet[index])
+    ) {
+      throw new TargetRegistrationError(
+        'manifest.origins must equal the registration origins (normalized; duplicates rejected)',
+      );
+    }
+    const inputRefs = [...credentialRefs].sort();
+    const manifestRefs = [...manifest.credentialRefs].sort();
+    if (
+      inputRefs.length !== manifestRefs.length ||
+      inputRefs.some((ref, index) => ref !== manifestRefs[index])
+    ) {
+      throw new TargetRegistrationError(
+        'manifest.credentialRefs must equal the registration credentialRefs (names only; subset of the executor allowlist)',
+      );
+    }
+    if (manifest.contract.kind !== input.contractKind) {
+      throw new TargetRegistrationError(
+        `manifest.contract.kind (${manifest.contract.kind}) must equal the registration contractKind (${input.contractKind})`,
+      );
+    }
+    // Provenance is the EXACT submitted document — no re-shaping, no
+    // field dropping (the validator already rejected unknown fields).
+    manifestJson = JSON.parse(JSON.stringify(input.manifest)) as object;
+  }
+
   // Environment scheme policy (security-boundaries §3.1): https always;
   // http only for explicitly registered LOCAL_DEVELOPMENT targets.
   if (input.environment !== 'LOCAL_DEVELOPMENT') {
@@ -167,6 +227,7 @@ export async function registerTarget(
         environment: input.environment,
         contractKind: input.contractKind,
         credentialRefs: [...credentialRefs],
+        ...(manifestJson === undefined ? {} : { manifestJson }),
         origins: {
           create: normalized.map((origin) => ({ origin })),
         },
@@ -182,6 +243,7 @@ export async function registerTarget(
     contractKind: created.contractKind,
     credentialRefs: created.credentialRefs,
     origins: created.origins.map((origin: { origin: string }) => origin.origin).sort(),
+    ...(manifestJson === undefined ? {} : { manifestJson }),
   };
 }
 

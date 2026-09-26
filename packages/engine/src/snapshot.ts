@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@rupturegrid/control-db';
 import { EXECUTION_ENGINE_VERSION } from '@rupturegrid/shared';
 import type { ContractKind } from './target.js';
+import { deriveExecutionPolicy } from './manifest.js';
 import { canonicalizeAndHash, CANONICALIZATION_ALGORITHM } from './canonicalize.js';
 import type { ExperimentDocument, RunSnapshotDocument } from './types.js';
 
@@ -47,6 +48,8 @@ export function buildSnapshotDocument(input: {
     readonly contractKind: string;
     readonly credentialRefs: readonly string[];
     readonly origins: readonly { readonly origin: string }[];
+    /** Phase 13: the stored registration provenance (may be null). */
+    readonly manifestJson?: unknown;
   };
 }): { document: RunSnapshotDocument; canonical: string; hash: string } {
   const target = input.target;
@@ -60,6 +63,13 @@ export function buildSnapshotDocument(input: {
   // Deterministic primary origin: lexicographically first normalized
   // origin. The revision is pinned to exactly one executable origin.
   const origin = [...target.origins].map((entry) => entry.origin).sort()[0] as string;
+  // Phase 13 (ADR-0016): the manifest-derived EXECUTION POLICY is
+  // frozen INTO the snapshot. Re-derivation re-validates the stored
+  // provenance (defense in depth — corrupt provenance fails closed,
+  // never silently becomes policy). Legacy targets (no manifest)
+  // carry no policy block: their snapshot documents are byte-for-byte
+  // IDENTICAL to v1.0 (frozen-history back-compat, R-01/R-07).
+  const manifestPolicy = deriveExecutionPolicy(target.manifestJson);
   const document: RunSnapshotDocument = {
     engineVersion: EXECUTION_ENGINE_VERSION,
     canonicalization: CANONICALIZATION_ALGORITHM,
@@ -70,6 +80,7 @@ export function buildSnapshotDocument(input: {
       origin,
       contractKind: target.contractKind as ContractKind,
       credentialRefs: [...target.credentialRefs].sort(),
+      ...(manifestPolicy === undefined ? {} : { manifestPolicy }),
     },
     experiment: {
       definitionId: input.definition.id,
@@ -117,6 +128,7 @@ export async function freezeSnapshot(
       contractKind: revision.target.contractKind,
       credentialRefs: revision.target.credentialRefs,
       origins: revision.target.origins,
+      manifestJson: revision.target.manifestJson,
     },
   });
 

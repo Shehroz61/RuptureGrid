@@ -159,7 +159,18 @@ export async function startExecutionWorkerRuntime(): Promise<ExecutionWorkerRunt
       readonly runId: string;
       readonly stepRunId: string;
       readonly origin: string;
+      /** Frozen contract kind — Demo-only protocol guard (Phase 13). */
+      readonly contractKind: string;
     }): Promise<void> => {
+      // The Demo fault-control protocol exists ONLY on the Demo Fintech
+      // target (ADR-0014: target-owned hook). A generic manifest target
+      // must never receive Demo admin traffic: refuse BEFORE any request
+      // is sent (the engine turns this into a pre-delivery step failure).
+      if (input.contractKind !== 'DEMO_FINTECH_WEBHOOK') {
+        throw new Error(
+          `no fault-control adapter for contract kind ${input.contractKind}: arming refused before any delivery`,
+        );
+      }
       const plan = input.faultPlan as {
         faultKind: string;
         planVersion: string;

@@ -42,11 +42,82 @@ import {
 import type { ControlledFaultKind, ManifestFieldType } from '@rupturegrid/shared';
 import { CONTRACT_KINDS, normalizeOrigin } from './target.js';
 import type { ContractKind } from './target.js';
-import { validateRelativePath } from './validate.js';
+import { validateRelativePath, PathPolicyError } from './validate.js';
 import { EXECUTOR_CREDENTIAL_REFS } from '@rupturegrid/config';
 
 /** The executor's server-side credential-reference allowlist (ADR-0012). */
 const EXECUTOR_CREDENTIAL_REF_SET: ReadonlySet<string> = new Set(EXECUTOR_CREDENTIAL_REFS);
+
+// ---------------------------------------------------------------------
+// Inspection/v1 request-path contract (ADR-0022)
+// ---------------------------------------------------------------------
+// An inspection path is a LITERAL relative URL. There is NO runtime
+// parameter binding, NO template/interpolation surface of any kind:
+// no `${…}` step-response references (that grammar belongs to
+// experiment execution — body/adapter resolution — never to target
+// registration), no `{…}` placeholder forms, no environment/credential
+// identity interpolation. The adapter uses the frozen declared path
+// exactly as validated. Subject identity, verification scope, and
+// experiment generation travel in the RETURNED typed evidence (the
+// declared identity fields), never in or from the URL; no truth
+// (identity, causality, completeness) is ever derived from the path.
+// A fixed literal query string (static manifest data) is permitted;
+// no query value may be derived at runtime. Dynamic request binding,
+// if ever genuinely required, arrives as a deliberately designed
+// future inspection version behind a new ADR — never inside v1.
+
+/**
+ * Rejects template/interpolation-looking syntax in an inspection/v1
+ * request path (ADR-0022). Narrow and deliberate — not a general
+ * "template detector": exactly the brace/placeholder forms that could
+ * be reinterpreted as runtime binding surfaces by a later adapter, in
+ * raw or percent-decoded form. The ordinary relative-path validator
+ * (authority/SSRF/pseudo-scheme checks) still applies unchanged; this
+ * is an ADDITIONAL, inspection-specific closure so Phase 14 cannot
+ * accidentally reinterpret an accepted manifest as a templating
+ * language.
+ */
+function rejectInspectionPathTemplates(rawPath: string, decodedPath: string): void {
+  // `${…}` — the experiment-execution reference grammar. Forbidden in
+  // registration data regardless of position (path or query).
+  if (/\$\{[^}]*\}/.test(rawPath) || /\$\{[^}]*\}/.test(decodedPath)) {
+    throw new PathPolicyError(
+      `inspection path must be a literal relative URL: \${…} template syntax is forbidden in inspection/v1 (ADR-0022) — "${rawPath.slice(0, 60)}"`,
+    );
+  }
+  // `{…}` / `{{…}}` placeholder forms, raw or percent-decoded —
+  // brace/bracket placeholders are not legal URL data and exist only
+  // as would-be interpolation slots.
+  if (/\{[^}]*\}/.test(rawPath) || /\{[^}]*\}/.test(decodedPath)) {
+    throw new PathPolicyError(
+      `inspection path must be a literal relative URL: {…} placeholder syntax is forbidden in inspection/v1 (ADR-0022) — "${rawPath.slice(0, 60)}"`,
+    );
+  }
+}
+
+/**
+ * Validates an inspection/v1 declared request path (ADR-0022): the
+ * ordinary relative-path authority/SSRF validation, THEN the
+ * inspection-specific literal-only closure (no template/interpolation
+ * syntax, raw or percent-decoded). Returns the normalized literal path
+ * the adapter must use exactly as declared.
+ */
+function validateInspectionPath(rawPath: string): string {
+  // Existing authority/SSRF validation FIRST (unchanged semantics).
+  const normalized = validateRelativePath(rawPath);
+  // Then the inspection-specific literal-only closure, on the raw
+  // string AND on its fully percent-decoded form (audit of
+  // percent-encoded forms: `%24%7BorderId%7D`, `%7BorderId%7D` are the
+  // same forbidden placeholders after decoding).
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(normalized);
+  } catch {
+    throw new PathPolicyError('inspection path contains invalid percent-encoding');
+  }
+  rejectInspectionPathTemplates(normalized, decoded);
+  return normalized;
+}
 
 // ---------------------------------------------------------------------
 // Errors
@@ -114,7 +185,15 @@ export interface ManifestInspectionQuery {
    */
   readonly roleId: string;
   readonly description: string;
-  /** Read-only relative path on the target's registered origins. */
+  /**
+   * Read-only relative path on the target's registered origins. A
+   * LITERAL URL (ADR-0022): no runtime interpolation or parameter
+   * binding of any kind — no `${steps.…}` step-response references, no
+   * `{…}` placeholders, no credential/environment/identity
+   * substitution. A fixed literal query string is permitted; its
+   * values are static manifest data, never runtime-derived. The
+   * adapter uses this path exactly as declared after validation.
+   */
   readonly path: string;
   /** Declared response entity schema: field name → declared primitive type. */
   readonly fields: Readonly<Record<string, ManifestFieldType>>;
@@ -674,7 +753,7 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
         );
       } else {
         try {
-          path = validateRelativePath(rawPath);
+          path = validateInspectionPath(rawPath);
         } catch (error) {
           issues.push(
             `${where}.path: ${error instanceof Error ? error.message : 'invalid relative path'}`,

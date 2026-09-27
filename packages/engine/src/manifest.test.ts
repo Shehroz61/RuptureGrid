@@ -21,6 +21,7 @@ import {
   validateTargetManifest,
 } from './manifest.js';
 import { classifyInvocation } from './classify.js';
+import { validateRelativePath } from './validate.js';
 import { MANIFEST_LIMITS } from '@rupturegrid/shared';
 
 // ---------------------------------------------------------------------
@@ -65,7 +66,7 @@ function validManifest(overrides: Record<string, unknown> = {}): Record<string, 
         queryId: 'orderById',
         roleId: 'payment',
         description: 'Fetch one order by id',
-        path: '/inspection/orders?orderId=${orderId}',
+        path: '/inspection/orders?state=accepted',
         fields: { orderId: 'string', status: 'string', totalMinorUnits: 'integer-minor-units' },
         identityFields: ['orderId'],
       },
@@ -101,7 +102,7 @@ describe('target-manifest/v1 accepted shapes', () => {
     expect(manifest.origins).toEqual(['https://api.acme.example:8443']);
     expect(manifest.contract.metadata.noEffectOnRejection).toBe(true);
     expect(manifest.signatureHeader).toBeUndefined();
-    expect(manifest.inspection[0]?.path).toBe('/inspection/orders?orderId=${orderId}');
+    expect(manifest.inspection[0]?.path).toBe('/inspection/orders?state=accepted');
   });
 
   it('accepts a LOCAL_DEVELOPMENT manifest with http origin and declares the fault hook', () => {
@@ -147,7 +148,7 @@ describe('target-manifest/v1 accepted shapes', () => {
             queryId: 'orderById',
             roleId: 'thing',
             description: 'Fetch one order by id',
-            path: '/inspection/orders?orderId=${orderId}',
+            path: '/inspection/orders?state=accepted',
             fields: { orderId: 'string', status: 'string', totalMinorUnits: 'integer-minor-units' },
             identityFields: ['orderId'],
           },
@@ -395,8 +396,127 @@ describe('target-manifest/v1 closed-schema rejections', () => {
 });
 
 // ---------------------------------------------------------------------
-// Rejected manifests — origins, credentials, identity, paths, hooks
+// Inspection/v1 literal request-path contract (ADR-0022)
 // ---------------------------------------------------------------------
+
+const INSPECTION_QUERY_BASE = {
+  queryId: 'orders',
+  roleId: 'payment',
+  description: 'Read-only collection of orders',
+  fields: { orderId: 'string', status: 'string' },
+  identityFields: ['orderId'],
+} as const;
+
+function manifestWithInspectionPath(path: string): Record<string, unknown> {
+  return validManifest({
+    inspection: [{ ...INSPECTION_QUERY_BASE, path }],
+  });
+}
+
+describe('inspection/v1 literal request paths (ADR-0022)', () => {
+  it('ACCEPTS literal relative paths, with or without a fixed literal query string', () => {
+    for (const path of [
+      '/inspection/orders',
+      '/inspection/orders?state=accepted',
+      '/inspection/orders?view=accepted&limit=100',
+      '/inspection/provider-payments/some-literal-id',
+      '/orders?created-after=2026-01-01',
+    ]) {
+      const manifest = validateTargetManifest(manifestWithInspectionPath(path));
+      expect(manifest.inspection).toHaveLength(1);
+      // The declared path is preserved EXACTLY as validated (the
+      // adapter will use it as-is; no rewriting, no re-interpretation).
+      expect(manifest.inspection[0]?.path).toBe(path);
+    }
+  });
+
+  it('REJECTS the experiment-execution ${steps…} reference grammar in an inspection path', () => {
+    // The ONLY ${…} runtime grammar in the platform belongs to
+    // experiment EXECUTION (body/adapter resolution, §59). It has no
+    // inspection/v1 existence — not in raw form, not in any encoded
+    // form: an inspection path can never consume a step response.
+    expectRejected(
+      manifestWithInspectionPath('/inspection/${steps.submit.response.orderId}'),
+      /inspection path must be a literal relative URL: \$\{…\} template syntax is forbidden/,
+    );
+  });
+
+  it('REJECTS ${…} and {…} placeholder forms in path and query, raw and percent-encoded', () => {
+    expectRejected(
+      manifestWithInspectionPath('/inspection/orders?orderId=${orderId}'),
+      /inspection path must be a literal relative URL: \$\{…\} template syntax is forbidden/,
+    );
+    expectRejected(
+      manifestWithInspectionPath('/inspection/${orderId}'),
+      /inspection path must be a literal relative URL: \$\{…\} template syntax is forbidden/,
+    );
+    expectRejected(
+      manifestWithInspectionPath('/inspection/orders/{orderId}'),
+      /inspection path must be a literal relative URL: \{…\} placeholder syntax is forbidden/,
+    );
+    expectRejected(
+      manifestWithInspectionPath('/inspection/orders?filter={"orderId":"abc"}'),
+      /inspection path must be a literal relative URL: \{…\} placeholder syntax is forbidden/,
+    );
+    // Percent-encoded forms of the same forbidden placeholders — the
+    // audit covers the DECODED path too, so encoded braces never
+    // smuggle the template grammar past validation.
+    expectRejected(
+      manifestWithInspectionPath('/inspection/%7BorderId%7D'),
+      /inspection path must be a literal relative URL/,
+    );
+    expectRejected(
+      manifestWithInspectionPath('/inspection/%24%7BorderId%7D'),
+      /inspection path must be a literal relative URL/,
+    );
+    expectRejected(
+      manifestWithInspectionPath('/inspection/%24%7Bsteps.submit.response.orderId%7D'),
+      /inspection path must be a literal relative URL/,
+    );
+  });
+
+  it('REJECTS malformed authority/path escapes exactly as the shared path policy already does', () => {
+    expectRejected(
+      manifestWithInspectionPath('https://evil.example/x'),
+      /absolute URL is not allowed/,
+    );
+    expectRejected(manifestWithInspectionPath('//evil.example/x'), /scheme-relative/);
+    expectRejected(
+      manifestWithInspectionPath('/inspection//orders'),
+      /authority escape is not allowed/,
+    );
+    expectRejected(
+      manifestWithInspectionPath('/inspection/%2f%2fevil.example'),
+      /percent-encoded authority escape/,
+    );
+  });
+
+  it('preserves faultHook and action-path semantics (closure is inspection-specific only)', () => {
+    // The template-syntax closure is INSPECTION-SPECIFIC: the faultHook
+    // path validator and the experiment action relativePath validator
+    // keep their accepted grammar (validateRelativePath) unchanged —
+    // only the inspection surface freezes to literal-only (ADR-0022).
+    const faultHooked = validateTargetManifest(
+      validManifest({
+        environment: 'LOCAL_DEVELOPMENT',
+        origins: ['http://127.0.0.1:45001'],
+        credentialRefs: ['DEMO_PROVIDER_SIGNING_SECRET'],
+        signatureHeader: 'X-Acme-Signature',
+        faultHook: {
+          version: 'controlled-fault/v1',
+          path: '/hooks/{checkout}',
+          kinds: ['RESPONSE_TRUNCATION'],
+        },
+      }),
+    );
+    expect(faultHooked.faultHook?.path).toBe('/hooks/{checkout}');
+    // The SHARED path helper used by experiment action paths (and
+    // faultHook paths) is byte-identical in behavior: it still accepts
+    // a query value containing `${…}`-shaped characters — the literal
+    // freeze exists ONLY at the inspection surface.
+    expect(validateRelativePath('/orders?state=${state}')).toBe('/orders?state=${state}');
+  });
+});
 
 describe('target-manifest/v1 adversarial rejections', () => {
   it('rejects malformed origins, userinfo, paths, and unsupported protocols', () => {

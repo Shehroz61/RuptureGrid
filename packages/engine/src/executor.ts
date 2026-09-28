@@ -15,13 +15,25 @@
 //   - transport-stage tracking (§50) for side-effect classification
 
 import { createHmac } from 'node:crypto';
-import dns from 'node:dns/promises';
-import { isIP } from 'node:net';
 import { EXECUTION_LIMITS } from '@rupturegrid/shared';
 import type { TargetEnvironment } from '@rupturegrid/shared';
 import type { ContractKind } from './target.js';
 import { LEGACY_SIGNATURE_HEADER } from './manifest.js';
 import type { HttpActionTemplate } from './types.js';
+// Phase 14 (B-1 repair): the DESTINATION-security rules (address-class
+// policy, resolve-once-validate, origin authority) live in ONE shared
+// implementation — destination.ts — which this module re-exports
+// byte-identically. The executor keeps the credential/signature/body
+// seams; every outbound transport (executor actions AND the credential-
+// free generic inspection adapter) resolves its destination policy to
+// these exact same functions. No security logic is duplicated.
+import { assertDestinationAllowed, assertOriginAllowed } from './destination.js';
+
+export {
+  assertDestinationAllowed,
+  isDeniedAddress,
+  DestinationDeniedError,
+} from './destination.js';
 
 export type TransportStage =
   'PREPARED' | 'CONNECTING' | 'REQUEST_SENT' | 'RESPONSE_HEADERS' | 'RESPONSE_COMPLETE';
@@ -94,75 +106,9 @@ export interface ExecuteInput {
   readonly resolvedBody?: string;
 }
 
-/**
- * Address-class policy (security-boundaries §5 — Phase 3 control).
- * Loopback, link-local, private (RFC 1918), unique-local (fc00::/7),
- * and cloud-metadata ranges are DENIED unless the target is explicitly
- * classified LOCAL_DEVELOPMENT (the Demo Target is exactly that).
- * STAGING/PRODUCTION targets must be reachable only by public address.
- */
-export class DestinationDeniedError extends Error {
-  public constructor(message: string) {
-    super(message);
-    this.name = 'DestinationDeniedError';
-  }
-}
-
-export function isDeniedAddress(ip: string): boolean {
-  const v4 = isIP(ip) === 4 ? ip.split('.').map((part) => Number(part)) : null;
-  if (v4 !== null) {
-    if (v4[0] === 10 || v4[0] === 127) return true; // private, loopback
-    if (v4[0] === 169 && v4[1] === 254) return true; // link-local
-    if (v4[0] === 172 && (v4[1] ?? 0) >= 16 && (v4[1] ?? 0) <= 31) return true;
-    if (v4[0] === 192 && v4[1] === 168) return true;
-    if (v4[0] === 100 && (v4[1] ?? 0) >= 64 && (v4[1] ?? 0) <= 127) return true;
-    // CGNAT (shared address space)
-    if (v4[0] === 169 && v4[1] === 254) return true;
-    return false;
-  }
-  if (isIP(ip) === 6) {
-    const lower = ip.toLowerCase();
-    if (lower === '::1' || lower === '::') return true; // loopback, unspecified
-    if (lower.startsWith('fe80')) return true; // link-local
-    if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // unique-local
-    if (lower.startsWith('::ffff:')) {
-      // IPv4-mapped: evaluate the embedded IPv4 address.
-      return isDeniedAddress(lower.slice(7));
-    }
-    // IPv4/IPv6 translation + well-known prefix (64:ff9b::/96).
-    if (lower.startsWith('64:ff9b:')) return true;
-    return false;
-  }
-  return true; // unparseable → deny
-}
-
-/**
- * Resolve-once-validate (security-boundaries §5): resolves the
- * registered host and verifies every returned address against the
- * address-class policy BEFORE any connection is attempted. Failure is
- * a pre-send denial (KNOWN_ABSENT class) — the request provably never
- * left the executor. DNS rebinding cannot be fully eliminated here
- * (docs §5); network egress isolation remains the primary control.
- */
-export async function assertDestinationAllowed(
-  origin: URL,
-  environment: TargetEnvironment,
-): Promise<void> {
-  if (environment === 'LOCAL_DEVELOPMENT') {
-    return; // Demo/local targets legitimately run on loopback/private nets.
-  }
-  const host = origin.hostname.replace(/^\[|\]$/g, '');
-  const addresses: readonly string[] =
-    isIP(host) !== 0
-      ? [host]
-      : (await dns.lookup(host, { all: true, verbatim: true })).map((entry) => entry.address);
-  const denied = addresses.find((address) => isDeniedAddress(address));
-  if (denied !== undefined) {
-    throw new DestinationDeniedError(
-      `registered target resolves to a denied address class for environment ${environment}`,
-    );
-  }
-}
+// (The address-class policy and resolve-once-validate seam now live in
+// destination.ts — the single reviewed implementation — and are
+// re-exported above byte-identically; see the import comment.)
 
 const SERVER_AGENT = 'rupturegrid-executor/1.0';
 /** Header token that expands to the Demo provider signature of the final body. */
@@ -326,11 +272,12 @@ export async function executeHttp(input: ExecuteInput): Promise<ExecutorOutcome>
 
   try {
     // The URL is origin + validated relative path — no user-supplied
-    // absolute URL exists in the snapshot to even construct.
+    // absolute URL exists in the snapshot to even construct. The origin
+    // authority + scheme/environment check is the SHARED destination
+    // seam (destination.ts) — the identical rule the generic inspection
+    // adapter resolves to.
     const url = new URL(input.action.relativePath, origin);
-    if (url.origin !== origin.origin) {
-      throw new ExecutorSecurityError('resolved URL origin does not match the registered origin');
-    }
+    assertOriginAllowed(url, origin, input.environment);
 
     const response = await fetch(url, {
       method: input.action.method,

@@ -25,6 +25,48 @@ export const DEMO_LINEAGE_NORMALIZER_VERSION = 'v2';
 export const INVOCATION_NORMALIZER_NAME = 'executor-invocation-normalizer';
 export const INVOCATION_NORMALIZER_VERSION = 'v1';
 
+// =====================================================================
+// Phase 14 — generic manifest inspection (ADR-0017, ADR-0021, ADR-0022)
+// =====================================================================
+
+/** The explicit Phase 14 generic manifest-inspection adapter kind. */
+export const GENERIC_INSPECTION_ADAPTER_KIND = 'generic-inspection/v1';
+
+/** Normalizer identity for generic manifest-inspection captures. */
+export const GENERIC_INSPECTION_NORMALIZER_NAME = 'generic-inspection-normalizer';
+export const GENERIC_INSPECTION_NORMALIZER_VERSION = 'v1';
+
+/**
+ * The platform-owned relation kind for transitive identity-chain
+ * attribution (multi-hop reachability through identity-direct edges).
+ * NEVER a target-declared edgeKind — target edge kinds name direct
+ * edges only (ADR-0017: platform vocabularies stay platform-owned).
+ */
+export const GENERIC_IDENTITY_CHAIN_RELATION_KIND = 'identity-chain-reachability';
+
+/**
+ * Version of the RuptureGrid-owned attribution-gap diagnostic event
+ * (deterministic, bounded provenance for contested/ambiguous identity
+ * or missing/redacted linkage). NOT a target event, NOT a finding, and
+ * never a Phase 15 verdict — Phase 15 reads it as honest gap evidence.
+ */
+export const GENERIC_DERIVATION_DIAGNOSTIC_EVENT_TYPE = 'rupturegrid.derivation-gap-observed';
+export const GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_NAME = 'generic-derivation-diagnostic';
+export const GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_VERSION = 'v1';
+
+/**
+ * B-2: durable INVALIDATION-provenance event identity (a tombstone in
+ * evidence — never a deletion). When a late identity conflict appears,
+ * the deterministic, versioned tombstone names the contested events
+ * AND the persisted relationship ids excluded from the ACTIVE causal
+ * graph. Prior relationship rows are physically preserved (logically
+ * append-only); the tombstone is what makes the exclusion auditable.
+ */
+export const GENERIC_DERIVATION_INVALIDATION_EVENT_TYPE =
+  'rupturegrid.derivation-invalidation-observed';
+export const GENERIC_DERIVATION_INVALIDATION_NORMALIZER_NAME = 'generic-derivation-invalidation';
+export const GENERIC_DERIVATION_INVALIDATION_NORMALIZER_VERSION = 'v1';
+
 /** INV-IZ-1 evaluator identity (incident-zero §5). */
 export const INV_IZ_1_KEY = 'INV-IZ-1';
 export const INV_IZ_1_EVALUATOR_VERSION = 'v1';

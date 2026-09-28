@@ -94,11 +94,115 @@ export function redactHeaders(headers: Readonly<Record<string, string>>): Record
   return out;
 }
 
+// ---------------------------------------------------------------------
+// Phase 14 — target-declared sensitive fields (security-boundaries §7:
+// "a secret registry per target declares sensitive fields")
+// ---------------------------------------------------------------------
+// The target manifest's `sensitiveFields` (frozen into the run's
+// ManifestEvidencePolicy) are ADDITIONAL redaction-registry entries for
+// generic inspection captures. They never weaken the built-in layers:
+// the sensitive-NAME pattern and the secret-SHAPE masking above still
+// apply to every value. Redaction happens BEFORE persistence and
+// BEFORE the content hash — the stored representation is the redacted
+// representation (ADR-0012).
+
+/**
+ * True when `path` names (or lives under) one of the declared target
+ * sensitive fields. Declared names are ENTITY-LEVEL declarations, so
+ * they match at ANY depth inside a captured structure — the path must
+ * equal the declared name, start with it (descendant), or end with it
+ * (a nested entity's field under array/object wrappers). Built-in
+ * denylist semantics are untouched — this is purely additive.
+ */
+export function isTargetSensitiveField(path: string, sensitiveFields: readonly string[]): boolean {
+  if (sensitiveFields.length === 0) {
+    return false;
+  }
+  const normalized = path.toLowerCase();
+  return sensitiveFields.some((declared) => {
+    const target = declared.toLowerCase();
+    return (
+      normalized === target ||
+      normalized.startsWith(`${target}.`) ||
+      normalized.endsWith(`.${target}`) ||
+      normalized.includes(`.${target}.`)
+    );
+  });
+}
+
+/**
+ * Deep redaction with the target's declared sensitive fields ADDED to
+ * the built-in denylist. Returns a new structure; the input is never
+ * mutated. Key matching is per-KEY (flat key or dot-qualified
+ * descendant path); built-in name/shape masking applies everywhere.
+ */
+export function redactJsonWithSensitiveFields(
+  value: unknown,
+  sensitiveFields: readonly string[],
+): unknown {
+  if (sensitiveFields.length === 0) {
+    return redactJson(value);
+  }
+  const walk = (node: unknown, path: string): unknown => {
+    if (Array.isArray(node)) {
+      return node.map((item) => walk(item, path));
+    }
+    if (node !== null && typeof node === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(node)) {
+        const childPath = path === '' ? key : `${path}.${key}`;
+        // Built-in denylist FIRST (never weakened), then the target's
+        // declared sensitive fields — both mask before persistence.
+        out[key] =
+          SENSITIVE_NAME_PATTERN.test(key) || isTargetSensitiveField(childPath, sensitiveFields)
+            ? REDACTED_MARKER
+            : walk(item, childPath);
+      }
+      return out;
+    }
+    if (typeof node === 'string' && looksLikeSecret(node)) {
+      return REDACTED_MARKER;
+    }
+    return node;
+  };
+  return walk(value, '');
+}
+
+/**
+ * The replacement for a secret-shaped value removed from an
+ * unstructured (non-JSON) stored body. Distinct from the JSON-layer
+ * marker so provenance stays honest: this records that a VALUE SHAPE —
+ * not a named field — was masked in free text.
+ */
+export const REDACTED_SECRET_SHAPE_MARKER = '[Redacted-Secret-Shape]';
+
+/**
+ * Phase 14 hardening (blocker-repair redaction matrix): masks
+ * secret-SHAPED values embedded in UNSTRUCTURED (non-JSON) body text.
+ * A non-JSON body has no structure to walk, so the JSON-layer shape
+ * mask cannot see into it — but a bearer token, JWT, or URL-embedded
+ * credential inside a malformed/plaintext/truncated body is still a
+ * secret, and secrets never persist (security-boundaries §7, AGENTS
+ * R-13). Bounded: the scan is a single linear pass (global regexes),
+ * so an adversarial body cannot trigger pathological behavior.
+ */
+function maskSecretShapesInText(text: string): string {
+  return text
+    .replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, REDACTED_SECRET_SHAPE_MARKER)
+    .replace(
+      /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}/g,
+      REDACTED_SECRET_SHAPE_MARKER,
+    )
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]*@[^\s"'<>]*/gi, REDACTED_SECRET_SHAPE_MARKER);
+}
+
 /**
  * Bounded JSON string: if `raw` is parseable JSON it is redacted
  * (deep) then re-serialized; otherwise it is stored as a bounded
- * opaque string. Returns the stored text plus whether redaction
- * actually changed anything.
+ * opaque string — WITH secret-shaped values still masked (Phase 14
+ * hardening: malformed/plaintext/truncated bodies can never carry a
+ * raw secret into durable persistence). Returns the stored text plus
+ * whether redaction actually changed anything.
  */
 export function redactBoundedText(
   raw: string,
@@ -126,9 +230,18 @@ export function redactBoundedText(
     }
     return { text: candidate, redactionApplied, truncated };
   } catch {
-    // Not JSON: stored as a bounded opaque string (no structure to
-    // redact; value-shape masking applies at the JSON layer only).
-    return { text: truncated ? raw.slice(0, maxChars) : raw, redactionApplied, truncated };
+    // Not JSON: stored as a bounded opaque string, but STILL
+    // secret-scanned first (Phase 14 hardening). A secret hidden in
+    // unstructured text is masked by value SHAPE; redactionApplied is
+    // honest about the transformation. Bounding happens after masking,
+    // so a size-cut prefix can never carry a masked-away secret's raw
+    // form either.
+    const masked = maskSecretShapesInText(raw);
+    redactionApplied = masked !== raw;
+    if (masked.length > maxChars) {
+      truncated = true;
+    }
+    return { text: masked.slice(0, maxChars), redactionApplied, truncated };
   }
 }
 

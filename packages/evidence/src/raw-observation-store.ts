@@ -195,23 +195,46 @@ export class RawObservationStore {
     readonly payload: unknown;
     readonly writerOwnerId: string;
     readonly writerFencingToken: string | null;
+    /**
+     * Phase 14 (additive): an explicit, STABLE provenance identity for
+     * logical observations whose identity must NOT depend on observed
+     * content — e.g. `manifest-inspection:<queryId>` for a generic
+     * inspection query within one run. Present ⇒ identity is exactly
+     * this string; absent ⇒ the legacy Demo semantics (identity derives
+     * from the adapter kind + redacted content hash) apply unchanged,
+     * byte-for-byte. Length is capped to the DB column (120 chars).
+     */
+    readonly provenanceIdentity?: string;
+    /**
+     * Phase 14 B-1 (additive): honest transport provenance for adapters
+     * whose wire read was cut at a byte cap. Optional; legacy Demo
+     * callers omit it and keep the exact previous row shape (false).
+     */
+    readonly truncated?: boolean;
   }): Promise<ChainAppendedObservation> {
     const redacted = redactJson(input.payload);
     const { hash } = canonicalEvidenceHash(redacted);
-    // Identity derives from the REDACTED representation's hash (§18:
-    // no durable derivative of unredacted content, not even a digest).
+    // Identity: the explicit stable provenance identity when supplied
+    // (Phase 14 generic queries: same logical query ⇒ idempotent,
+    // conflicting re-capture ⇒ explicit integrity conflict), otherwise
+    // the REDACTED-representation hash derivative (§18: no durable
+    // derivative of unredacted content, not even a digest).
+    const invocationIdentity =
+      input.provenanceIdentity !== undefined
+        ? input.provenanceIdentity.slice(0, 120)
+        : `adapter:${input.adapterKind}:${hash.slice(0, 16)}`;
     return this.appendChainObservation({
       runId: input.runId,
       stepRunId: input.stepRunId,
       invocationId: null,
-      invocationIdentity: `adapter:${input.adapterKind}:${hash.slice(0, 16)}`,
+      invocationIdentity,
       kind: 'target_observation',
       adapterKind: input.adapterKind,
       schemaVersion: OBSERVATION_SCHEMA_VERSION,
       observedAt: input.observedAt,
       payload: redacted,
       redactionApplied: JSON.stringify(redacted) !== JSON.stringify(input.payload),
-      truncated: false,
+      truncated: input.truncated ?? false,
       contentHash: hash,
       origin: 'OBSERVED',
       writerOwnerId: input.writerOwnerId,

@@ -19,6 +19,16 @@ export {
   DEMO_LINEAGE_NORMALIZER_VERSION,
   INVOCATION_NORMALIZER_NAME,
   INVOCATION_NORMALIZER_VERSION,
+  GENERIC_INSPECTION_ADAPTER_KIND,
+  GENERIC_INSPECTION_NORMALIZER_NAME,
+  GENERIC_INSPECTION_NORMALIZER_VERSION,
+  GENERIC_IDENTITY_CHAIN_RELATION_KIND,
+  GENERIC_DERIVATION_DIAGNOSTIC_EVENT_TYPE,
+  GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_NAME,
+  GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_VERSION,
+  GENERIC_DERIVATION_INVALIDATION_EVENT_TYPE,
+  GENERIC_DERIVATION_INVALIDATION_NORMALIZER_NAME,
+  GENERIC_DERIVATION_INVALIDATION_NORMALIZER_VERSION,
   INV_IZ_1_KEY,
   INV_IZ_1_EVALUATOR_VERSION,
   INV_IZ_1_TITLE,
@@ -54,6 +64,44 @@ export {
   captureDemoFaultStatus,
   validateFaultStatus,
 } from './demo-adapter.js';
+
+export {
+  EVIDENCE_ADAPTER_KINDS,
+  isKnownEvidenceAdapterKind,
+  GENERIC_INSPECTION_ENVELOPE_VERSION,
+  GENERIC_INSPECTION_TIMEOUT_MS,
+  GENERIC_INSPECTION_MAX_RESPONSE_BYTES,
+  GENERIC_INSPECTION_MAX_RESPONSE_CHARS,
+  GENERIC_INSPECTION_OPAQUE_BODY_PLACEHOLDER,
+  GenericInspectionAdapterError,
+  genericInspectionProvenanceIdentity,
+  validateGenericInspectionCapture,
+  captureGenericInspectionQuery,
+  captureGenericInspectionSet,
+} from './generic-inspection.js';
+export type {
+  GenericInspectionValidation,
+  GenericInspectionObservationEnvelope,
+  GenericOpaqueBodyMetadata,
+  CaptureGenericInspectionQueryInput,
+  CapturedGenericInspection,
+} from './generic-inspection.js';
+
+export {
+  genericSubjectKey,
+  normalizeGenericInspectionObservation,
+  canonicalEventSpecsJson,
+} from './generic-normalizer.js';
+
+export { GENERIC_DERIVATION_CAPS, computeGenericDerivation } from './generic-derive.js';
+export type {
+  GenericEventRow,
+  GenericRelationshipSpec,
+  GenericDerivationGapKind,
+  GenericDerivationDiagnosticSpec,
+  GenericDerivationComputation,
+  GenericInvalidationSpec,
+} from './generic-derive.js';
 export type {
   DemoAdapterConfig,
   DemoLineagePayload,
@@ -74,6 +122,7 @@ export type { NormalizedEventSpec } from './normalize.js';
 export {
   deriveRunEvidence,
   loadNormalizerInputs,
+  loadFrozenEvidencePolicy,
   computeEvidenceSetFingerprint,
 } from './derive.js';
 export type { DerivationResult, DerivedEventRow, DerivedRelationshipRow } from './derive.js';

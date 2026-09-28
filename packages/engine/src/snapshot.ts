@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@rupturegrid/control-db';
 import { EXECUTION_ENGINE_VERSION } from '@rupturegrid/shared';
 import type { ContractKind } from './target.js';
-import { deriveExecutionPolicy } from './manifest.js';
+import { deriveExecutionPolicy, deriveEvidencePolicy } from './manifest.js';
 import { canonicalizeAndHash, CANONICALIZATION_ALGORITHM } from './canonicalize.js';
 import type { ExperimentDocument, RunSnapshotDocument } from './types.js';
 
@@ -70,6 +70,14 @@ export function buildSnapshotDocument(input: {
   // carry no policy block: their snapshot documents are byte-for-byte
   // IDENTICAL to v1.0 (frozen-history back-compat, R-01/R-07).
   const manifestPolicy = deriveExecutionPolicy(target.manifestJson);
+  // Phase 14 (additive frozen evidence seam, ADR-0010/ADR-0021/ADR-0022):
+  // the EVIDENCE policy freezes alongside the Phase 13 execution policy.
+  // Legacy (manifest-less) targets freeze NO evidence block — their
+  // snapshot documents remain byte-for-byte IDENTICAL to v1.0 (frozen
+  // history back-compat, R-01/R-07). Credential values are structurally
+  // impossible here: the policy carries declared query/identity/field
+  // DATA only (ADR-0012).
+  const manifestEvidencePolicy = deriveEvidencePolicy(target.manifestJson);
   const document: RunSnapshotDocument = {
     engineVersion: EXECUTION_ENGINE_VERSION,
     canonicalization: CANONICALIZATION_ALGORITHM,
@@ -81,6 +89,7 @@ export function buildSnapshotDocument(input: {
       contractKind: target.contractKind as ContractKind,
       credentialRefs: [...target.credentialRefs].sort(),
       ...(manifestPolicy === undefined ? {} : { manifestPolicy }),
+      ...(manifestEvidencePolicy === undefined ? {} : { manifestEvidencePolicy }),
     },
     experiment: {
       definitionId: input.definition.id,

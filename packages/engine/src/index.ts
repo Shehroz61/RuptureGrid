@@ -15,6 +15,7 @@ export {
 export {
   validateTargetManifest,
   deriveExecutionPolicy,
+  deriveEvidencePolicy,
   effectiveSignatureHeader,
   effectiveFaultHook,
   ManifestValidationError,
@@ -29,6 +30,7 @@ export type {
   ManifestInspectionQuery,
   TargetManifestContractMetadata,
   ManifestExecutionPolicy,
+  ManifestEvidencePolicy,
   EffectiveFaultHook,
 } from './manifest.js';
 export {
@@ -65,6 +67,7 @@ export type {
   RetryDecision,
   TransportStage,
 } from './classify.js';
+export { assertOriginAllowed, originHostHeader, OriginAuthorityError } from './destination.js';
 export {
   executeHttp,
   signDemoWebhookBody,

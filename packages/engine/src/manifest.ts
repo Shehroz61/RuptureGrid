@@ -330,6 +330,91 @@ export function deriveExecutionPolicy(manifestJson: unknown): ManifestExecutionP
 }
 
 // ---------------------------------------------------------------------
+// Phase 14 — the frozen EVIDENCE policy (additive; ADR-0010 frozen
+// intent, ADR-0021 inspection contract, ADR-0022 literal paths)
+// ---------------------------------------------------------------------
+// The manifest-derived evidence data a run's GENERIC evidence plane
+// needs, frozen into the snapshot at creation time. Analysis
+// (normalization + causal derivation) of generic-inspection evidence
+// reads THIS frozen copy — NEVER live TargetRegistration.manifestJson
+// (ADR-0010: a historical run derives from frozen intent; a later
+// re-registration cannot alter historical derivation).
+//
+// Additive by design:
+//   - contains ONLY validated manifest data (no credential VALUES —
+//     the manifest carries reference names only, and none of them are
+//     copied here at all);
+//   - does NOT repurpose or semantically mutate the Phase 13
+//     execution policy (`target.manifestPolicy` keeps exactly its
+//     Phase 13 meaning and shape);
+//   - LEGACY snapshots stay byte-identical: a manifest-less target
+//     freezes NO evidence-policy block at all, and an old stored
+//     snapshot lacking `manifestEvidencePolicy` remains readable
+//     (absence simply means no generic manifest evidence policy was
+//     frozen — no defaults are invented for it).
+
+/**
+ * The snapshot-frozen evidence policy for manifest-declaring targets.
+ * Exactly the validated Phase 14 data the generic inspection adapter,
+ * normalizer, and causal derivator consume. Credential REFERENCES are
+ * deliberately absent: Phase 14 generic inspection is credential-free
+ * (no auth mechanism is frozen for it), so there is nothing to freeze.
+ */
+export interface ManifestEvidencePolicy {
+  readonly manifestVersion: string;
+  /** The declared inspection/v1 queries (literal paths per ADR-0022). */
+  readonly inspection: readonly ManifestInspectionQuery[];
+  /** The declared identity model (nodes, causal edges, effects). */
+  readonly identityModel: ManifestIdentityModel;
+  /** Target-declared sensitive fields (additional redaction registry). */
+  readonly sensitiveFields: readonly string[];
+}
+
+/**
+ * Derives the frozen EVIDENCE policy from a stored manifest. The
+ * manifest is RE-VALIDATED here (same fail-closed defense in depth as
+ * `deriveExecutionPolicy`); returns undefined for a legacy
+ * (manifest-less) registration — legacy snapshots gain NO
+ * evidence-policy block and legacy analysis never consults one.
+ */
+export function deriveEvidencePolicy(manifestJson: unknown): ManifestEvidencePolicy | undefined {
+  if (manifestJson === null || manifestJson === undefined) {
+    return undefined;
+  }
+  const manifest = validateTargetManifest(manifestJson);
+  const policy: ManifestEvidencePolicy = {
+    manifestVersion: manifest.manifestVersion,
+    inspection: manifest.inspection.map((query) => ({
+      queryId: query.queryId,
+      roleId: query.roleId,
+      description: query.description,
+      path: query.path,
+      fields: { ...query.fields },
+      identityFields: [...query.identityFields],
+    })),
+    identityModel: {
+      nodes: manifest.identityModel.nodes.map((node) => ({
+        roleId: node.roleId,
+        description: node.description,
+        fields: { ...node.fields },
+      })),
+      causalEdges: manifest.identityModel.causalEdges.map((edge) => ({
+        fromRoleId: edge.fromRoleId,
+        toRoleId: edge.toRoleId,
+        edgeKind: edge.edgeKind,
+        linkFields: [...edge.linkFields],
+      })),
+      effectRoleIds: [...manifest.identityModel.effectRoleIds],
+      ...(manifest.identityModel.subjectRoleId === undefined
+        ? {}
+        : { subjectRoleId: manifest.identityModel.subjectRoleId }),
+    },
+    sensitiveFields: [...manifest.sensitiveFields],
+  };
+  return policy;
+}
+
+// ---------------------------------------------------------------------
 // Validation internals
 // ---------------------------------------------------------------------
 
@@ -797,10 +882,12 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
     }
   }
 
-  // Declared identity-model role ids (filled while parsing
-  // identityModel.nodes; consumed by the inspection → identity binding
-  // check below — ADR-0021).
+  // Declared identity-model role ids + typed field maps (filled while
+  // parsing identityModel.nodes; consumed by the inspection → identity
+  // binding check below — ADR-0021 — and by the B-4A query ↔ role typed
+  // schema-compatibility check).
   const declaredRoleIds = new Set<string>();
+  const rolesFields = new Map<string, Record<string, ManifestFieldType>>();
 
   // ---- identityModel (typed declarations; structural only in Phase 13) ----
   let identityModel: ManifestIdentityModel | undefined;
@@ -818,7 +905,6 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
     // Nodes: one minimum (ADR-0017); the count cap is a PAYLOAD SAFETY
     // limit, never a claim about valid identity-graph shapes.
     const nodes: ManifestIdentityNode[] = [];
-    const rolesFields = new Map<string, Record<string, ManifestFieldType>>();
     const rawNodes = rawIdentityModel['nodes'];
     if (rawNodes === undefined) {
       issues.push('missing required field "identityModel.nodes"');
@@ -973,6 +1059,25 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
               );
               break;
             }
+            // ---- B-4B repair: link-field TYPE equality ----
+            // A declared causal edge joins by EXACT equality; equality
+            // across different declared primitive types is meaningless
+            // ("5" !== 5 by type and by value). A linkField must carry
+            // the SAME ManifestFieldType on BOTH endpoint roles — a
+            // malformed typed causal declaration fails registration
+            // instead of becoming a permanent runtime attribution gap.
+            // (The runtime defensive mismatch check in the generic
+            // derivation stays as defense in depth.)
+            if (
+              fromFields !== undefined &&
+              toFields !== undefined &&
+              fromFields[field] !== toFields[field]
+            ) {
+              issues.push(
+                `${where}.linkFields names "${field}", which is declared as ${String(fromFields[field])} on role "${fromRoleId || '?'}" but ${String(toFields[field])} on role "${toRoleId || '?'}"; an exact-equality edge requires the SAME declared primitive type on both endpoint roles (B-4B)`,
+              );
+              break;
+            }
           }
           linkFields = accepted;
         }
@@ -1054,6 +1159,33 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
         `inspection[${draft.index}].roleId "${draft.roleId}" references an undeclared identityModel role (the query-role binding is declared, never inferred; ADR-0021)`,
       );
       continue;
+    }
+    // ---- B-4A repair: query ↔ role TYPED schema compatibility ----
+    // The bound role's declared fields are the minimum authoritative
+    // typed role schema. EVERY identityModel node field for the bound
+    // role must exist in this query's declared fields with EXACTLY the
+    // same ManifestFieldType — otherwise a capture of this query could
+    // not actually carry the declared role schema, and normalization
+    // would produce events that contradict the frozen identity model.
+    // Registration-time rejection (named issues; no runtime guessing,
+    // no fallback). Legitimate extra inspection-only business fields on
+    // the query remain allowed (a superset is compatible); the
+    // ADR-0021 capture-time rule ("exactly the declared field set")
+    // still governs what a RESPONSE may carry at runtime.
+    const roleFields = rolesFields.get(draft.roleId);
+    if (roleFields !== undefined) {
+      for (const [fieldName, roleType] of Object.entries(roleFields)) {
+        const queryType = draft.fields[fieldName];
+        if (queryType === undefined) {
+          issues.push(
+            `inspection[${draft.index}].fields is missing "${fieldName}", which the bound role "${draft.roleId}" declares as ${roleType}; a query bound to a role must be able to carry that role's full declared schema (B-4A)`,
+          );
+        } else if (queryType !== roleType) {
+          issues.push(
+            `inspection[${draft.index}].fields."${fieldName}" is ${queryType}, but the bound role "${draft.roleId}" declares ${roleType}; a bound query may never redefine a role field with another primitive type (B-4A)`,
+          );
+        }
+      }
     }
     inspection.push({
       queryId: draft.queryId,

@@ -67,7 +67,16 @@ function validManifest(overrides: Record<string, unknown> = {}): Record<string, 
         roleId: 'payment',
         description: 'Fetch one order by id',
         path: '/inspection/orders?state=accepted',
-        fields: { orderId: 'string', status: 'string', totalMinorUnits: 'integer-minor-units' },
+        // B-4A: the bound role's declared fields are the minimum
+        // authoritative typed schema for the query — every role field
+        // (providerPaymentId here) must exist with the same type; the
+        // query MAY carry additional inspection-only business fields.
+        fields: {
+          providerPaymentId: 'string',
+          orderId: 'string',
+          status: 'string',
+          totalMinorUnits: 'integer-minor-units',
+        },
         identityFields: ['orderId'],
       },
     ],
@@ -149,7 +158,13 @@ describe('target-manifest/v1 accepted shapes', () => {
             roleId: 'thing',
             description: 'Fetch one order by id',
             path: '/inspection/orders?state=accepted',
-            fields: { orderId: 'string', status: 'string', totalMinorUnits: 'integer-minor-units' },
+            // B-4A-compatible: carries the bound role's declared thingId.
+            fields: {
+              thingId: 'string',
+              orderId: 'string',
+              status: 'string',
+              totalMinorUnits: 'integer-minor-units',
+            },
             identityFields: ['orderId'],
           },
         ],
@@ -403,7 +418,8 @@ const INSPECTION_QUERY_BASE = {
   queryId: 'orders',
   roleId: 'payment',
   description: 'Read-only collection of orders',
-  fields: { orderId: 'string', status: 'string' },
+  // B-4A-compatible: carries the bound role's declared providerPaymentId.
+  fields: { providerPaymentId: 'string', orderId: 'string', status: 'string' },
   identityFields: ['orderId'],
 } as const;
 

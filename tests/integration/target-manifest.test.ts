@@ -52,7 +52,13 @@ const MANIFEST = {
       roleId: 'checkoutIntent',
       description: 'Fetch one order by id',
       path: '/inspection/orders',
-      fields: { orderId: 'string', status: 'string', totalMinorUnits: 'integer-minor-units' },
+      // B-4A-compatible: carries the bound role's declared checkoutIntentId.
+      fields: {
+        checkoutIntentId: 'string',
+        orderId: 'string',
+        status: 'string',
+        totalMinorUnits: 'integer-minor-units',
+      },
       identityFields: ['orderId'],
     },
   ],

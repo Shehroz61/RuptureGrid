@@ -12,15 +12,29 @@
 
 import { createHash } from 'node:crypto';
 import type { PrismaClient } from '@rupturegrid/control-db';
+import type { ManifestEvidencePolicy } from '@rupturegrid/engine';
 import { canonicalizeJson } from '@rupturegrid/engine';
 import { eventInputHash } from './normalize.js';
 import type { NormalizedEventSpec } from './normalize.js';
+import { GENERIC_INSPECTION_NORMALIZER_NAME } from './versions.js';
+import type { GenericDerivationDiagnosticSpec, GenericInvalidationSpec } from './generic-derive.js';
+import {
+  GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_NAME,
+  GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_VERSION,
+  GENERIC_DERIVATION_DIAGNOSTIC_EVENT_TYPE,
+  GENERIC_DERIVATION_INVALIDATION_NORMALIZER_NAME,
+  GENERIC_DERIVATION_INVALIDATION_NORMALIZER_VERSION,
+  GENERIC_DERIVATION_INVALIDATION_EVENT_TYPE,
+} from './versions.js';
 import {
   normalizeDemoFaultStatusObservation,
   normalizeDemoLineageObservation,
   normalizeInvocationObservation,
 } from './normalize.js';
 import { DEMO_FAULT_STATUS_ADAPTER_KIND, DEMO_LINEAGE_ADAPTER_KIND } from './demo-adapter.js';
+import { normalizeGenericInspectionObservation } from './generic-normalizer.js';
+import { computeGenericDerivation, GENERIC_DERIVATION_CAPS } from './generic-derive.js';
+import { GENERIC_INSPECTION_ADAPTER_KIND } from './versions.js';
 
 export interface DerivedEventRow {
   readonly id: string;
@@ -42,6 +56,21 @@ export interface DerivedRelationshipRow {
 export interface DerivationResult {
   readonly events: DerivedEventRow[];
   readonly relationships: DerivedRelationshipRow[];
+  /**
+   * Phase 14: count of bounded derivation-gap diagnostics produced by
+   * the generic manifest-driven derivation (contested identities,
+   * redacted/missing link fields, declared-type mismatches). Honest
+   * attribution-gap evidence for Phase 15 — never a Phase 15 verdict.
+   */
+  readonly genericDerivationGaps: number;
+  /**
+   * B-2: the ACTIVE generic causal graph this pass — direct edges
+   * anchored on contested events and chains routed through contested
+   * nodes are excluded. Persisted prior rows are NEVER deleted
+   * (logically append-only); `genericInvalidations` carries the
+   * durable provenance of what was excluded.
+   */
+  readonly genericInvalidations: number;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -56,6 +85,8 @@ function recordToPlain(value: unknown): Record<string, unknown> {
  * derives events from the supported kinds:
  *   - invocation observations (executor HTTP evidence)
  *   - target observations of the explicit Demo lineage adapter
+ *   - Phase 14: target observations of the explicit generic
+ *     inspection/v1 adapter (additive; policy from the frozen snapshot)
  */
 export async function loadNormalizerInputs(
   prisma: PrismaClient,
@@ -64,6 +95,11 @@ export async function loadNormalizerInputs(
   invocations: Array<{ contentHash: string; chainIndex: number; payload: unknown }>;
   lineageObservations: Array<{ contentHash: string; chainIndex: number; payload: unknown }>;
   faultStatusObservations: Array<{ contentHash: string; chainIndex: number; payload: unknown }>;
+  genericInspectionObservations: Array<{
+    contentHash: string;
+    chainIndex: number;
+    payload: unknown;
+  }>;
 }> {
   const observations = await prisma.rawObservation.findMany({
     where: { runId },
@@ -77,6 +113,11 @@ export async function loadNormalizerInputs(
     payload: unknown;
   }> = [];
   const faultStatusObservations: Array<{
+    contentHash: string;
+    chainIndex: number;
+    payload: unknown;
+  }> = [];
+  const genericInspectionObservations: Array<{
     contentHash: string;
     chainIndex: number;
     payload: unknown;
@@ -101,6 +142,15 @@ export async function loadNormalizerInputs(
         payload: observation.payload,
       });
     } else if (
+      observation.kind === 'target_observation' &&
+      observation.adapterKind === GENERIC_INSPECTION_ADAPTER_KIND
+    ) {
+      genericInspectionObservations.push({
+        contentHash: observation.contentHash,
+        chainIndex: observation.chainIndex,
+        payload: observation.payload,
+      });
+    } else if (
       observation.kind === 'http_response_observed' ||
       observation.kind === 'executor_error'
     ) {
@@ -111,7 +161,47 @@ export async function loadNormalizerInputs(
       });
     }
   }
-  return { invocations, lineageObservations, faultStatusObservations };
+  return {
+    invocations,
+    lineageObservations,
+    faultStatusObservations,
+    genericInspectionObservations,
+  };
+}
+
+// ---------------------------------------------------------------------
+// Phase 14 — generic derivation from the FROZEN evidence policy
+// ---------------------------------------------------------------------
+// The run's ManifestEvidencePolicy comes ONLY from the run's snapshot
+// document (ADR-0010 frozen intent). There is NO code path from live
+// TargetRegistration.manifestJson into generic analysis: a later
+// re-registration can never alter historical generic derivation.
+// Legacy snapshots (no manifestEvidencePolicy) simply carry no generic
+// policy — generic observations cannot exist for them anyway, since
+// the only generic capture seam consumes the frozen policy.
+
+/**
+ * Loads the FROZEN ManifestEvidencePolicy for a run from its snapshot
+ * document. Returns undefined for legacy manifest-less snapshots
+ * (absence means no generic manifest evidence policy was frozen).
+ */
+export async function loadFrozenEvidencePolicy(
+  prisma: PrismaClient,
+  runId: string,
+): Promise<ManifestEvidencePolicy | undefined> {
+  const run = await prisma.experimentRun.findUnique({
+    where: { id: runId },
+    select: { snapshot: { select: { content: true } } },
+  });
+  if (run === null) {
+    return undefined;
+  }
+  const target = (run.snapshot.content as { target?: Record<string, unknown> })['target'];
+  if (target === undefined || target === null || typeof target !== 'object') {
+    return undefined;
+  }
+  const policy = (target as Record<string, unknown>)['manifestEvidencePolicy'];
+  return policy === undefined || policy === null ? undefined : (policy as ManifestEvidencePolicy);
 }
 
 /**
@@ -124,6 +214,7 @@ export async function deriveRunEvidence(
 ): Promise<DerivationResult> {
   const inputs = await loadNormalizerInputs(prisma, runId);
   const specs: NormalizedEventSpec[] = [];
+  let frozenGenericPolicy: ManifestEvidencePolicy | undefined;
   for (const input of inputs.invocations) {
     specs.push(...normalizeInvocationObservation(input));
   }
@@ -132,6 +223,18 @@ export async function deriveRunEvidence(
   }
   for (const input of inputs.faultStatusObservations) {
     specs.push(...normalizeDemoFaultStatusObservation(input));
+  }
+  // Phase 14 (additive): generic manifest-inspection observations
+  // normalize through the frozen evidence policy. A legacy snapshot
+  // (no manifestEvidencePolicy) derives ZERO generic events — nothing
+  // is guessed from live registration state.
+  if (inputs.genericInspectionObservations.length > 0) {
+    frozenGenericPolicy = await loadFrozenEvidencePolicy(prisma, runId);
+    if (frozenGenericPolicy !== undefined) {
+      for (const input of inputs.genericInspectionObservations) {
+        specs.push(...normalizeGenericInspectionObservation(input, frozenGenericPolicy));
+      }
+    }
   }
 
   // Persist events idempotently: the (run, normalizer, version,
@@ -425,7 +528,239 @@ export async function deriveRunEvidence(
     }
   }
 
-  return { events, relationships };
+  // ---- Phase 14: generic manifest-driven causal relationships ----
+  // Computed ONLY from the run's generic normalized events + the FROZEN
+  // evidence policy (loaded from the run's snapshot above). The frozen
+  // Demo derivation above is untouched (additive seam). Identity-chain
+  // diagnostics (contested identities, redacted/missing link fields,
+  // type mismatches) persist as bounded versioned gap events so Phase
+  // 15 can honestly evaluate NOT_EVALUABLE where it requires the
+  // contested linkage — never a Phase 15 verdict here.
+  let genericDiagnostics: GenericDerivationDiagnosticSpec[] = [];
+  let genericInvalidations = 0;
+  if (frozenGenericPolicy !== undefined) {
+    const genericEventRows = eventRows
+      .filter((row) => (row.payload as { rupturegrid?: unknown })?.['rupturegrid'] !== undefined)
+      .filter((row) => {
+        const provenance = (row.payload as Record<string, unknown>)['rupturegrid'];
+        return (
+          typeof provenance === 'object' &&
+          provenance !== null &&
+          (provenance as Record<string, unknown>)['normalizerName'] ===
+            GENERIC_INSPECTION_NORMALIZER_NAME
+        );
+      })
+      .map((row) => ({
+        id: row.id,
+        eventType: row.eventType,
+        payload: recordToPlain(row.payload),
+        sourceObservationHashes: [] as string[],
+      }));
+    // Source hashes for diagnostics come from the persisted events'
+    // traceability arrays; re-read them for the generic rows.
+    if (genericEventRows.length > 0) {
+      const sourceHashes = new Map<string, string[]>();
+      const genericRowsWithHashes = await prisma.normalizedEvent.findMany({
+        where: { id: { in: genericEventRows.map((row) => row.id) } },
+        select: { id: true, sourceObservationHashes: true },
+      });
+      for (const row of genericRowsWithHashes) {
+        sourceHashes.set(row.id, [...row.sourceObservationHashes]);
+      }
+      const computation = computeGenericDerivation(
+        genericEventRows.map((row) => ({
+          ...row,
+          sourceObservationHashes: sourceHashes.get(row.id) ?? [],
+        })),
+        frozenGenericPolicy,
+      );
+      // ---- B-2: the ACTIVE graph excludes contested-anchor edges ----
+      // Computation output already refuses new edges anchored on
+      // contested events and refuses chains routed through contested
+      // nodes; the `invalidated` flag is defense in depth. Persisted
+      // PRIOR rows (from an earlier pass, before the conflict existed)
+      // are never deleted — the ACTIVE set is recomputed every pass;
+      // their exclusion is recorded below as durable provenance.
+      const contestedSet = new Set<string>(computation.contestedEventIds);
+      const activeSpecs = computation.relationships.filter(
+        (spec) =>
+          !spec.invalidated &&
+          !contestedSet.has(spec.fromEventId) &&
+          !contestedSet.has(spec.toEventId),
+      );
+      for (const spec of activeSpecs) {
+        await addRelationship({
+          fromEventId: spec.fromEventId,
+          toEventId: spec.toEventId,
+          relationKind: spec.relationKind,
+          basis: spec.basis,
+          evidence: spec.evidence,
+        });
+      }
+      genericDiagnostics = [...computation.diagnostics];
+      // Persist gap diagnostics as versioned, RuptureGrid-owned events
+      // (NOT target events, NOT findings, NOT Phase 15 verdicts).
+      for (const diagnostic of genericDiagnostics) {
+        await persistDerivationGapEvent(prisma, runId, diagnostic);
+      }
+      // ---- B-2: durable invalidation provenance ----
+      // For every contested identity group this pass: the stale,
+      // previously persisted relationship rows touching its events are
+      // named in a deterministic, versioned tombstone event (capped;
+      // every excluded relationship id appears across the rows of the
+      // group). Prior rows are physically preserved (logically
+      // append-only) — the tombstone is the audit trail of the
+      // exclusion, and repeat passes converge on identical rows.
+      for (const invalidation of computation.invalidations) {
+        const invalidatedEventIds = Array.isArray(
+          (invalidation.payload as Record<string, unknown>)['invalidatedEventIds'],
+        )
+          ? ((invalidation.payload as Record<string, unknown>)['invalidatedEventIds'] as string[])
+          : [];
+        // Stale rows = every PERSISTED relationship (this pass or any
+        // earlier pass) touching an event of this contested group.
+        // Read from the durable store — earlier-pass rows are not in
+        // the in-memory list. Rows are preserved, never deleted.
+        const staleRows = await prisma.causalRelationship.findMany({
+          where: {
+            runId,
+            OR: [
+              { fromEventId: { in: invalidatedEventIds } },
+              { toEventId: { in: invalidatedEventIds } },
+            ],
+          },
+          select: { id: true },
+          orderBy: { id: 'asc' },
+        });
+        const staleRelationshipIds = staleRows.map((row) => row.id);
+        await persistDerivationInvalidationEvent(prisma, runId, invalidation, {
+          staleRelationshipIds,
+        });
+        genericInvalidations += 1;
+      }
+    }
+  }
+
+  return {
+    events,
+    relationships,
+    genericDerivationGaps: genericDiagnostics.length,
+    genericInvalidations,
+  };
+}
+
+/**
+ * B-2: persists ONE durable invalidation-provenance event (tombstone)
+ * as a versioned normalized event owned by RuptureGrid. Deterministic
+ * input hash ⇒ repeat/concurrent derivation converges on the same row;
+ * P2002 races converge on the winner (same semantics — never aliased).
+ * The tombstone NAMES the persisted relationship rows excluded from
+ * the ACTIVE graph; it never deletes them (logically append-only).
+ */
+async function persistDerivationInvalidationEvent(
+  prisma: PrismaClient,
+  runId: string,
+  invalidation: GenericInvalidationSpec,
+  stale: { readonly staleRelationshipIds: readonly string[] },
+): Promise<void> {
+  const cappedIds = stale.staleRelationshipIds.slice(
+    0,
+    GENERIC_DERIVATION_CAPS.maxInvalidatedRelationshipIdsPerRow,
+  );
+  const payload = {
+    ...invalidation.payload,
+    invalidatedRelationshipIds: cappedIds,
+    invalidatedRelationshipCount: stale.staleRelationshipIds.length,
+    invalidatedRelationshipIdsTruncated: stale.staleRelationshipIds.length > cappedIds.length,
+  };
+  const inputHash = eventInputHash(invalidation.sourceObservationHashes, payload);
+  const where = {
+    runId_normalizerName_normalizerVersion_inputHash: {
+      runId,
+      normalizerName: GENERIC_DERIVATION_INVALIDATION_NORMALIZER_NAME,
+      normalizerVersion: GENERIC_DERIVATION_INVALIDATION_NORMALIZER_VERSION,
+      inputHash,
+    },
+  } as const;
+  try {
+    await prisma.normalizedEvent.upsert({
+      where,
+      create: {
+        runId,
+        eventType: GENERIC_DERIVATION_INVALIDATION_EVENT_TYPE,
+        subjectKey:
+          `role:${String(invalidation.roleId)}:identity:${invalidation.identityTupleHash}`.slice(
+            0,
+            200,
+          ),
+        payload: JSON.parse(JSON.stringify(payload)) as object,
+        normalizerName: GENERIC_DERIVATION_INVALIDATION_NORMALIZER_NAME,
+        normalizerVersion: GENERIC_DERIVATION_INVALIDATION_NORMALIZER_VERSION,
+        inputHash,
+        origin: 'DETERMINISTIC_DERIVED',
+        sourceObservationHashes: [...invalidation.sourceObservationHashes],
+        primaryObservationIndex: null,
+      },
+      update: {},
+      select: { id: true },
+    });
+  } catch (error) {
+    if ((error as { code?: string }).code !== 'P2002') {
+      throw error;
+    }
+    // Converge on the winner's row (identical semantics by hash).
+  }
+}
+
+/**
+ * Persists ONE derivation-gap diagnostic as a versioned normalized
+ * event owned by RuptureGrid (not a target event, not a finding, not a
+ * Phase 15 verdict). Deterministic input hash ⇒ repeat/concurrent
+ * derivation converges on the same row; P2002 races converge on the
+ * winner (same semantics — never aliased).
+ */
+async function persistDerivationGapEvent(
+  prisma: PrismaClient,
+  runId: string,
+  diagnostic: GenericDerivationDiagnosticSpec,
+): Promise<void> {
+  const payload = {
+    gapKind: diagnostic.gapKind,
+    ...diagnostic.payload,
+  };
+  const inputHash = eventInputHash(diagnostic.sourceObservationHashes, payload);
+  const where = {
+    runId_normalizerName_normalizerVersion_inputHash: {
+      runId,
+      normalizerName: GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_NAME,
+      normalizerVersion: GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_VERSION,
+      inputHash,
+    },
+  } as const;
+  try {
+    await prisma.normalizedEvent.upsert({
+      where,
+      create: {
+        runId,
+        eventType: GENERIC_DERIVATION_DIAGNOSTIC_EVENT_TYPE,
+        subjectKey: diagnostic.subjectKey.slice(0, 200),
+        payload: JSON.parse(JSON.stringify(payload)) as object,
+        normalizerName: GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_NAME,
+        normalizerVersion: GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_VERSION,
+        inputHash,
+        origin: 'DETERMINISTIC_DERIVED',
+        sourceObservationHashes: [...diagnostic.sourceObservationHashes],
+        primaryObservationIndex: null,
+      },
+      update: {},
+      select: { id: true },
+    });
+  } catch (error) {
+    if ((error as { code?: string }).code !== 'P2002') {
+      throw error;
+    }
+    // Converge on the winner's row (identical semantics by hash).
+  }
 }
 
 /**

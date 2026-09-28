@@ -9,7 +9,7 @@
 // freeze (ADR-0010).
 
 import type { ContractKind } from './target.js';
-import type { ManifestExecutionPolicy } from './manifest.js';
+import type { ManifestExecutionPolicy, ManifestEvidencePolicy } from './manifest.js';
 import type { ControlledFaultActivation, ControlledFaultKind } from '@rupturegrid/shared';
 
 /** The only HTTP methods the v1 executor accepts. */
@@ -130,6 +130,16 @@ export interface RunSnapshotDocument {
      * this frozen block is the only manifest policy a run can use.
      */
     readonly manifestPolicy?: ManifestExecutionPolicy;
+    /**
+     * Phase 14 (ADR-0021/ADR-0022, additive seam): the manifest-derived
+     * EVIDENCE policy frozen at snapshot time — inspection/v1 query
+     * declarations (literal paths), identity model, and target-declared
+     * sensitive fields. Present ONLY for manifest-declaring targets;
+     * legacy snapshots carry no evidence-policy block and remain
+     * byte-identical. Generic analysis derives from THIS frozen copy —
+     * never from live registration state (ADR-0010).
+     */
+    readonly manifestEvidencePolicy?: ManifestEvidencePolicy;
   };
   readonly experiment: {
     readonly definitionId: string;

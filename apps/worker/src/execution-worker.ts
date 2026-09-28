@@ -26,9 +26,11 @@ import {
   createEngineEvidenceSink,
   captureDemoPaymentLineage,
   captureDemoFaultStatus,
+  captureGenericInspectionSet,
   runRunAnalysis,
   DEMO_LINEAGE_ADAPTER_KIND,
 } from '@rupturegrid/evidence';
+import { loadRunSnapshot } from '@rupturegrid/engine';
 import { createLoggerTelemetry } from '@rupturegrid/engine';
 
 export interface ExecutionWorkerRuntime {
@@ -36,6 +38,17 @@ export interface ExecutionWorkerRuntime {
   readonly workerId: string;
   /** Drives one reconcile sweep now (tests/runtime verification). */
   readonly sweep: () => Promise<{ requeued: number; settled: number; leaseRecoveries: number }>;
+  /**
+   * Phase 14: explicit generic inspection invocation seam (frozen
+   * evidence policy only; no automatic capture timing is wired).
+   */
+  readonly captureGenericInspection: (input: {
+    readonly runId: string;
+    readonly stepRunId: string | null;
+    readonly writerOwnerId: string;
+    readonly writerFencingToken: string | null;
+    readonly queryIds?: readonly string[];
+  }) => Promise<{ captured: number; valid: number }>;
   shutdown(): Promise<void>;
 }
 
@@ -209,6 +222,50 @@ export async function startExecutionWorkerRuntime(): Promise<ExecutionWorkerRunt
     },
   };
 
+  // Phase 14: the worker-owned GENERIC inspection invocation seam.
+  // Consumes the run's FROZEN ManifestEvidencePolicy (from the run's
+  // snapshot — never live registration state), the frozen origin, and
+  // the declared query set; performs REAL read-only HTTP GETs against
+  // the literal declared paths and persists honest, redacted,
+  // idempotently-keyed target_observations. Credential-free by
+  // contract: no DEMO_* token, no Authorization header, no inferred
+  // credential ever attaches to a generic inspection request (NB-1
+  // stays separate). Failures are honest evidence incompleteness —
+  // they NEVER touch execution truth (sideEffectKnowledge is never
+  // rewritten; retry behavior is untouched).
+  const captureGenericInspection = async (input: {
+    readonly runId: string;
+    readonly stepRunId: string | null;
+    readonly writerOwnerId: string;
+    readonly writerFencingToken: string | null;
+    /** Restrict to a specific declared query set (default: all). */
+    readonly queryIds?: readonly string[];
+  }): Promise<{ captured: number; valid: number }> => {
+    const { document } = await loadRunSnapshot(controlDb.prisma, input.runId);
+    const policy = document.target.manifestEvidencePolicy;
+    if (policy === undefined) {
+      // Legacy/manifest-less run: no frozen generic policy exists —
+      // nothing is captured, nothing is guessed.
+      return { captured: 0, valid: 0 };
+    }
+    const captured = await captureGenericInspectionSet(controlDb.prisma, {
+      runId: input.runId,
+      stepRunId: input.stepRunId,
+      origin: document.target.origin,
+      // The FROZEN environment drives the shared destination seam
+      // (B-1): the same address-class/scheme policy as the executor.
+      environment: document.target.environment,
+      policy,
+      ...(input.queryIds === undefined ? {} : { queryIds: input.queryIds }),
+      writerOwnerId: input.writerOwnerId,
+      writerFencingToken: input.writerFencingToken,
+    });
+    return {
+      captured: captured.length,
+      valid: captured.filter((entry) => entry.valid).length,
+    };
+  };
+
   // Phase 9: explicit fault-status observation capture (docs/
   // controlled-faults.md §5) — the target's read-only inspection API
   // with the inspection credential (request-time only, ADR-0012).
@@ -376,6 +433,15 @@ export async function startExecutionWorkerRuntime(): Promise<ExecutionWorkerRunt
     ready,
     workerId: processor.id,
     sweep,
+    /**
+     * Phase 14 worker-owned generic inspection invocation seam:
+     * captures the declared inspection query set for a run against the
+     * FROZEN evidence policy. The engine drives NO automatic capture
+     * timing — scenario-specific timing is a later-phase decision
+     * (roadmap Phase 16/17); this seam is the explicit, reviewable
+     * invocation point (e.g. the Phase 14 integration test calls it).
+     */
+    captureGenericInspection,
     async shutdown() {
       clearInterval(reconcileTimer);
       await handle.close();

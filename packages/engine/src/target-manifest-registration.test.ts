@@ -39,8 +39,9 @@ function manifestFor(overrides: Record<string, unknown> = {}): Record<string, un
         roleId: 'payment',
         description: 'd',
         path: '/inspection/x',
-        fields: { a: 'string' },
-        identityFields: ['a'],
+        // B-4A-compatible: carries the bound role's declared schema.
+        fields: { providerPaymentId: 'string' },
+        identityFields: ['providerPaymentId'],
       },
     ],
     identityModel: IDENTITY_MODEL,

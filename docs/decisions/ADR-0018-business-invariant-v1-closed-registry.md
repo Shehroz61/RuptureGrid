@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted (Phase 12 — design freeze; implementation in Phase 15).
+Accepted (Phase 12 — design freeze; implementation in Phase 15). Forward reference: the frozen
+completeness/scope-proof MECHANISM for these requirements — the `observed-total` completeness
+proof, required `scopeBinding`, exact instance schemas, verdict algorithms, finding reason-code
+vocabulary, and persistence intent — is decided in
+[ADR-0023](ADR-0023-phase-15-completeness-and-scope-proof.md) (pre-Phase-15 contract closure).
 
 ## Context
 

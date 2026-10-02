@@ -48,7 +48,12 @@ at registration (R-14).
      final body bytes. The `${signature}` token mechanism, raw-byte HMAC computation, and
      secret-never-in-document guarantees are unchanged from v1.0; only the header NAME becomes
      declarable instead of hard-coded. The name must pass the validated header-name rules
-     (no CR/LF, no forbidden framing headers).
+     (no CR/LF, no forbidden framing headers). WHICH platform-approved credential references a
+     target may use (platform-owned target-origin credential authorization) and WHICH of them
+     supplies the HMAC key (the platform-owned signing-capable allowlist, frozen into the
+     derived execution policy) are NOT manifest fields — both are closed by
+     [ADR-0024](ADR-0024-signing-credential-reference-binding.md), which preserves this v1
+     schema unchanged.
    - `inspection`: named read-only lineage queries (`inspection/v1`; the typed field declarations
      they carry are defined in ADR-0017),
    - `faultHook` (optional): declares the target-owned controlled-fault surface (endpoint + kinds)

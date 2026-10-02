@@ -223,7 +223,14 @@ an adoption-readiness test, not evidence that any third party adopted RuptureGri
 - **Goal:** the second external-in-kind target (ADR-0020): `apps/demo-commerce`.
 - **Scope:** `apps/demo-commerce` (checkout/inventory domain: checkout intents, request/processing attempts, orders, reservations, SKU stock) with its **own PostgreSQL instance** (compose service; own migrations); VULNERABLE/SECURE modes via the target's own admin API; inspection/v1 read-only API; `controlled-fault/v1` hooks at the manifest-declared fault surface; its target manifest; `packages/config` env schema; root lint rule (no RuptureGrid app imports the commerce DB — mirroring the demo-db rule).
 - **Non-scope:** RuptureGrid-side scenario wiring (Phase 17); new fault kinds beyond `controlled-fault/v1`; UI.
-- **Prerequisites:** Phase 15.
+- **Prerequisites:** Phase 15. Phase 13 NB-1 (signing-credential reference binding AND per-target
+  platform-owned credential authorization) is CONTRACT-CLOSED by
+  [ADR-0024](decisions/ADR-0024-signing-credential-reference-binding.md) before Demo Commerce
+  implementation: the manifest signature seam resolves the platform-frozen signing credential
+  reference — a reference that is both platform-authorized for the target's normalized origin
+  authority and signing-capable — not the hard-coded Demo secret. Design freeze only: the
+  runtime authorization, derivation, and executor changes are implemented IN Phase 16 and
+  audited before acceptance; this closure does not claim they exist.
 - **Acceptance:** external-ownership boundary proven (no commerce-DB credentials in any RuptureGrid app; lint-enforced); both modes behave per checkout-zero.md under deliberate concurrent duplicate submissions with measured overlap from persisted processing timestamps (testing-strategy §6 — barriers + authoritative state, never `Promise.all` optimism); inspection API read-only; **the audit confirms the target implements its own business logic and was not built around its invariant** (the invariant is RuptureGrid-side).
 - **Testing:** real HTTP; concurrency measured; mode-switch; integer-unit tests (R-06).
 - **Security:** LOCAL_DEVELOPMENT classification; staging fault-execution denial probed for the new target.

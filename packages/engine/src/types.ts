@@ -10,6 +10,7 @@
 
 import type { ContractKind } from './target.js';
 import type { ManifestExecutionPolicy, ManifestEvidencePolicy } from './manifest.js';
+import type { GenericInvariantInstance } from './generic-invariant-registry.js';
 import type { ControlledFaultActivation, ControlledFaultKind } from '@rupturegrid/shared';
 
 /** The only HTTP methods the v1 executor accepts. */
@@ -104,6 +105,15 @@ export interface ExperimentStep {
 /** The validated experiment document (the only accepted shape). */
 export interface ExperimentDocument {
   readonly steps: readonly ExperimentStep[];
+  /**
+   * Phase 15 (ADR-0023 §9, additive + OPTIONAL): business-invariant/v1
+   * generic invariant instances declared at definition time. Validated
+   * against the target's frozen evidence policy at definition time and
+   * re-validated at snapshot freeze; a definition that fails
+   * validation is never stored and never evaluated. Legacy documents
+   * carry none.
+   */
+  readonly invariantBindings?: readonly GenericInvariantInstance[];
 }
 
 /**
@@ -140,6 +150,17 @@ export interface RunSnapshotDocument {
      * never from live registration state (ADR-0010).
      */
     readonly manifestEvidencePolicy?: ManifestEvidencePolicy;
+    /**
+     * Phase 15 (ADR-0018/ADR-0023, additive seam): the business-invariant/v1
+     * generic invariant instances frozen at snapshot time — validated at
+     * definition/freeze time against the frozen evidence policy (ADR-0023
+     * §9: a definition that fails validation is never frozen). Present
+     * ONLY when the experiment document declares `invariantBindings` on a
+     * manifest-declaring target; legacy documents freeze none and their
+     * snapshot documents remain byte-identical. Evaluation reads THIS
+     * frozen copy — never live definition rows (ADR-0010, §11).
+     */
+    readonly invariantBindings?: readonly GenericInvariantInstance[];
   };
   readonly experiment: {
     readonly definitionId: string;

@@ -13,6 +13,7 @@ import type { PrismaClient } from '@rupturegrid/control-db';
 import { EXECUTION_ENGINE_VERSION } from '@rupturegrid/shared';
 import type { ContractKind } from './target.js';
 import { deriveExecutionPolicy, deriveEvidencePolicy } from './manifest.js';
+import { deriveGenericInvariantBindings } from './generic-invariant-registry.js';
 import { canonicalizeAndHash, CANONICALIZATION_ALGORITHM } from './canonicalize.js';
 import type { ExperimentDocument, RunSnapshotDocument } from './types.js';
 
@@ -28,6 +29,9 @@ export interface FrozenSnapshot {
   readonly contentHash: string;
   readonly document: RunSnapshotDocument;
 }
+
+const isRecordSafe = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
  * Builds the snapshot document for a revision. Pure — exported for
@@ -78,6 +82,27 @@ export function buildSnapshotDocument(input: {
   // impossible here: the policy carries declared query/identity/field
   // DATA only (ADR-0012).
   const manifestEvidencePolicy = deriveEvidencePolicy(target.manifestJson);
+  // Phase 15 (ADR-0023 §9/§11, additive frozen seam): the experiment
+  // document's `invariantBindings` block is validated against the
+  // FROZEN evidence policy at freeze time — a definition that fails
+  // validation is never frozen and never reaches evaluation. Legacy
+  // documents carry no bindings; a manifest-less target can never
+  // declare one (there is no policy to validate against). The frozen
+  // bindings array is the ONLY evaluation authority (never live
+  // definition rows, ADR-0010/§11).
+  const rawInvariantBindings = isRecordSafe(input.revision.stepsJson)
+    ? (input.revision.stepsJson as Record<string, unknown>)['invariantBindings']
+    : undefined;
+  const invariantBindings =
+    manifestEvidencePolicy === undefined
+      ? rawInvariantBindings === undefined || rawInvariantBindings === null
+        ? undefined
+        : (() => {
+            throw new SnapshotError(
+              'the experiment document declares invariantBindings but the target freezes no manifest evidence policy; generic invariants require a manifest-declaring target (ADR-0023 §9)',
+            );
+          })()
+      : deriveGenericInvariantBindings(rawInvariantBindings, manifestEvidencePolicy);
   const document: RunSnapshotDocument = {
     engineVersion: EXECUTION_ENGINE_VERSION,
     canonicalization: CANONICALIZATION_ALGORITHM,
@@ -90,6 +115,9 @@ export function buildSnapshotDocument(input: {
       credentialRefs: [...target.credentialRefs].sort(),
       ...(manifestPolicy === undefined ? {} : { manifestPolicy }),
       ...(manifestEvidencePolicy === undefined ? {} : { manifestEvidencePolicy }),
+      ...(invariantBindings !== undefined && invariantBindings.length > 0
+        ? { invariantBindings }
+        : {}),
     },
     experiment: {
       definitionId: input.definition.id,

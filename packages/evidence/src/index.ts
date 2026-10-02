@@ -144,5 +144,61 @@ export type {
 export { runRunAnalysis, ensureInvariantDefinitions, AnalysisError } from './analysis.js';
 export type { AnalysisRunResult, PersistedEvaluation } from './analysis.js';
 
+// Phase 15 — business-invariant/v1 closed registry + generic evaluators
+export {
+  BUSINESS_INVARIANT_REGISTRY_VERSION,
+  ACCEPTED_REGISTRY_VERSIONS,
+  BUSINESS_INVARIANT_KINDS,
+} from '@rupturegrid/engine';
+export type {
+  BusinessInvariantKind,
+  GenericInvariantInstance,
+  GenericInvariantParams,
+  AtMostOneAcceptedEffectParams,
+  ResourceConservationParams,
+  InvariantAcceptedMatch,
+  InvariantCompletenessProof,
+  InvariantScopeBinding,
+  DefinitionIssue,
+} from '@rupturegrid/engine';
+export {
+  validateGenericInvariantDefinition,
+  parseGenericMetadataTriple,
+  canonicalInstanceParamsJson,
+  GenericInvariantDefinitionError,
+} from '@rupturegrid/engine';
+export {
+  evaluateGenericInvariant,
+  evaluateAtMostOneAcceptedEffect,
+  evaluateResourceConservation,
+  GENERIC_COMPLETENESS_BASES,
+  GENERIC_EVALUATION_GAPS,
+} from './generic-invariant-evaluate.js';
+export type {
+  GenericEvaluationInput,
+  GenericEvaluationResult,
+  GenericEvaluationSubject,
+  GenericEvidenceEntity,
+  GenericActiveRelationship,
+  GenericCaptureStatus,
+  GenericEvaluationGap,
+  GenericInvariantVerdict,
+} from './generic-invariant-evaluate.js';
+export {
+  loadPersistedCaptureStatuses,
+  loadGenericEvaluationSubjects,
+  loadGenericEventsAndActiveGraph,
+  buildGenericEvaluationInput,
+  genericEvidenceSetHash,
+} from './generic-invariant-input.js';
+export type { PersistedCaptureStatus } from './generic-invariant-input.js';
+export {
+  runGenericInvariantAnalysis,
+  loadFrozenGenericInstances,
+  ensureGenericInvariantDefinitions,
+  GENERIC_INVARIANT_EVALUATOR_VERSION,
+} from './generic-invariant-analysis.js';
+export type { GenericAnalysisResult } from './generic-invariant-analysis.js';
+
 export { verifyRunEvidenceChain } from './integrity.js';
 export type { IntegrityReport, ChainProblem } from './integrity.js';

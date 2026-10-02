@@ -16,7 +16,14 @@ import {
 } from '@rupturegrid/shared';
 import type { ControlledFaultActivation, ControlledFaultKind } from '@rupturegrid/shared';
 import type { TargetRegistration } from './prisma-types.js';
-import { deriveExecutionPolicy, effectiveFaultHook, effectiveSignatureHeader } from './manifest.js';
+import {
+  deriveExecutionPolicy,
+  deriveEvidencePolicy,
+  effectiveFaultHook,
+  effectiveSignatureHeader,
+} from './manifest.js';
+import { deriveGenericInvariantBindings } from './generic-invariant-registry.js';
+import type { GenericInvariantInstance } from './generic-invariant-registry.js';
 import type {
   ExperimentDocument,
   ExperimentStep,
@@ -645,10 +652,41 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
     faultKindsByStep.set(plan.faultKind, index);
   }
 
+  // ---- Phase 15 (ADR-0023 §9): generic invariant bindings are
+  // validated AGAINST THE FROZEN EVIDENCE POLICY at definition time
+  // and RE-VALIDATED at snapshot freeze (defense in depth — the same
+  // fail-closed discipline as deriveExecutionPolicy/
+  // deriveEvidencePolicy). A definition that fails validation is never
+  // stored as executable intent and never reaches evaluation.
+  const rawInvariantBindings = raw['invariantBindings'];
+  let invariantBindings: GenericInvariantInstance[] | undefined;
+  if (rawInvariantBindings !== undefined) {
+    if (!Array.isArray(rawInvariantBindings)) {
+      issues.push('document.invariantBindings must be an array of instance definitions');
+    } else {
+      const policy = deriveEvidencePolicy(input.target.manifestJson);
+      if (policy === undefined) {
+        issues.push(
+          'document.invariantBindings requires a manifest-declaring target (generic invariants reference the frozen evidence policy)',
+        );
+      } else {
+        try {
+          invariantBindings = deriveGenericInvariantBindings(rawInvariantBindings, policy).slice();
+        } catch (error) {
+          issues.push(
+            error instanceof Error
+              ? `document.invariantBindings: ${error.message}`
+              : 'document.invariantBindings failed definition-time validation',
+          );
+        }
+      }
+    }
+  }
+
   if (issues.length > 0) {
     throw new ExperimentValidationError(issues);
   }
-  return { steps };
+  return invariantBindings === undefined ? { steps } : { steps, invariantBindings };
 }
 
 function placeholderStep(index: number): ExperimentStep {

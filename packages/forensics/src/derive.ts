@@ -31,6 +31,12 @@ import {
   PROOF_ROLES,
   PROOF_SUBJECTS,
 } from './finding.js';
+import {
+  deriveGenericFindingFromEvaluation,
+  isGenericEvaluation,
+  GENERIC_FINDING_RULE_VERSION,
+} from './generic-finding.js';
+import type { GenericFindingProofReference } from './generic-finding.js';
 import type {
   FindingEvaluationInput,
   FindingExecutionScope,
@@ -121,7 +127,8 @@ async function persistFinding(
     readonly details: Record<string, unknown>;
     readonly provenScope: Record<string, unknown>;
     readonly uncertainScope: Record<string, unknown>;
-    readonly proofReferences: readonly FindingProofReference[];
+    readonly proofReferences: readonly (FindingProofReference | GenericFindingProofReference)[];
+    readonly findingRuleVersion: string;
   },
 ): Promise<{ id: string; created: boolean }> {
   try {
@@ -133,7 +140,7 @@ async function persistFinding(
           invariantEvaluationId: input.evaluationId,
           invariantKey: input.invariantKey,
           evaluatorVersion: input.evaluatorVersion,
-          findingRuleVersion: FINDING_RULE_VERSION,
+          findingRuleVersion: input.findingRuleVersion,
           subjectKey: input.subjectKey.slice(0, 200),
           reasonCode: input.reasonCode as never,
           title: input.title.slice(0, 200),
@@ -176,7 +183,7 @@ async function persistFinding(
     const existing = await prisma.finding.findFirst({
       where: {
         invariantEvaluationId: input.evaluationId,
-        findingRuleVersion: FINDING_RULE_VERSION,
+        findingRuleVersion: input.findingRuleVersion,
       },
       select: { id: true },
     });
@@ -311,6 +318,81 @@ export async function deriveRunForensics(
   };
   const findings: DerivedFindingSummary[] = [];
   for (const evaluation of evaluations) {
+    // Phase 15 (additive): generic business-invariant/v1 evaluations
+    // route to the generic finding-rule registry. The frozen legacy
+    // INV-IZ-1 rule is untouched and stays the ONLY rule for legacy
+    // evaluations (conformance is one-way; R-07/ADR-0018 Decision 6).
+    // The generic rule consumes the ALREADY-PERSISTED evaluation only
+    // — it never re-evaluates truth, and PASS/NOT_EVALUABLE yield no
+    // Finding.
+    const genericDetails = (evaluation.details ?? {}) as Record<string, unknown>;
+    if (isGenericEvaluation({ details: genericDetails })) {
+      let genericDerivation;
+      try {
+        genericDerivation = deriveGenericFindingFromEvaluation({
+          id: evaluation.id,
+          runId: evaluation.runId,
+          invariantKey: evaluation.invariantKey,
+          evaluatorVersion: evaluation.evaluatorVersion,
+          subjectKey: evaluation.subjectKey,
+          verdict: evaluation.verdict,
+          completenessBasis: evaluation.completenessBasis,
+          evidenceSetHash: evaluation.evidenceSetHash,
+          sourceObservationHashes: evaluation.sourceObservationHashes,
+          normalizedEventIds: evaluation.normalizedEventIds,
+          causalRelationshipIds: evaluation.causalRelationshipIds,
+          details: genericDetails,
+        });
+      } catch (error) {
+        // Fail closed (§55): malformed/incompatible evaluation details
+        // are a derivation failure — never invented into a Finding and
+        // never "corrected". Phase 4 truth stays intact; retry
+        // converges (§72).
+        throw new ForensicDerivationError(
+          `generic finding derivation refused for evaluation ${evaluation.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (genericDerivation.finding === null) {
+        continue; // PASS / NOT_EVALUABLE: no failure Finding.
+      }
+      const persisted = await persistFinding(prisma, {
+        runId,
+        evaluationId: evaluation.id,
+        invariantKey: evaluation.invariantKey,
+        evaluatorVersion: evaluation.evaluatorVersion,
+        subjectKey: genericDerivation.finding.subjectKey,
+        reasonCode: genericDerivation.finding.reasonCode,
+        title: genericDerivation.finding.title,
+        summary: genericDerivation.finding.summary,
+        inputFingerprint: genericDerivation.inputFingerprint,
+        details: genericDerivation.finding.details,
+        provenScope: genericDerivation.finding.provenScope,
+        uncertainScope: genericDerivation.finding.uncertainScope,
+        proofReferences: genericDerivation.proofReferences,
+        findingRuleVersion: GENERIC_FINDING_RULE_VERSION,
+      });
+      findings.push({
+        id: persisted.id,
+        runId,
+        invariantEvaluationId: evaluation.id,
+        subjectKey: genericDerivation.finding.subjectKey,
+        reasonCode: genericDerivation.finding.reasonCode,
+        created: persisted.created,
+      });
+      await persistTimelineEntry(
+        prisma,
+        runId,
+        findingTimelineEntry({
+          findingId: persisted.id,
+          runId,
+          subjectKey: genericDerivation.finding.subjectKey,
+          reasonCode: genericDerivation.finding.reasonCode,
+          invariantKey: evaluation.invariantKey,
+          createdAt: new Date(),
+        }),
+      );
+      continue;
+    }
     const derivation = deriveFindingFromEvaluation(
       toEvaluationInput(evaluation, executionUncertainty),
     );
@@ -331,6 +413,7 @@ export async function deriveRunForensics(
       provenScope: derivation.finding.provenScope,
       uncertainScope: derivation.finding.uncertainScope,
       proofReferences: derivation.proofReferences,
+      findingRuleVersion: FINDING_RULE_VERSION,
     });
     findings.push({
       id: persisted.id,

@@ -92,12 +92,22 @@ Two design errors from the earlier roadmap draft are corrected here by mandate:
        **lower-bound subset**: with a valid, coherent baseline and every counted reservation
        attributable to the evaluated scope, additional unobserved reservations cannot undo the
        violation (observed consumption already exceeds capacity). Enumeration completeness is
-       not required.
-     - **Case B — `remainingAvailableUnits < 0`** may be proven **directly** when the
-       remaining-state observation is authoritative for the evaluated resource/scope/window: an
-       authoritative negative remaining state proves the violation by itself. Reservation
+       not required. Every counted accepted reservation's unit value MUST be a non-negative
+       safe integer: a negative-unit accepted reservation is contradictory business evidence
+       (never summed, never reinterpreted as a release/restock, never coerced); it can never
+       undo an already-proven lower-bound Case A from the valid non-negative proof subset.     - **Case B — `remainingAvailableUnits < 0`** may be proven **directly** when the
+       remaining-state observation is authoritative for the evaluated resource/scope/window:
+       an authoritative negative remaining state proves the violation by itself. Reservation
        enumeration completeness is not required merely to prove a negative authoritative
-       remaining state.
+       remaining state. A missing, invalid, or contradictory baseline fact is recorded for the
+       evaluation and never blocks the Case-B direct proof — the record names the baseline
+       gap/conflict as an additional anomaly while the primary mechanism remains
+       `RESOURCE_CONSERVATION_NEGATIVE_REMAINING` — provided the facts required by Case B
+       itself remain valid (exact resource identity, remaining-source authority, scope
+       coherence, generation coherence when declared, safe-integer remaining value). The
+       finding reason remains `RESOURCE_CONSERVATION_NEGATIVE_REMAINING` and the Case-B
+       finding proof cites only the authoritative remaining-state proof plus the required
+       resource/scope provenance.
      - **Case C — `remainingAvailableUnits != initialAvailableUnits − acceptedReservedUnits`**
        is valid **only** when the baseline is coherent, the remaining-state observation is
        coherent, the reservation enumeration is **proven complete**, and all counted reservations
@@ -114,7 +124,8 @@ Two design errors from the earlier roadmap draft are corrected here by mandate:
      unattributable — outside an already-proven lower-bound-safe violation — forces
      NOT_EVALUABLE instead.
    - **NOT_EVALUABLE** is mandatory (never a guessed PASS or FAIL) when: the baseline observation
-     is missing (no inference of initial capacity — ever); identity/attribution of any counted
+     is missing or contradictory (a negative baseline is contradictory business evidence — never
+     an authoritative initial fact, and never inferred, R-02); identity/attribution of any counted
      effect is below `identity-chain`; enumeration completeness of the counted consumption
      effects cannot be established (required for PASS and for Case C); the remaining-state
      observation is missing or shape-invalid; the verification scope/window is incoherent or

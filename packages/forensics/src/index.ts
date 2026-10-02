@@ -26,6 +26,22 @@ export type {
   FindingDerivation,
 } from './finding.js';
 
+// Phase 15 — generic finding-rule registry (business-invariant/v1)
+export {
+  deriveGenericFindingFromEvaluation,
+  isGenericEvaluation,
+  GENERIC_FINDING_REASON_CODES,
+  GENERIC_PROOF_ROLES,
+  GENERIC_FINDING_TITLES,
+  GENERIC_FINDING_RULE_VERSION,
+} from './generic-finding.js';
+export type {
+  GenericFindingEvaluationInput,
+  GenericFindingProofReference,
+  GenericFindingDerivation,
+  GenericFindingReasonCode,
+} from './generic-finding.js';
+
 export {
   deriveTimeline,
   findingTimelineEntry,

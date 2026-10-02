@@ -506,7 +506,16 @@ export function timelineInputFingerprint(input: TimelineDerivationInput): string
       canonicalizeJson({
         derivationVersion: TIMELINE_DERIVATION_VERSION,
         run: { id: input.run.id, state: input.run.state },
-        steps: input.steps.map((step) => [step.id, step.state, step.terminalAt?.toISOString()]),
+        steps: input.steps.map((step) => [
+          step.id,
+          step.state,
+          // Non-terminal steps honestly carry NO terminal timestamp;
+          // absence is represented as null (deterministic). Undefined
+          // can never enter the canonical form.
+          step.terminalAt === undefined || step.terminalAt === null
+            ? null
+            : step.terminalAt.toISOString(),
+        ]),
         invocations: input.invocations.map((invocation) => [invocation.id, invocation.outcome]),
         observationHashes: input.observations.map((observation) => observation.contentHash).sort(),
         eventIds: input.events.map((event) => event.id).sort(),

@@ -654,13 +654,32 @@ enum InvariantVerdict {
   @@schema("analysis")
 }
 
-/// A declared, versioned business rule. v1 carries exactly one:
-/// INV-IZ-1 (incident-zero §5).
+/// A declared, versioned business rule. v1.0 carries the hard-coded
+/// Demo evaluators: INV-IZ-1 (incident-zero §5) plus the Phase 9
+/// INV-DF-1/INV-DF-2 evaluation-tier invariants.
+///
+/// Phase 15 (business-invariant/v1, ADR-0018 + ADR-0023) adds the
+/// closed GENERIC invariant registry as ALL-OR-NONE metadata:
+///   - a GENERIC instance row carries kind + registryVersion +
+///     paramsJson, all non-null (invariantKey is the instance key;
+///     paramsJson is the frozen ADR-0023 §6 instance data). A partial
+///     hybrid (some non-null, some null) is a definition/persistence-
+///     time rejection enforced in application validation.
+///   - LEGACY rows keep all three NULL with semantics untouched.
+/// The durable row is REGISTRY METADATA; run truth always comes from
+/// the definition frozen into the run snapshot (ADR-0010/ADR-0023).
 model InvariantDefinition {
   id           String   @id @default(uuid()) @db.Uuid
   invariantKey String   @unique @db.VarChar(80)
   title        String   @db.VarChar(200)
   description  String   @db.VarChar(1000)
+  /// Generic metadata triple (ALL-OR-NONE; legacy rows carry NULL):
+  /// the closed invariant kind (atMostOneAcceptedEffect |
+  /// resourceConservation), the definition protocol identity
+  /// (business-invariant/v1), and the frozen §6 instance params.
+  kind           String?  @db.VarChar(40)
+  registryVersion String? @db.VarChar(24)
+  paramsJson     Json?
   createdAt    DateTime @default(now()) @db.Timestamptz(6)
 
   evaluations InvariantEvaluation[]
@@ -769,6 +788,15 @@ model InvariantEvaluation {
 /// uncertainty is never converted into a defect).
 enum FindingReasonCode {
   DUPLICATE_EQUIVALENT_FINANCIAL_EFFECT
+  /// Phase 15 (ADR-0023 §10): generic business-invariant/v1 finding
+  /// rules. PASS and NOT_EVALUABLE produce NO Finding; each code names
+  /// the proven failure mechanism of one persisted FAIL evaluation.
+  /// Exactly four values are added; per-case conservation codes are
+  /// kept because they name the proven mechanism while staying bounded.
+  TOO_MANY_ACCEPTED_EFFECTS
+  RESOURCE_CONSERVATION_EXCEEDED_BASELINE
+  RESOURCE_CONSERVATION_NEGATIVE_REMAINING
+  RESOURCE_CONSERVATION_MISMATCH
 
   @@schema("analysis")
 }

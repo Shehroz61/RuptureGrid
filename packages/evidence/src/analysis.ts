@@ -17,10 +17,12 @@
 
 import { randomUUID } from 'node:crypto';
 import type { PrismaClient, InvariantVerdict } from '@rupturegrid/control-db';
-import { deriveRunEvidence } from './derive.js';
+import { deriveRunEvidence, loadFrozenEvidencePolicy } from './derive.js';
 import { computeEvidenceSetFingerprint } from './derive.js';
 import { evaluateInvDf1, evaluateInvDf2, evaluateInvIz1 } from './invariants.js';
 import type { InvariantEvidenceGraph } from './invariants.js';
+import { runGenericInvariantAnalysis } from './generic-invariant-analysis.js';
+import type { GenericAnalysisResult } from './generic-invariant-analysis.js';
 import {
   INV_IZ_1_DESCRIPTION,
   INV_IZ_1_KEY,
@@ -91,6 +93,13 @@ export interface AnalysisRunResult {
   readonly evaluations: PersistedEvaluation[];
   readonly derivedEventCount: number;
   readonly derivedRelationshipCount: number;
+  /**
+   * Phase 15 (additive): count of persisted generic business-invariant/
+   * v1 evaluations in this pass (0 for legacy runs).
+   */
+  readonly genericEvaluatedCount: number;
+  /** Phase 15: the generic invariant keys evaluated (frozen bindings). */
+  readonly genericInvariantKeys: readonly string[];
 }
 
 /**
@@ -115,6 +124,11 @@ export async function runRunAnalysis(
 
   // 1. Derivation (idempotent; converges on the same rows).
   const derived = await deriveRunEvidence(prisma, runId);
+
+  // Phase 15 seam gate: generic analysis runs ONLY when the run's
+  // FROZEN snapshot carries a manifest evidence policy (legacy
+  // manifest-less snapshots never evaluate generic invariants).
+  const frozenGenericPolicy = await loadFrozenEvidencePolicy(prisma, runId);
 
   // 2. Evidence graph snapshot (ALL derived rows of the run).
   const [eventRows, relationshipRows, fingerprint] = await Promise.all([
@@ -280,6 +294,20 @@ export async function runRunAnalysis(
     });
   }
 
+  // 5. Phase 15 (additive): generic business-invariant/v1 evaluation
+  // over the FROZEN snapshot bindings + persisted Phase 14 evidence.
+  // Legacy analysis above is untouched; this seam adds evaluation rows
+  // ONLY for runs whose frozen snapshot carries generic bindings
+  // (legacy snapshots evaluate zero generic invariants). Same
+  // idempotency discipline; same tables; no target HTTP; no AI.
+  let generic: GenericAnalysisResult = { batchIds: [], evaluations: [] };
+  if (frozenGenericPolicy !== undefined) {
+    generic = await runGenericInvariantAnalysis(prisma, runId, {
+      snapshotContentHash: await loadRunSnapshotContentHash(prisma, runId),
+      targetId: await loadRunTargetId(prisma, runId),
+    });
+  }
+
   return {
     batchId: batches[0]?.id ?? '',
     evaluatorVersion: INV_IZ_1_EVALUATOR_VERSION,
@@ -287,7 +315,37 @@ export async function runRunAnalysis(
     evaluations,
     derivedEventCount: derived.events.length,
     derivedRelationshipCount: derived.relationships.length,
+    genericEvaluatedCount: generic.evaluations.length,
+    genericInvariantKeys: generic.batchIds.map((batch) => batch.invariantKey),
   };
+}
+
+/** The run's frozen snapshot content hash (platform identity input). */
+async function loadRunSnapshotContentHash(prisma: PrismaClient, runId: string): Promise<string> {
+  const run = await prisma.experimentRun.findUnique({
+    where: { id: runId },
+    select: { snapshot: { select: { contentHash: true } } },
+  });
+  if (run === null) {
+    throw new AnalysisError(`run ${runId} does not exist`);
+  }
+  return run.snapshot.contentHash;
+}
+
+/** The run's declared target id (platform identity input, never comparand data). */
+async function loadRunTargetId(prisma: PrismaClient, runId: string): Promise<string> {
+  const run = await prisma.experimentRun.findUnique({
+    where: { id: runId },
+    select: {
+      snapshot: {
+        select: { revision: { select: { targetId: true } } },
+      },
+    },
+  });
+  if (run === null) {
+    throw new AnalysisError(`run ${runId} does not exist`);
+  }
+  return run.snapshot.revision.targetId;
 }
 
 /**

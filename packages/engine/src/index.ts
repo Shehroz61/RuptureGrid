@@ -22,6 +22,27 @@ export {
   LEGACY_SIGNATURE_HEADER,
   LEGACY_DEMO_FAULT_HOOK_PATH,
 } from './manifest.js';
+export {
+  BUSINESS_INVARIANT_REGISTRY_VERSION,
+  ACCEPTED_REGISTRY_VERSIONS,
+  BUSINESS_INVARIANT_KINDS,
+  validateGenericInvariantDefinition,
+  parseGenericMetadataTriple,
+  canonicalInstanceParamsJson,
+  deriveGenericInvariantBindings,
+  GenericInvariantDefinitionError,
+} from './generic-invariant-registry.js';
+export type {
+  BusinessInvariantKind,
+  InvariantAcceptedMatch,
+  InvariantCompletenessProof,
+  InvariantScopeBinding,
+  AtMostOneAcceptedEffectParams,
+  ResourceConservationParams,
+  GenericInvariantParams,
+  GenericInvariantInstance,
+  DefinitionIssue,
+} from './generic-invariant-registry.js';
 export type {
   TargetManifest,
   ManifestIdentityNode,

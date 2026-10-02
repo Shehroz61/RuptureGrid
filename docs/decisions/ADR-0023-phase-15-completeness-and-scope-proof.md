@@ -399,9 +399,10 @@ ADR-0018's lower-bound-safe FAIL asymmetry. The frozen sets are:
   already yields `sum(consumptionUnits) > initialAvailableUnits`, incomplete ADDITIONAL
   consumption enumeration does not undo Case A. Still required: coherent authoritative
   baseline (§5), exact resource identity, coherent scope/generation, each counted
-  consumption effect from valid evidence, each counted effect distinct, each counted effect
-  accepted, each counted effect attributable, exact safe-integer units. Missing final
-  remaining-state evidence does NOT block Case A.
+  consumption effect from valid evidence, each counted effect distinct,  each counted effect accepted, each counted effect attributable, exact non-negative
+  safe-integer units (B-2: a negative-unit consumption effect is contradictory evidence,
+  never part of the proof sum, and can never undo an already-proven lower bound). Missing
+  final remaining-state evidence does NOT block Case A.
 - **`resourceConservation` Case B — remaining-state authority.** A negative remaining state
   may independently prove Case B only when the remaining-state surface itself is
   authoritative and coherent: ALL declared queries whose `roleId == remainingRole` and which
@@ -455,12 +456,24 @@ ADR-0018's lower-bound-safe FAIL asymmetry. The frozen sets are:
    baseline fact (§2.4 convergence; §5). If a declared baseline-role query required for that
    resource/scope was not captured, was captured invalidly (non-2xx, truncated,
    shape-invalid, wrong provenance), baseline authority is NOT established. If two valid
-   baseline observations conflict on the baseline value: **`EVIDENCE_CONFLICT` ⇒
-   NOT_EVALUABLE**. Never first/last/earliest/latest/DB-order selection.
+   baseline observations conflict on the baseline value: **`EVIDENCE_CONFLICT`** — the
+   baseline is contradictory business evidence. Never first/last/earliest/latest/DB-order
+   selection.
 
-   No authoritative baseline for R ⇒ **NOT_EVALUABLE** (`BASELINE_MISSING`; never inferred —
-   R-02/ADR-0018). Conflicting baseline or remaining values for one R/scope/generation ⇒
-   **NOT_EVALUABLE** (`EVIDENCE_CONFLICT`).
+   **Baseline gaps are recorded, not verdict-terminal before Case B (frozen; B-1).** A
+   baseline authority gap or a contradictory baseline fact is RECORDED for the evaluation
+   (named gap/detail) and voids baseline authority for Case A, Case C, and PASS — but rule
+   order here establishes FACT AUTHORITY, not verdict termination. A baseline gap terminates
+   the verdict as **NOT_EVALUABLE** (`BASELINE_MISSING`, or `EVIDENCE_CONFLICT` when the
+   baseline surface was observed and contradicted) ONLY at rule 6, after Case A (rule 2) and
+   Case B (rule 3) have had their independent-proof opportunities — exactly mirroring the
+   `REMAINING_MISSING`-unless-Case-A-proved-FAIL exception of rule 6 and the lower-bound-safe
+   exception of ADR-0018 Decision 3. Baseline absence is never inferred from (R-02/ADR-0018);
+   baseline values MUST be non-negative safe integers to serve as the authoritative initial
+   fact (§8 type discipline), so a negative baseline is contradictory evidence
+   (`EVIDENCE_CONFLICT`), never authoritative. When Case B (rule 3) fires without an
+   authoritative baseline, the recorded baseline gap/conflict is retained in the evaluation
+   details as an additional anomaly and NEVER changes the primary FAIL mechanism.
 2. Attribute each candidate reservation (§7). **FAIL Case A**
    (`RESOURCE_CONSERVATION_EXCEEDED_BASELINE`) when the attributable candidates' unit sum >
    baseline value — enumeration completeness NOT required (lower-bound-safe; unobserved
@@ -475,7 +488,10 @@ ADR-0018's lower-bound-safe FAIL asymmetry. The frozen sets are:
    remaining observation whose remaining-role surface is incomplete, invalid, or
    unconverged/contradicted is NOT authoritative ⇒ **NOT_EVALUABLE** (rule 6), never FAIL. A
    negative remaining observation that is NOT scope/generation-bound to R ⇒ **NOT_EVALUABLE**
-   (rule 6), never FAIL.
+   (rule 6), never FAIL. A recorded baseline gap/conflict (rule 1) does NOT block Case B;
+   when Case B fires without an authoritative baseline the recorded gap is retained in
+   evaluation details and the primary mechanism remains
+   `RESOURCE_CONSERVATION_NEGATIVE_REMAINING` (finding reason unchanged, ADR-0018 §10).
 4. **FAIL Case C** (`RESOURCE_CONSERVATION_MISMATCH`) when `remaining != initial −
    acceptedReservedUnits` — valid ONLY when baseline and remaining are coherent, ALL
    counted reservations are attributable, AND completeness is proven for R
@@ -483,24 +499,39 @@ ADR-0018's lower-bound-safe FAIL asymmetry. The frozen sets are:
    required capture set of §8 (`baselineRole`, `remainingRole`, `consumptionEffectRole`,
    `completenessProof.queryId` — all `queriesForRole` surfaces validly captured for the
    evaluated scope), with consumption enumeration and attribution complete and scope
-   coherent. Without completeness or with any required capture absent/invalid ⇒
-   **NOT_EVALUABLE** (`ENUMERATION_COMPLETENESS_GAP` / `CAPTURE_INVALID_OR_ABSENT`), never
-   FAIL.
+   coherent. Without completeness, with any required capture absent/invalid, or with any
+   negative-unit consumption conflict (B-2) ⇒ **NOT_EVALUABLE**
+   (`ENUMERATION_COMPLETENESS_GAP` / `CAPTURE_INVALID_OR_ABSENT` / `EVIDENCE_CONFLICT`),
+   never FAIL.
 5. **PASS** requires: no rule 2–4 fired; no attribution gap; the COMPLETE required capture
    set of §8 (all `queriesForRole` surfaces for `baselineRole`, `remainingRole`, and
    `consumptionEffectRole` plus `completenessProof.queryId` validly captured for the
-   evaluated scope); authoritative converged baseline (rule 1); completeness proven; coherent
-   scope/generation; and `remaining == initial − sum` AND `sum ≤ initial` AND `remaining ≥ 0`
+   evaluated scope); authoritative converged baseline (rule 1); completeness proven; no
+   negative-unit consumption conflict (B-2); coherent scope/generation; and
+   `remaining == initial − sum` AND `sum ≤ initial` AND `remaining ≥ 0`
    (exact integer arithmetic; R-06).
 6. Everything else: **NOT_EVALUABLE** with the specific named gap
-   (`BASELINE_MISSING`, `REMAINING_MISSING` — unless Case A already proved FAIL —
+   (`BASELINE_MISSING` or the recorded baseline `EVIDENCE_CONFLICT` — each terminating only
+   after Cases A and B had their independent-proof opportunities, per the recorded-not-
+   terminal rule of rule 1; `REMAINING_MISSING` — unless Case A already proved FAIL —
    `ATTRIBUTION_GAP`, `ENUMERATION_COMPLETENESS_GAP`, `SCOPE_INCOHERENT`,
-   `EVIDENCE_CONFLICT`, `CAPTURE_INVALID_OR_ABSENT`, `EVALUATION_SURFACE_ABSENT`).
+   `EVIDENCE_CONFLICT` (including negative baseline/consumption-unit conflicts, B-2),
+   `CAPTURE_INVALID_OR_ABSENT`, `EVALUATION_SURFACE_ABSENT`).
 
 Type discipline: units fields are declared `integer-minor-units`; a float or numeric-string
 unit value can never enter the evidence (capture-time rejection, no coercion) and a params
 reference to a non-integer-typed field is rejected at definition time. There is no
-runtime coercion path in either direction.
+runtime coercion path in either direction. **Business sign discipline (frozen; B-2):**
+`initialAvailableUnits` (baseline) and each counted accepted consumption effect's unit value
+MUST be non-negative safe integers to serve as authoritative business facts; a negative value
+on either surface is contradictory business evidence (`EVIDENCE_CONFLICT` ⇒ `NOT_EVALUABLE`,
+unless an independently sufficient Case A or Case B FAIL is already proven), never counted,
+never reinterpreted (a negative consumption effect is never a release/restock and is never
+subtracted), never coerced. `remainingAvailableUnits` MAY legitimately be negative — that is
+exactly Case B. The manifest primitive `integer-minor-units` is UNCHANGED (its capture-time
+shape check remains any safe integer); this is business-role sign semantics enforced in the
+pure evaluator over the declared roles, so a target's remaining surface stays observable
+while baseline/consumption surfaces carry the non-negative business rule.
 
 ### 9. Event/role/field naming and definition-time validation
 
@@ -630,6 +661,14 @@ the verdicts in the CLI report and regression suites.
 | 18 | baseline-role observations conflict on the baseline value | EVIDENCE_CONFLICT / NOT_EVALUABLE — baseline authority not established; never first/last/earliest/latest selection |
 | 19 | Case C arithmetic mismatch but one consumption-role query invalid | NOT_EVALUABLE (CAPTURE_INVALID_OR_ABSENT / completeness gap) — never FAIL |
 | 20 | PASS arithmetic correct but any required relevant query (baselineRole, remainingRole, consumptionEffectRole, or completenessProof.queryId) invalid | NOT_EVALUABLE — never PASS |
+| 21 | baseline absent; remaining-role surface authoritative and converged on −1; consumption absent | FAIL Case B (`RESOURCE_CONSERVATION_NEGATIVE_REMAINING`) — the baseline gap is recorded, never the primary mechanism (B-1) |
+| 22 | baseline-role capture invalid; remaining authoritative −1 with resource/scope/generation proof intact | FAIL Case B — the recorded baseline capture gap never blocks the direct proof (B-1) |
+| 23 | baseline absent; remaining +5; no independent Case A/B | NOT_EVALUABLE (`BASELINE_MISSING`) |
+| 24 | Case A proven (attributable sum > baseline); remaining −1 authoritative | FAIL Case A (primary mechanism `RESOURCE_CONSERVATION_EXCEEDED_BASELINE`; A > B) |
+| 25 | Case A not provable (sum ≤ baseline); remaining −1 authoritative (Case C would also mismatch) | FAIL Case B (primary mechanism `RESOURCE_CONSERVATION_NEGATIVE_REMAINING`; B > C) |
+| 26 | baseline = −1 (contradictory); no independent Case A/B | NOT_EVALUABLE (`EVIDENCE_CONFLICT`) — never an authoritative baseline, never inferred (B-2) |
+| 27 | accepted consumption effect with units −2 (complete enumeration; remaining consistent with it) | NOT_EVALUABLE (`EVIDENCE_CONFLICT`) — MUST NOT PASS (B-2) |
+| 28 | Case A proven from a valid non-negative attributable subset; another accepted effect carries units −2 | FAIL Case A stands (the negative-unit conflict is recorded; it cannot undo the lower-bound proof, B-2) |
 
 Plus the definition-time reject-cases of §9 and the conformance suite of §13. Rows 15–18
 (`atMostOneAcceptedEffect`) and 15–20 (`resourceConservation`) are the mandatory BS-1/BS-2

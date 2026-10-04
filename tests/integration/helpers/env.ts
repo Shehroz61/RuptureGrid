@@ -16,6 +16,10 @@ export interface TestEnv {
   readonly demoAdminToken: string;
   readonly demoInspectionToken: string;
   readonly demoProviderSigningSecret: string;
+  /** Demo Commerce target (Phase 16 suites). */
+  readonly commerceDatabaseUrl: string;
+  readonly commerceAdminToken: string;
+  readonly commerceSigningSecret: string;
 }
 
 function requireValue(name: string, missing: string[]): string {
@@ -55,6 +59,20 @@ export function loadTestEnv(): TestEnv {
   const demoAdminToken = requireValue('DEMO_ADMIN_TOKEN', missing);
   const demoInspectionToken = requireValue('DEMO_INSPECTION_TOKEN', missing);
   const demoProviderSigningSecret = requireValue('DEMO_PROVIDER_SIGNING_SECRET', missing);
+  // Phase 16: the Demo Commerce family is NEW — a developer's existing
+  // .env predates it. The harness therefore uses the DOCUMENTED
+  // compose/.env.example development defaults explicitly when the
+  // variables are absent (clearly non-production demo values, identical
+  // to the committed template; CI copies .env.example verbatim, so the
+  // same values arrive through the environment there). No secret is
+  // invented, and nothing is silently guessed: these are the documented
+  // local defaults.
+  const commerceDatabaseUrl =
+    process.env.COMMERCE_DATABASE_URL ??
+    'postgresql://commerce:commerce_dev_password@127.0.0.1:5445/demo_commerce';
+  const commerceAdminToken = process.env.COMMERCE_ADMIN_TOKEN ?? 'commerce-admin-dev-token-0001';
+  const commerceSigningSecret =
+    process.env.DEMO_COMMERCE_SIGNING_SECRET ?? 'demo-commerce-signing-secret-0001';
   const queuePrefix = process.env.QUEUE_PREFIX ?? 'rupturegrid';
 
   if (missing.length > 0) {
@@ -72,5 +90,8 @@ export function loadTestEnv(): TestEnv {
     demoAdminToken,
     demoInspectionToken,
     demoProviderSigningSecret,
+    commerceDatabaseUrl,
+    commerceAdminToken,
+    commerceSigningSecret,
   };
 }

@@ -35,8 +35,12 @@ export class ConfigValidationError extends Error {
 /**
  * Environment variable families RuptureGrid owns. Everything else in
  * the process environment (PATH, system variables, …) is ignored.
- */ const RUPTUREGRID_ENV_PREFIX =
-  /^(CONTROL_|DEMO_|REDIS_|QUEUE_|API_|WORKER_|LOG_|NODE_ENV|CORS_)/;
+ * Phase 16 adds the Demo Commerce target family (COMMERCE_) and the
+ * platform-owned target-origin credential grant policy family (TARGET_)
+ * — ADR-0024.
+ */
+const RUPTUREGRID_ENV_PREFIX =
+  /^(CONTROL_|DEMO_|COMMERCE_|REDIS_|QUEUE_|API_|WORKER_|LOG_|NODE_ENV|CORS_|TARGET_)/;
 
 /** Returns only the RuptureGrid-owned variables from an environment. */
 export function pickRuptureGridEnv(

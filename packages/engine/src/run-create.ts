@@ -13,6 +13,7 @@ import type { TargetEnvironment } from '@rupturegrid/shared';
 import type { RunSnapshotDocument } from './types.js';
 import { freezeSnapshot } from './snapshot.js';
 import type { FrozenSnapshot } from './snapshot.js';
+import type { TargetOriginCredentialPolicy } from './credential-authorization.js';
 
 export class RunCreationError extends Error {
   public constructor(message: string) {
@@ -37,8 +38,20 @@ export interface CreatedRun {
  * Dispatch intent is durable by construction (the step rows exist);
  * marking DISPATCHING and enqueueing are the caller's next step.
  */
-export async function createRun(prisma: PrismaClient, revisionId: string): Promise<CreatedRun> {
-  const frozen: FrozenSnapshot = await freezeSnapshot(prisma, revisionId);
+export async function createRun(
+  prisma: PrismaClient,
+  revisionId: string,
+  /**
+   * Phase 16 (ADR-0024 §16): the server-owned platform credential
+   * policy under which THIS run's snapshot freeze re-validates the
+   * stored manifest's target-origin authorization. A stored manifest
+   * whose declared refs are no longer authorized cannot freeze a new
+   * snapshot (fail closed; no snapshot row is ever rewritten).
+   * Defaults to the fail-closed deny-all policy.
+   */
+  credentialPolicy?: TargetOriginCredentialPolicy,
+): Promise<CreatedRun> {
+  const frozen: FrozenSnapshot = await freezeSnapshot(prisma, revisionId, credentialPolicy);
   const document = frozen.document;
 
   // Environment authorization at run creation (ADR-0011). Enforced

@@ -10,6 +10,7 @@ import {
 } from './forensics/forensics.controller.js';
 import type { ApiConfig } from '@rupturegrid/config';
 import type { ControlDb } from '@rupturegrid/control-db';
+import { buildTargetOriginCredentialPolicy } from './config.js';
 
 export interface AppModuleOptions {
   readonly config: ApiConfig;
@@ -40,6 +41,10 @@ export function buildAppModule(options: AppModuleOptions) {
           controlDb: options.controlDb,
           redisUrl: options.config.REDIS_URL,
           queuePrefix: options.config.QUEUE_PREFIX,
+          // Phase 16 (ADR-0024 §4/§18): the SERVER-OWNED platform
+          // target-origin credential policy, built from validated
+          // configuration and fail-fast-validated at startup.
+          credentialPolicy: buildTargetOriginCredentialPolicy(options.config),
         },
       },
       {

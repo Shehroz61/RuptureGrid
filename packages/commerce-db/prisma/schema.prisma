@@ -1,0 +1,332 @@
+// =====================================================================
+// Demo Commerce PostgreSQL schema — Phase 16 domain model (ADR-0020)
+// =====================================================================
+// Target-owned business schema (ADR-0002, AGENTS R-05): the
+// checkout/inventory domain of the second external-in-kind target.
+// RuptureGrid NEVER receives credentials to this database and holds no
+// models here. This target shares NOTHING with the Demo Fintech store.
+//
+// Design rules implemented here:
+// - Money-like fields (order totals) are ALWAYS integer minor units
+//   stored as PostgreSQL bigint, with an explicit currency code —
+//   never a float (AGENTS R-06, ADR-0004). Stock units are integers.
+// - The Checkout Zero identities (docs/checkout-zero.md §3,
+//   ADR-0020 Decision 1) are explicit, distinct columns — never
+//   collapsed into one generic id, and never copied from the fintech
+//   names: checkoutIntentId (logical intent), checkoutEventId (logical
+//   event), requestAttemptId (physical API call, caller-assigned),
+//   processingAttemptId (target-assigned), orderId + reservationId
+//   (accepted business effects), sku (resource).
+// - Causal relationships are real foreign keys — never timestamp
+//   inference (docs/evidence-model.md §6).
+// - Processing attempts persist authoritative TIMING (startedAt /
+//   finishedAt) plus a monotonically-observed start counter so real
+//   overlap is provable from target state alone (testing-strategy §6:
+//   overlap is measured from authoritative persisted state, never
+//   inferred from Promise.all optimism).
+// - Verification scope: every business row carries the target-owned
+//   verificationScopeId + generationId of the experiment context it
+//   belongs to, so baseline, effects, and remaining state can be bound
+//   to one coherent scope/generation WITHOUT timestamps (ADR-0018
+//   Decision 7, ADR-0023 §4). Timestamps are recorded as operational
+//   metadata only — they are never scope or causal identity.
+// - Vulnerable/secure processing modes live in ONE durable settings
+//   row switched through the target's own admin API — never by direct
+//   DB mutation from RuptureGrid (R-05).
+// - The controlled-fault plan table reuses the closed controlled-
+//   fault/v1 vocabulary (ADR-0014) — target-owned, local-only.
+// - No RuptureGrid concepts (experiments, evidence, findings) exist
+//   here — this is the TARGET's business data only.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------
+// Processing mode — one durable settings row ("default"). The Demo
+// Commerce Target owns this state; experiments switch it through the
+// target's own admin API, never by editing rows behind its back.
+// ---------------------------------------------------------------------
+
+enum CommerceProcessingMode {
+  VULNERABLE
+  SECURE
+}
+
+model CommerceSettings {
+  id             String                @id @default("default")
+  processingMode CommerceProcessingMode @default(VULNERABLE)
+  updatedAt      DateTime              @updatedAt @db.Timestamptz(3)
+
+  @@map("commerce_settings")
+}
+
+// ---------------------------------------------------------------------
+// Verification scope — the target-owned experiment context (ADR-0018
+// Decision 7, ADR-0023 §4). Baseline, effects, and final inspection
+// state all carry the scope id + generation id of their context, so a
+// later verification can prove coherence by EXACT EQUALITY of these
+// declared fields — never by timestamps or observation order.
+// ---------------------------------------------------------------------
+
+model VerificationScope {
+  id         String   @id @default(uuid()) @db.Uuid
+  /// Target-chosen opaque scope identity (e.g. a scope token supplied
+  /// through the target's own scenario-setup admin interface).
+  scopeId    String   @unique
+  /// Monotonic target-owned generation counter within the scope: every
+  /// legitimate scenario reset advances it. Generation is part of the
+  /// declared business state — never a timestamp.
+  generationId Int    @default(1)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  skus       Sku[]
+  checkoutIntents CheckoutIntent[]
+
+  @@map("verification_scopes")
+}
+
+// ---------------------------------------------------------------------
+// Resource: SKU stock facts (integer units — never floats)
+// ---------------------------------------------------------------------
+
+/// ONE stock-keeping unit. initialAvailableUnits is the BASELINE — it
+/// is set exactly once at scenario initialization through the target's
+/// own admin API and is never rewritten afterward; remainingAvailableUnits
+/// moves only inside the atomic reserve transaction. Both are plain
+/// integer unit counts (the ADR-0023 integer-minor-units declared type
+/// accepts any safe integer; these are units, not money).
+model Sku {
+  id                      String           @id @default(uuid()) @db.Uuid
+  sku                     String           @unique
+  scopeId                 String           @db.Uuid
+  scope                   VerificationScope @relation(fields: [scopeId], references: [id])
+  /// The declared baseline: immutable after scenario initialization.
+  initialAvailableUnits   Int
+  /// Current remaining units. MAY legitimately go negative under a
+  /// broken (vulnerable) target — that is exactly what the conservation
+  /// invariant records (ADR-0018 Decision 3).
+  remainingAvailableUnits Int
+  createdAt               DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime         @updatedAt @db.Timestamptz(3)
+
+  reservations Reservation[]
+
+  @@index([scopeId])
+  @@map("skus")
+}
+
+// ---------------------------------------------------------------------
+// Logical business identity: checkout intent + logical event
+// ---------------------------------------------------------------------
+
+/// ONE logical checkout intent — the subject identity of INV-CHK-1.
+/// The logical identity is SCOPE-bound: `checkoutIntentId` is unique
+/// WITHIN a verification scope, never globally. The same stable
+/// business id may legitimately exist in two distinct scopes (each
+/// scope's own reset clears only its own rows), and one scope's intent
+/// must never shadow — or receive effects from — another scope's
+/// submissions (ADR-0018 Decision 7, ADR-0023 §4).
+model CheckoutIntent {
+  id                    String            @id @default(uuid()) @db.Uuid
+  checkoutIntentId      String
+  scopeId               String            @db.Uuid
+  scope                 VerificationScope @relation(fields: [scopeId], references: [id])
+  customerId            String
+  cartId                String
+  /// Order total in integer minor units (R-06/ADR-0004) with explicit
+  /// currency — the equivalence-tuple fields of the scenario contract.
+  totalMinor            BigInt
+  currency              String            @db.Char(3)
+  /// The resource the checkout draws from.
+  sku                   String
+  status                CheckoutIntentStatus @default(OPEN)
+  createdAt             DateTime          @default(now()) @db.Timestamptz(3)
+
+  events      CheckoutEvent[]
+  attempts    RequestAttempt[]
+  orders      Order[]
+
+  @@unique([scopeId, checkoutIntentId])
+  @@index([scopeId])
+  @@map("checkout_intents")
+}
+
+enum CheckoutIntentStatus {
+  OPEN
+  PROCESSING
+  SETTLED
+}
+
+/// ONE logical checkout event (e.g. CHECKOUT_SUBMITTED) about one
+/// logical intent. Created by the target when the FIRST physical
+/// submission of that intent arrives; later submissions of the same
+/// intent correlate to the SAME logical event. Exactly ONE event per
+/// logical intent (DB-enforced); the deterministic event identity
+/// VALUE is scope-qualified so two scopes can never collide on it.
+model CheckoutEvent {
+  id                String         @id @default(uuid()) @db.Uuid
+  checkoutEventId   String
+  intentId          String         @db.Uuid
+  intent            CheckoutIntent @relation(fields: [intentId], references: [id])
+  eventType         String
+  createdAt         DateTime       @default(now()) @db.Timestamptz(3)
+
+  requestAttempts   RequestAttempt[]
+
+  @@unique([intentId])
+  @@map("checkout_events")
+}
+
+// ---------------------------------------------------------------------
+// Physical attempts
+// ---------------------------------------------------------------------
+
+/// ONE physical HTTP submission. requestAttemptId is assigned by the
+/// CALLER (the executor) and carried in the request-attempt header —
+/// the target records it verbatim, never generates or replaces it
+/// (docs/checkout-zero.md §2). DB-unique: two physical requests
+/// claiming one request identity are malformed for this contract.
+model RequestAttempt {
+  id                  String         @id @default(uuid()) @db.Uuid
+  requestAttemptId    String         @unique
+  intentId            String         @db.Uuid
+  intent              CheckoutIntent @relation(fields: [intentId], references: [id])
+  eventId             String         @db.Uuid
+  event               CheckoutEvent  @relation(fields: [eventId], references: [id])
+  receivedAt          DateTime       @default(now()) @db.Timestamptz(3)
+
+  processingAttempts  ProcessingAttempt[]
+
+  @@index([intentId])
+  @@index([eventId])
+  @@map("request_attempts")
+}
+
+enum ProcessingOutcome {
+  /// Processing accepted one order + reservation.
+  ACCEPTED
+  /// Secure-mode idempotency: the logical intent was already accepted.
+  INTENT_ALREADY_ACCEPTED
+  /// Processing failed; no business mutation survived.
+  FAILED
+}
+
+/// ONE target-side processing attempt of one physical submission.
+/// Started/finished timestamps and the monotonic startSequence are
+/// AUTHORITATIVE persisted facts a later verification uses to prove
+/// REAL overlap (attempt A started before attempt B finished AND vice
+/// versa) — testing-strategy §6. One processing path per request; two
+/// overlapping requests can race only through the business core.
+model ProcessingAttempt {
+  id                  String            @id @default(uuid()) @db.Uuid
+  processingAttemptId String            @unique
+  requestAttemptId    String            @db.Uuid
+  requestAttempt      RequestAttempt    @relation(fields: [requestAttemptId], references: [id])
+  startedAt           DateTime          @default(now()) @db.Timestamptz(3)
+  /// Monotonic observable start ordinal (DB-assigned, gap-free under
+  /// serializable sequence semantics is NOT required — only monotone
+  /// observation ordering matters for overlap proof).
+  startSequence       BigInt
+  finishedAt          DateTime?         @db.Timestamptz(3)
+  outcome             ProcessingOutcome?
+  failureReason       String?
+
+  order Order?
+
+  @@index([requestAttemptId])
+  @@map("processing_attempts")
+}
+
+// ---------------------------------------------------------------------
+// Accepted business effects: order + reservation
+// ---------------------------------------------------------------------
+
+enum OrderStatus {
+  ACCEPTED
+  REJECTED
+}
+
+/// ONE accepted business effect — the counted effect of INV-CHK-1.
+/// Created only inside the reserve transaction together with its
+/// reservation. The equivalence tuple (checkoutIntentId, customerId,
+/// cartId, totalMinor, currency) is carried exactly; orderTotalMinor is
+/// an integer amount in minor units with explicit currency (R-06).
+model Order {
+  id                  String             @id @default(uuid()) @db.Uuid
+  orderId             String             @unique
+  intentId            String             @db.Uuid
+  intent              CheckoutIntent     @relation(fields: [intentId], references: [id])
+  processingAttemptId String             @unique @db.Uuid
+  processingAttempt   ProcessingAttempt  @relation(fields: [processingAttemptId], references: [id])
+  /// The intent's scope row — the scope FK is carried by the intent
+  /// itself; the order binds its scope through the intent (one FK, no
+  /// redundant constraint).
+  customerId          String
+  cartId              String
+  orderTotalMinor     BigInt
+  currency            String             @db.Char(3)
+  status              OrderStatus
+  createdAt           DateTime           @default(now()) @db.Timestamptz(3)
+
+  reservation Reservation?
+
+  @@index([intentId])
+  @@map("orders")
+}
+
+enum ReservationStatus {
+  ACCEPTED
+}
+
+/// The accepted consumption effect against the SKU — the counted
+/// consumption of INV-INV-1. reservedUnits is a non-negative integer
+/// (a negative-unit reservation is contradictory business evidence and
+/// can never be created: DB CHECK constraint in the migration).
+model Reservation {
+  id                String            @id @default(uuid()) @db.Uuid
+  reservationId     String            @unique
+  orderId           String            @unique @db.Uuid
+  order             Order             @relation(fields: [orderId], references: [id])
+  sku               String
+  skuRowId          String            @db.Uuid
+  skuRow            Sku               @relation(fields: [skuRowId], references: [id])
+  reservedUnits     Int
+  status            ReservationStatus
+  createdAt         DateTime          @default(now()) @db.Timestamptz(3)
+
+  @@index([sku])
+  @@index([skuRowId])
+  @@map("reservations")
+}
+
+// ---------------------------------------------------------------------
+// Phase 16 — target-owned controlled-fault plans (ADR-0014 vocabulary,
+// target-owned state; armed/disarmed ONLY through the target's own
+// admin API with the admin credential; RuptureGrid never writes here).
+// ---------------------------------------------------------------------
+
+/// ONE armed controlled-fault plan per fault kind (faultKind unique):
+/// arming REPLACES any existing row of that kind with a fresh budget
+/// and TTL. Trigger consumption is an atomic conditional increment —
+/// the first N matching checkouts trigger, in physical arrival order.
+/// No probability anywhere; an expired plan is disarmed by definition.
+model CommerceFaultPlan {
+  id              String   @id @default(uuid()) @db.Uuid
+  faultKind       String   @unique @db.VarChar(40)
+  planVersion     String   @db.VarChar(32)
+  activation      String   @db.VarChar(40)
+  maxTriggers     Int
+  triggersUsed    Int      @default(0)
+  armedAt         DateTime @default(now()) @db.Timestamptz(3)
+  expiresAt       DateTime @db.Timestamptz(3)
+  lastTriggeredAt DateTime? @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(3)
+
+  @@map("commerce_fault_plans")
+}

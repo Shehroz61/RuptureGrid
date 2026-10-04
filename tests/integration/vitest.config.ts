@@ -7,6 +7,7 @@ const aliases = {
   '@rupturegrid/logger': resolve('packages/logger/src/index.ts'),
   '@rupturegrid/control-db': resolve('packages/control-db/src/index.ts'),
   '@rupturegrid/demo-db': resolve('packages/demo-db/src/index.ts'),
+  '@rupturegrid/commerce-db': resolve('packages/commerce-db/src/index.ts'),
   '@rupturegrid/queue': resolve('packages/queue/src/index.ts'),
   '@rupturegrid/engine': resolve('packages/engine/src/index.ts'),
   '@rupturegrid/evidence': resolve('packages/evidence/src/index.ts'),

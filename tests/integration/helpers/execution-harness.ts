@@ -8,6 +8,8 @@
 import { createControlDb } from '@rupturegrid/control-db';
 import type { PrismaClient } from '@rupturegrid/control-db';
 import { registerTarget, TargetRegistrationError } from '@rupturegrid/engine';
+import type { TargetOriginCredentialPolicy } from '@rupturegrid/engine';
+import { EXECUTOR_SIGNING_CREDENTIAL_REFS } from '@rupturegrid/config';
 import { loadTestEnv } from './env.js';
 
 export type ExecutionTestEnv = ReturnType<typeof loadTestEnv>;
@@ -87,6 +89,26 @@ export async function uniqueTestOrigin(prisma: PrismaClient): Promise<string> {
   throw new Error(
     'uniqueTestOrigin: could not find an unregistered loopback origin in 16 attempts',
   );
+}
+
+/**
+ * Phase 16 (ADR-0024 §54 discipline): builds the SERVER-OWNED test
+ * authorization policy for a specific registered origin set. The TEST
+ * constructs this policy from the platform side — the registration
+ * REQUEST still supplies only names, and the origin grant here is
+ * deliberately scoped to the exact normalized origins passed in. No
+ * localhost wildcard exists, no "LOCAL_DEVELOPMENT means all refs"
+ * shortcut exists: every grant is explicit, per-origin, name-only.
+ */
+export function testTargetOriginCredentialPolicy(
+  originRefs: Readonly<Record<string, readonly string[]>>,
+): TargetOriginCredentialPolicy {
+  return {
+    signingCredentialRefs: [...EXECUTOR_SIGNING_CREDENTIAL_REFS],
+    originGrants: Object.fromEntries(
+      Object.entries(originRefs).map(([origin, refs]) => [origin, [...refs]]),
+    ),
+  };
 }
 
 /**

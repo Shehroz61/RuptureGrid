@@ -1,8 +1,9 @@
 # RuptureGrid v1.0 — CI release gates
 #
 # Reproduces the Phase 11 release verification on real infrastructure
-# (R-08: real PostgreSQL x2, real Redis, real HTTP, real queue — never
-# mocked substitutes for infrastructure semantics):
+# (R-08: real PostgreSQL x3 — control + both targets since Phase 16 —,
+# real Redis, real HTTP, real queue — never mocked substitutes for
+# infrastructure semantics):
 #
 #   format -> lint (workspace + root tests) -> typecheck (workspace +
 #   test-check programs) -> unit tests -> build -> migrations against
@@ -60,6 +61,19 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      commerce-postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: commerce
+          POSTGRES_PASSWORD: commerce_dev_password
+          POSTGRES_DB: demo_commerce
+        ports:
+          - 5445:5432
+        options: >-
+          --health-cmd "pg_isready -U commerce"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
       redis:
         image: redis:8.4
         ports:
@@ -97,6 +111,7 @@ jobs:
         run: |
           psql "postgresql://rupturegrid:rupturegrid_dev_password@127.0.0.1:5443/rupturegrid" -c 'CREATE DATABASE rupturegrid_shadow;'
           psql "postgresql://demo:demo_dev_password@127.0.0.1:5444/demo_fintech" -c 'CREATE DATABASE demo_fintech_shadow;'
+          psql "postgresql://commerce:commerce_dev_password@127.0.0.1:5445/demo_commerce" -c 'CREATE DATABASE demo_commerce_shadow;'
 
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile

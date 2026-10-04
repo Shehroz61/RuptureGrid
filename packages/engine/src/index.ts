@@ -21,7 +21,22 @@ export {
   ManifestValidationError,
   LEGACY_SIGNATURE_HEADER,
   LEGACY_DEMO_FAULT_HOOK_PATH,
+  PHASE13_HISTORICAL_SIGNING_REF,
 } from './manifest.js';
+export {
+  DENY_ALL_TARGET_ORIGIN_CREDENTIAL_POLICY,
+  CredentialAuthorizationError,
+  assertValidTargetOriginCredentialPolicy,
+  assertCredentialRefsAuthorized,
+  authorizedRefsForTarget,
+  resolveSignatureCredentialBinding,
+  targetOriginCredentialPolicyIssues,
+} from './credential-authorization.js';
+export type {
+  TargetOriginCredentialPolicy,
+  PolicyAuthorizationInput,
+  SignatureCredentialBinding,
+} from './credential-authorization.js';
 export {
   BUSINESS_INVARIANT_REGISTRY_VERSION,
   ACCEPTED_REGISTRY_VERSIONS,
@@ -109,6 +124,7 @@ export {
   StepProcessor,
   StepNotClaimableError,
   createDemoCredentialResolver,
+  createCredentialResolver,
 } from './step-processor.js';
 export { noopEvidenceSink } from './evidence-sink.js';
 export type { EvidenceSink, InvocationObservation } from './evidence-sink.js';

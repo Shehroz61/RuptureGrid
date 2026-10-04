@@ -1,14 +1,24 @@
 # =====================================================================
 # RuptureGrid v1.0 — local development infrastructure
 # =====================================================================
-# Two PHYSICALLY SEPARATE PostgreSQL services (RuptureGrid Control vs
-# Demo Fintech target) plus Redis (coordination-only) — per ADR-0002.
-# Named volumes, no host-path mounts, healthchecks on every service.
-# Ports are environment-configurable (see .env.example).
+# Three PHYSICALLY SEPARATE PostgreSQL services (RuptureGrid Control,
+# Demo Fintech target, Demo Commerce target) plus Redis
+# (coordination-only) — per ADR-0002 (Phase 16 adds the second target
+# database, ADR-0020). Named volumes, no host-path mounts, healthchecks
+# on every service. Ports are environment-configurable (see
+# .env.example).
 #
 # NOTE (documented local default deviation): this machine already has
 # unrelated containers bound to 5433/5434, so the documented defaults
-# here are 5443/5444. Override via CONTROL_POSTGRES_PORT / DEMO_POSTGRES_PORT.
+# here are 5443/5444 (+5445 for the Phase 16 Commerce target). Override
+# via CONTROL_POSTGRES_PORT / DEMO_POSTGRES_PORT / COMMERCE_POSTGRES_PORT.
+#
+# The Demo Fintech and Demo Commerce instances each need an extra shadow
+# database for Prisma `migrate dev` / `migrate diff` verification (R-12).
+# compose does NOT auto-create them: `pnpm db:migrate` (migrate deploy)
+# needs no shadow, and CI creates both with explicit `CREATE DATABASE`
+# steps; a local developer verifies migrations by creating them once
+# (see .env.example *_SHADOW_DATABASE_URL comments).
 
 name: rupturegrid
 
@@ -56,6 +66,27 @@ services:
       retries: 12
     restart: unless-stopped
 
+  commerce-postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: ${COMMERCE_POSTGRES_USER:-commerce}
+      POSTGRES_PASSWORD: ${COMMERCE_POSTGRES_PASSWORD:-commerce_dev_password}
+      POSTGRES_DB: ${COMMERCE_POSTGRES_DB:-demo_commerce}
+    ports:
+      - '${COMMERCE_POSTGRES_PORT:-5445}:5432'
+    volumes:
+      - commerce-pgdata:/var/lib/postgresql/18/docker
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U ${COMMERCE_POSTGRES_USER:-commerce} -d ${COMMERCE_POSTGRES_DB:-demo_commerce}',
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
   redis:
     image: redis:8.4
     command: ['redis-server', '--maxmemory-policy', 'noeviction', '--appendonly', 'yes']
@@ -73,4 +104,5 @@ services:
 volumes:
   control-pgdata:
   demo-pgdata:
+  commerce-pgdata:
   redis-data:

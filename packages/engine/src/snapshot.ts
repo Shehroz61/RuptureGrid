@@ -13,6 +13,8 @@ import type { PrismaClient } from '@rupturegrid/control-db';
 import { EXECUTION_ENGINE_VERSION } from '@rupturegrid/shared';
 import type { ContractKind } from './target.js';
 import { deriveExecutionPolicy, deriveEvidencePolicy } from './manifest.js';
+import { DENY_ALL_TARGET_ORIGIN_CREDENTIAL_POLICY } from './credential-authorization.js';
+import type { TargetOriginCredentialPolicy } from './credential-authorization.js';
 import { deriveGenericInvariantBindings } from './generic-invariant-registry.js';
 import { canonicalizeAndHash, CANONICALIZATION_ALGORITHM } from './canonicalize.js';
 import type { ExperimentDocument, RunSnapshotDocument } from './types.js';
@@ -55,6 +57,14 @@ export function buildSnapshotDocument(input: {
     /** Phase 13: the stored registration provenance (may be null). */
     readonly manifestJson?: unknown;
   };
+  /**
+   * Phase 16 (ADR-0024 §8/§16): the SERVER-OWNED platform credential
+   * policy under which THIS freeze's manifest-derived execution policy
+   * is re-validated and derived. Defaults to the fail-closed deny-all
+   * policy: a manifest target whose declared refs are ungranted can
+   * never freeze a new snapshot. Stored snapshots are never rewritten.
+   */
+  readonly credentialPolicy?: TargetOriginCredentialPolicy;
 }): { document: RunSnapshotDocument; canonical: string; hash: string } {
   const target = input.target;
   if (target.origins.length === 0) {
@@ -73,7 +83,18 @@ export function buildSnapshotDocument(input: {
   // never silently becomes policy). Legacy targets (no manifest)
   // carry no policy block: their snapshot documents are byte-for-byte
   // IDENTICAL to v1.0 (frozen-history back-compat, R-01/R-07).
-  const manifestPolicy = deriveExecutionPolicy(target.manifestJson);
+  //
+  // Phase 16 (ADR-0024 §8/§16): every NEW freeze re-runs Stage 1
+  // (target-origin authorization of the declared refs) and Stage 2
+  // (the exact-one signing binding) under the CURRENT platform policy
+  // and freezes `signatureCredentialRef` alongside `signatureHeader`
+  // (pair invariant, §9). Grant drift fails NEW runs closed (no new
+  // snapshot row, no rewrite of any existing row); historical runs
+  // keep their frozen policy and never re-consult grants.
+  const manifestPolicy = deriveExecutionPolicy(target.manifestJson, {
+    policy: input.credentialPolicy ?? DENY_ALL_TARGET_ORIGIN_CREDENTIAL_POLICY,
+    origins: target.origins.map((entry) => entry.origin),
+  });
   // Phase 14 (additive frozen evidence seam, ADR-0010/ADR-0021/ADR-0022):
   // the EVIDENCE policy freezes alongside the Phase 13 execution policy.
   // Legacy (manifest-less) targets freeze NO evidence block — their
@@ -140,6 +161,12 @@ export function buildSnapshotDocument(input: {
 export async function freezeSnapshot(
   prisma: PrismaClient,
   revisionId: string,
+  /**
+   * Phase 16 (ADR-0024): the server-owned platform credential policy
+   * for THIS new freeze (fail-closed deny-all default). Grants are
+   * consulted ONLY here — never at execution (§16 drift model).
+   */
+  credentialPolicy?: TargetOriginCredentialPolicy,
 ): Promise<FrozenSnapshot> {
   const revision = await prisma.experimentRevision.findUnique({
     where: { id: revisionId },
@@ -167,6 +194,7 @@ export async function freezeSnapshot(
       origins: revision.target.origins,
       manifestJson: revision.target.manifestJson,
     },
+    ...(credentialPolicy === undefined ? {} : { credentialPolicy }),
   });
 
   const existing = await prisma.runSnapshot.findUnique({ where: { contentHash: hash } });

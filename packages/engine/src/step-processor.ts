@@ -138,8 +138,34 @@ function actionForStep(document: RunSnapshotDocument, sequence: number): Experim
 }
 
 /**
+ * Phase 16 (ADR-0024 §21): the GENERIC credential resolver — a
+ * map/registry driven by the validated executor environment. The
+ * engine knows NO target-specific credential semantics: reference
+ * name → runtime value supplied by validated config, with values
+ * existing only inside the request-time call frame (ADR-0012). A
+ * missing value fails pre-send with a bounded, secret-free error; a
+ * per-target business branch (`if ref === DEMO_COMMERCE_…`) is
+ * structurally impossible here.
+ */
+export function createCredentialResolver(
+  values: Readonly<Record<string, string | undefined>>,
+): CredentialResolver {
+  return {
+    resolve(ref: string): string {
+      const value = values[ref];
+      if (value === undefined) {
+        throw new CredentialResolutionError(ref);
+      }
+      return value;
+    },
+  };
+}
+
+/**
  * Builds the Demo webhook credential resolver: values resolved from
  * the validated worker config at request time only (ADR-0012 §55).
+ * v1.0 behavior is unchanged — this is now the generic map resolver
+ * over exactly the Demo reference names (legacy path, ADR-0024 §14).
  */
 export function createDemoCredentialResolver(
   config: Pick<
@@ -147,29 +173,11 @@ export function createDemoCredentialResolver(
     'DEMO_ADMIN_TOKEN' | 'DEMO_INSPECTION_TOKEN' | 'DEMO_PROVIDER_SIGNING_SECRET'
   >,
 ): CredentialResolver {
-  return {
-    resolve(ref: string): string {
-      if (ref === 'DEMO_ADMIN_TOKEN') {
-        if (config.DEMO_ADMIN_TOKEN === undefined) {
-          throw new CredentialResolutionError(ref);
-        }
-        return config.DEMO_ADMIN_TOKEN;
-      }
-      if (ref === 'DEMO_INSPECTION_TOKEN') {
-        if (config.DEMO_INSPECTION_TOKEN === undefined) {
-          throw new CredentialResolutionError(ref);
-        }
-        return config.DEMO_INSPECTION_TOKEN;
-      }
-      if (ref === 'DEMO_PROVIDER_SIGNING_SECRET') {
-        if (config.DEMO_PROVIDER_SIGNING_SECRET === undefined) {
-          throw new CredentialResolutionError(ref);
-        }
-        return config.DEMO_PROVIDER_SIGNING_SECRET;
-      }
-      throw new CredentialResolutionError(ref);
-    },
-  };
+  return createCredentialResolver({
+    DEMO_ADMIN_TOKEN: config.DEMO_ADMIN_TOKEN,
+    DEMO_INSPECTION_TOKEN: config.DEMO_INSPECTION_TOKEN,
+    DEMO_PROVIDER_SIGNING_SECRET: config.DEMO_PROVIDER_SIGNING_SECRET,
+  });
 }
 
 export class StepProcessor {
@@ -771,6 +779,21 @@ export class StepProcessor {
         // the frozen snapshot policy (manifest-declared), falling back to
         // the v1.0 legacy Demo provider-signature header.
         signatureHeader: effectiveSignatureHeader(document.target.manifestPolicy),
+        // ADR-0024 §10/§16: the FROZEN signing reference from the
+        // snapshot policy — consumed as-is at execution time. No live
+        // registration lookup, no grant re-consultation, no signing-set
+        // reselection: ref identity is frozen per run; only the secret
+        // VALUE behind it is runtime-resolved. Null for the legacy
+        // manifest-less path and Phase-13 historical frozen policies
+        // (their explicit compatibility behavior is unchanged).
+        signatureCredentialRef: document.target.manifestPolicy?.signatureCredentialRef ?? null,
+        // ADR-0024 §13 (B-1 repair): the FROZEN target credential set
+        // from the snapshot. Ordinary `${credential.<REF>}` tokens in
+        // ANY header are refused pre-send unless REF is declared here —
+        // a header token can never bypass the target's frozen set. Live
+        // registration and current grants are NEVER consulted here
+        // (§16 drift model: ref identity is frozen per run).
+        allowedCredentialRefs: document.target.credentialRefs,
         ...(resolvedBody === undefined ? {} : { resolvedBody }),
       });
       let classified: ClassifyResult;

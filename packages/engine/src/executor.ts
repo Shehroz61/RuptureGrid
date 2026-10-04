@@ -18,7 +18,7 @@ import { createHmac } from 'node:crypto';
 import { EXECUTION_LIMITS } from '@rupturegrid/shared';
 import type { TargetEnvironment } from '@rupturegrid/shared';
 import type { ContractKind } from './target.js';
-import { LEGACY_SIGNATURE_HEADER } from './manifest.js';
+import { LEGACY_SIGNATURE_HEADER, PHASE13_HISTORICAL_SIGNING_REF } from './manifest.js';
 import type { HttpActionTemplate } from './types.js';
 // Phase 14 (B-1 repair): the DESTINATION-security rules (address-class
 // policy, resolve-once-validate, origin authority) live in ONE shared
@@ -28,6 +28,10 @@ import type { HttpActionTemplate } from './types.js';
 // free generic inspection adapter) resolves its destination policy to
 // these exact same functions. No security logic is duplicated.
 import { assertDestinationAllowed, assertOriginAllowed } from './destination.js';
+// Phase 16 (B-1 repair): the ONE `${credential.<REF>}` token grammar,
+// shared with definition-time validation so the executor can never
+// substitute a token validation did not also see.
+import { credentialTokenPattern, credentialTokenRefs } from './credential-token.js';
 
 export {
   assertDestinationAllowed,
@@ -99,11 +103,34 @@ export interface ExecuteInput {
    */
   readonly signatureHeader?: string | null;
   /**
+   * Phase 16 (ADR-0024 §10): the FROZEN `signatureCredentialRef` from
+   * the snapshot's execution policy — the platform-resolved, already-
+   * authorized, signing-capable reference whose value supplies the
+   * HMAC key. Present exactly when the frozen policy carries the pair
+   * (new derivations). Absent (null) for the legacy manifest-less path
+   * and for Phase-13 historical frozen policies (header present, ref
+   * absent), both of which keep their explicit historical behavior
+   * (ADR-0024 §14–§15). Never chosen by step/scenario data.
+   */
+  readonly signatureCredentialRef?: string | null;
+  /**
    * Resolved variable references for THIS invocation (`${steps.…}`),
    * supplied by the step processor from prior invocation results
    * (Phase 3 §59: one small typed mechanism — no general dataflow).
    */
   readonly resolvedBody?: string;
+  /**
+   * Phase 16 (ADR-0024 §13, B-1 repair): the target's FROZEN declared
+   * credential reference names, taken from the run snapshot. Ordinary
+   * `${credential.<REF>}` substitution is refused pre-send unless REF
+   * is a member of this set — a header token is credential USE and can
+   * never widen authority by spelling a globally resolvable reference
+   * name. Fails CLOSED: an absent list is the empty set (deny all), so
+   * no caller can accidentally allow arbitrary substitution. The
+   * authority is the FROZEN snapshot only — never live registration,
+   * never current grants, never the signing classification.
+   */
+  readonly allowedCredentialRefs?: readonly string[];
 }
 
 // (The address-class policy and resolve-once-validate seam now live in
@@ -175,6 +202,8 @@ function buildHeaders(
   credentials: CredentialResolver,
   finalBody: string | undefined,
   signatureHeader: string | null,
+  signatureCredentialRef: string | null,
+  allowedCredentialRefs: ReadonlySet<string>,
 ): Record<string, string> {
   const originUrl = new URL(origin);
   const headers: Record<string, string> = {
@@ -195,13 +224,27 @@ function buildHeaders(
           '${signature} token requires a request body (the signature signs the final body bytes)',
         );
       }
+      // ADR-0024 §10: the signing reference is the FROZEN
+      // `signatureCredentialRef` from the snapshot's execution policy —
+      // never chosen by step data, header names, or the environment.
+      // The ONLY reference resolved when the frozen policy carries no
+      // ref is the explicit Phase-13 historical compatibility ref
+      // (§15) — the legacy manifest-less path and historical frozen
+      // policies are byte-semantically unchanged. No Commerce-specific
+      // branch exists: every ref resolves through the same generic
+      // credential map (ADR-0024 §20/§21).
       headers[lower] = signDemoWebhookBody(
         finalBody,
-        credentials.resolve('DEMO_PROVIDER_SIGNING_SECRET'),
+        credentials.resolve(signatureCredentialRef ?? PHASE13_HISTORICAL_SIGNING_REF),
       );
       continue;
     }
-    headers[lower] = substituteCredentials(rawValue, credentials);
+    // ADR-0024 §13 (B-1 repair): a `${credential.<REF>}` token in ANY
+    // header value is credential use. Refuse pre-send unless REF is in
+    // the FROZEN target credential set — the resolver is never called
+    // for an unauthorized reference, so no secret value can be placed
+    // on the wire or leak into an error.
+    headers[lower] = substituteCredentials(rawValue, credentials, allowedCredentialRefs);
   }
   if (finalBody !== undefined && headers['content-type'] === undefined) {
     headers['content-type'] = 'application/json';
@@ -214,9 +257,28 @@ function buildHeaders(
  * resolved runtime value. A token naming an unavailable reference
  * fails the invocation BEFORE any request is prepared (fail fast, no
  * secret material in the error).
+ *
+ * Phase 16 (ADR-0024 §13, B-1 repair): every token reference must be a
+ * member of `allowedCredentialRefs` — the FROZEN target credential
+ * set. The membership check runs over the WHOLE value and rejects
+ * BEFORE any `credentials.resolve` call, so an unauthorized reference
+ * neither resolves nor transmits. An absent set is the EMPTY set (deny
+ * all): the executor fails closed by default.
  */
-export function substituteCredentials(rawValue: string, credentials: CredentialResolver): string {
-  return rawValue.replace(/\$\{credential\.([A-Z0-9_]+)\}/g, (_match, ref: string) =>
+export function substituteCredentials(
+  rawValue: string,
+  credentials: CredentialResolver,
+  allowedCredentialRefs: ReadonlySet<string> = new Set<string>(),
+): string {
+  const unauthorized = [...new Set(credentialTokenRefs(rawValue))].filter(
+    (ref) => !allowedCredentialRefs.has(ref),
+  );
+  if (unauthorized.length > 0) {
+    throw new ExecutorSecurityError(
+      `credential reference(s) ${unauthorized.join(', ')} are not in the target's frozen credential set; substitution refused before send (ADR-0024 §13)`,
+    );
+  }
+  return rawValue.replace(credentialTokenPattern(), (_match, ref: string) =>
     credentials.resolve(ref),
   );
 }
@@ -263,6 +325,14 @@ export async function executeHttp(input: ExecuteInput): Promise<ExecutorOutcome>
     // Default (legacy) targets keep the v1.0 Demo provider-signature
     // name; a frozen manifest policy names its own header or none.
     input.signatureHeader === undefined ? LEGACY_SIGNATURE_HEADER : input.signatureHeader,
+    // ADR-0024 §10: the frozen signing reference from the snapshot
+    // policy (new derivations), or null for the legacy/historical
+    // paths (explicit compatibility ref inside buildHeaders).
+    input.signatureCredentialRef === undefined ? null : input.signatureCredentialRef,
+    // ADR-0024 §13 (B-1 repair): the FROZEN target credential set from
+    // the snapshot. Absent → empty set (deny all); the executor never
+    // consults live registration or grants here.
+    new Set(input.allowedCredentialRefs ?? []),
   );
   // Address-class policy BEFORE any connection attempt (security-
   // boundaries §5). A denial here is provably pre-send.

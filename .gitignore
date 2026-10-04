@@ -23,6 +23,7 @@ next-env.d.ts
 # Prisma generated clients (regenerated via pnpm db:generate)
 packages/control-db/src/generated/
 packages/demo-db/src/generated/
+packages/commerce-db/src/generated/
 
 # Environment & secrets — never commit real values
 .env

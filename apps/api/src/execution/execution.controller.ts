@@ -35,8 +35,13 @@ import {
   ExperimentValidationError,
   RunCreationError,
   ManifestValidationError,
+  CredentialAuthorizationError,
 } from '@rupturegrid/engine';
-import type { TargetRegistrationResult, CreatedRun } from '@rupturegrid/engine';
+import type {
+  TargetRegistrationResult,
+  CreatedRun,
+  TargetOriginCredentialPolicy,
+} from '@rupturegrid/engine';
 // createExecutionQueue is used via a lazy import inside dispatch to
 // keep the controller's module-load surface honest.
 
@@ -72,6 +77,13 @@ export interface ExecutionControllerOptions {
   readonly controlDb: ControlDb;
   readonly redisUrl: string;
   readonly queuePrefix: string;
+  /**
+   * Phase 16 (ADR-0024): the SERVER-OWNED platform target-origin
+   * credential policy (validated config). Consulted at registration,
+   * definition validation, and new-snapshot derivation — never at
+   * execution and never from caller-supplied data.
+   */
+  readonly credentialPolicy: TargetOriginCredentialPolicy;
 }
 
 @Controller('api/v1')
@@ -79,11 +91,13 @@ export class ExecutionController {
   private readonly controlDb: ControlDb;
   private readonly redisUrl: string;
   private readonly queuePrefix: string;
+  private readonly credentialPolicy: TargetOriginCredentialPolicy;
 
   public constructor(@Inject(EXECUTION_OPTIONS) options: ExecutionControllerOptions) {
     this.controlDb = options.controlDb;
     this.redisUrl = options.redisUrl;
     this.queuePrefix = options.queuePrefix;
+    this.credentialPolicy = options.credentialPolicy;
   }
 
   private mapError(error: unknown): never {
@@ -91,7 +105,8 @@ export class ExecutionController {
       error instanceof TargetRegistrationError ||
       error instanceof ExperimentValidationError ||
       error instanceof RunCreationError ||
-      error instanceof ManifestValidationError
+      error instanceof ManifestValidationError ||
+      error instanceof CredentialAuthorizationError
     ) {
       throw new HttpException(
         { error: { code: 'VALIDATION_FAILED', message: error.message } },
@@ -188,18 +203,25 @@ export class ExecutionController {
       manifest?: unknown;
     };
     try {
-      return await registerTarget(this.controlDb.prisma, {
-        displayName: String(input.displayName ?? ''),
-        environment: input.environment as never,
-        origins: Array.isArray(input.origins) ? (input.origins as string[]) : [],
-        contractKind: input.contractKind as never,
-        ...(Array.isArray(input.credentialRefs)
-          ? { credentialRefs: input.credentialRefs as string[] }
-          : {}),
-        // Passed through UNTOUCHED: the engine's manifest boundary is the
-        // single validation authority (closed schema, limits, version).
-        ...(input.manifest === undefined ? {} : { manifest: input.manifest }),
-      });
+      return await registerTarget(
+        this.controlDb.prisma,
+        {
+          displayName: String(input.displayName ?? ''),
+          environment: input.environment as never,
+          origins: Array.isArray(input.origins) ? (input.origins as string[]) : [],
+          contractKind: input.contractKind as never,
+          ...(Array.isArray(input.credentialRefs)
+            ? { credentialRefs: input.credentialRefs as string[] }
+            : {}),
+          // Passed through UNTOUCHED: the engine's manifest boundary is the
+          // single validation authority (closed schema, limits, version).
+          ...(input.manifest === undefined ? {} : { manifest: input.manifest }),
+        },
+        // Phase 16 (ADR-0024 §5): the SERVER-OWNED platform grant
+        // policy — a registration request can never grant itself
+        // credentials.
+        this.credentialPolicy,
+      );
     } catch (error) {
       this.mapError(error);
     }
@@ -235,12 +257,16 @@ export class ExecutionController {
       );
     }
     try {
-      return await createExperiment(this.controlDb.prisma, {
-        name: String(input.name ?? ''),
-        ...(typeof input.description === 'string' ? { description: input.description } : {}),
-        targetId: input.targetId,
-        document: input.document,
-      });
+      return await createExperiment(
+        this.controlDb.prisma,
+        {
+          name: String(input.name ?? ''),
+          ...(typeof input.description === 'string' ? { description: input.description } : {}),
+          targetId: input.targetId,
+          document: input.document,
+        },
+        this.credentialPolicy,
+      );
     } catch (error) {
       this.mapError(error);
     }
@@ -256,7 +282,7 @@ export class ExecutionController {
       );
     }
     try {
-      return await createRun(this.controlDb.prisma, input.revisionId);
+      return await createRun(this.controlDb.prisma, input.revisionId, this.credentialPolicy);
     } catch (error) {
       this.mapError(error);
     }

@@ -30,12 +30,26 @@ import {
   validateExperimentDocument,
 } from '@rupturegrid/engine';
 import { loadTestEnv } from './helpers/env.js';
-import { getControlPrisma, uniqueName, waitFor } from './helpers/execution-harness.js';
+import {
+  getControlPrisma,
+  uniqueName,
+  waitFor,
+  testTargetOriginCredentialPolicy,
+} from './helpers/execution-harness.js';
 
 const prisma = getControlPrisma();
 
 let baseUrl = '';
 let controlDb: ControlDb | null = null;
+
+/**
+ * Phase 16 (ADR-0024 §54): the SERVER-OWNED test grant policy for this
+ * suite's fixture origin — built platform-side, scoped to exactly this
+ * origin, name-only. The registration request itself still carries no
+ * authorization of any kind.
+ */
+const fixtureCredentialPolicy = () =>
+  testTargetOriginCredentialPolicy({ [baseUrl]: ['DEMO_PROVIDER_SIGNING_SECRET'] });
 
 // Manifest fixture target: declares a fault hook and a signature header,
 // contract GENERIC_HTTP, metadata claims noEffectOnRejection.
@@ -159,14 +173,18 @@ async function ensureManifestTarget(): Promise<{ targetId: string; displayName: 
     return { targetId: existing.id, displayName: existing.displayName };
   }
   const displayName = uniqueName('manifest-target');
-  const registered = await registerTarget(prisma, {
-    displayName,
-    environment: 'LOCAL_DEVELOPMENT',
-    origins: [baseUrl],
-    contractKind: 'GENERIC_HTTP',
-    credentialRefs: ['DEMO_PROVIDER_SIGNING_SECRET'],
-    manifest: { ...MANIFEST, displayName, origins: [baseUrl] },
-  });
+  const registered = await registerTarget(
+    prisma,
+    {
+      displayName,
+      environment: 'LOCAL_DEVELOPMENT',
+      origins: [baseUrl],
+      contractKind: 'GENERIC_HTTP',
+      credentialRefs: ['DEMO_PROVIDER_SIGNING_SECRET'],
+      manifest: { ...MANIFEST, displayName, origins: [baseUrl] },
+    },
+    fixtureCredentialPolicy(),
+  );
   manifestTargetId = registered.targetId;
   return { targetId: registered.targetId, displayName };
 }
@@ -287,26 +305,30 @@ describe('Phase 13: manifest registration and storage', () => {
 describe('Phase 13: snapshot freezing of the manifest policy', () => {
   it('freezes the manifest-derived policy into the snapshot', async () => {
     const { targetId } = await ensureManifestTarget();
-    const created = await createExperiment(prisma, {
-      name: uniqueName('manifest-experiment'),
-      targetId,
-      document: {
-        steps: [
-          {
-            name: 'submit',
-            action: {
-              method: 'POST',
-              relativePath: '/accept',
-              headers: { 'x-fixture-signature': '${signature}' },
-              body: '{"checkoutIntentId":"CHK-1"}',
-              mutation: 'MUTATING',
-              contract: 'GENERIC_HTTP',
+    const created = await createExperiment(
+      prisma,
+      {
+        name: uniqueName('manifest-experiment'),
+        targetId,
+        document: {
+          steps: [
+            {
+              name: 'submit',
+              action: {
+                method: 'POST',
+                relativePath: '/accept',
+                headers: { 'x-fixture-signature': '${signature}' },
+                body: '{"checkoutIntentId":"CHK-1"}',
+                mutation: 'MUTATING',
+                contract: 'GENERIC_HTTP',
+              },
             },
-          },
-        ],
+          ],
+        },
       },
-    });
-    const run = await createRun(prisma, created.revisionId);
+      fixtureCredentialPolicy(),
+    );
+    const run = await createRun(prisma, created.revisionId, fixtureCredentialPolicy());
     const snapshot = await prisma.runSnapshot.findUniqueOrThrow({
       where: { id: run.snapshotId },
       select: { content: true },
@@ -315,6 +337,9 @@ describe('Phase 13: snapshot freezing of the manifest policy', () => {
     const policy = target['manifestPolicy'] as Record<string, unknown>;
     expect(policy['manifestVersion']).toBe('target-manifest/v1');
     expect(policy['signatureHeader']).toBe('x-fixture-signature');
+    // Phase 16 (ADR-0024 §9 pair invariant): a NEW derivation freezes
+    // the platform-resolved signing REFERENCE NAME alongside the header.
+    expect(policy['signatureCredentialRef']).toBe('DEMO_PROVIDER_SIGNING_SECRET');
     expect(policy['faultHook']).toEqual({
       path: '/hooks/checkout',
       kinds: ['RESPONSE_TRUNCATION'],
@@ -378,6 +403,7 @@ describe('Phase 13: generalized fault gate (manifest-declared hook)', () => {
         where: { id: targetId },
         include: { origins: true },
       }),
+      credentialPolicy: fixtureCredentialPolicy(),
       document: {
         steps: [
           {
@@ -411,6 +437,7 @@ describe('Phase 13: generalized fault gate (manifest-declared hook)', () => {
     expect(() =>
       validateExperimentDocument({
         target,
+        credentialPolicy: fixtureCredentialPolicy(),
         document: {
           steps: [
             {
@@ -444,6 +471,7 @@ describe('Phase 13: generalized fault gate (manifest-declared hook)', () => {
     expect(() =>
       validateExperimentDocument({
         target,
+        credentialPolicy: fixtureCredentialPolicy(),
         document: {
           steps: [
             {
@@ -471,19 +499,23 @@ describe('Phase 13: generalized fault gate (manifest-declared hook)', () => {
   it('refuses fault plans on a manifest target with NO declared hook', async () => {
     const displayName = uniqueName('no-hook-target');
     const origin = `http://${displayName}.no-hook.test`;
-    const registered = await registerTarget(prisma, {
-      displayName,
-      environment: 'LOCAL_DEVELOPMENT',
-      origins: [origin],
-      contractKind: 'GENERIC_HTTP',
-      credentialRefs: ['DEMO_PROVIDER_SIGNING_SECRET'],
-      manifest: {
-        ...MANIFEST,
+    const registered = await registerTarget(
+      prisma,
+      {
         displayName,
+        environment: 'LOCAL_DEVELOPMENT',
         origins: [origin],
-        faultHook: undefined,
+        contractKind: 'GENERIC_HTTP',
+        credentialRefs: ['DEMO_PROVIDER_SIGNING_SECRET'],
+        manifest: {
+          ...MANIFEST,
+          displayName,
+          origins: [origin],
+          faultHook: undefined,
+        },
       },
-    });
+      testTargetOriginCredentialPolicy({ [origin]: ['DEMO_PROVIDER_SIGNING_SECRET'] }),
+    );
     const target = await prisma.targetRegistration.findUniqueOrThrow({
       where: { id: registered.targetId },
       include: { origins: true },
@@ -491,6 +523,9 @@ describe('Phase 13: generalized fault gate (manifest-declared hook)', () => {
     expect(() =>
       validateExperimentDocument({
         target,
+        credentialPolicy: testTargetOriginCredentialPolicy({
+          [origin]: ['DEMO_PROVIDER_SIGNING_SECRET'],
+        }),
         document: {
           steps: [
             {
@@ -565,24 +600,28 @@ describe('Phase 13: generalized fault gate (manifest-declared hook)', () => {
     // contractKind-bearing arm input contract (unit-covered) by
     // asserting the fixture never receives Demo admin traffic.
     const { targetId } = await ensureManifestTarget();
-    const created = await createExperiment(prisma, {
-      name: uniqueName('no-demo-adapter'),
-      targetId,
-      document: {
-        steps: [
-          {
-            name: 'get',
-            action: {
-              method: 'GET',
-              relativePath: '/accept',
-              mutation: 'READ_ONLY',
-              contract: 'GENERIC_HTTP',
+    const created = await createExperiment(
+      prisma,
+      {
+        name: uniqueName('no-demo-adapter'),
+        targetId,
+        document: {
+          steps: [
+            {
+              name: 'get',
+              action: {
+                method: 'GET',
+                relativePath: '/accept',
+                mutation: 'READ_ONLY',
+                contract: 'GENERIC_HTTP',
+              },
             },
-          },
-        ],
+          ],
+        },
       },
-    });
-    const run = await createRun(prisma, created.revisionId);
+      fixtureCredentialPolicy(),
+    );
+    const run = await createRun(prisma, created.revisionId, fixtureCredentialPolicy());
     expect(run.stepRunIds).toHaveLength(1);
   });
 });
@@ -590,25 +629,29 @@ describe('Phase 13: generalized fault gate (manifest-declared hook)', () => {
 describe('Phase 13: noEffectOnRejection never manufactures KNOWN_ABSENT (real HTTP)', () => {
   it('a definitive 409 rejection from a target that DECLARES noEffectOnRejection classifies INDETERMINATE', async () => {
     const { targetId } = await ensureManifestTarget();
-    const created = await createExperiment(prisma, {
-      name: uniqueName('claim-experiment'),
-      targetId,
-      document: {
-        steps: [
-          {
-            name: 'submit',
-            action: {
-              method: 'POST',
-              relativePath: '/reject',
-              body: '{"checkoutIntentId":"CHK-1"}',
-              mutation: 'MUTATING',
-              contract: 'GENERIC_HTTP',
+    const created = await createExperiment(
+      prisma,
+      {
+        name: uniqueName('claim-experiment'),
+        targetId,
+        document: {
+          steps: [
+            {
+              name: 'submit',
+              action: {
+                method: 'POST',
+                relativePath: '/reject',
+                body: '{"checkoutIntentId":"CHK-1"}',
+                mutation: 'MUTATING',
+                contract: 'GENERIC_HTTP',
+              },
             },
-          },
-        ],
+          ],
+        },
       },
-    });
-    const run = await createRun(prisma, created.revisionId);
+      fixtureCredentialPolicy(),
+    );
+    const run = await createRun(prisma, created.revisionId, fixtureCredentialPolicy());
     // Execute the step through the real engine path (claim → execute →
     // classify) using the shared harness consumer.
     const { StepProcessor } = await import('@rupturegrid/engine');
@@ -652,25 +695,29 @@ describe('Phase 13: noEffectOnRejection never manufactures KNOWN_ABSENT (real HT
 
   it('a 2xx on the manifest target still classifies KNOWN_OCCURRED', async () => {
     const { targetId } = await ensureManifestTarget();
-    const created = await createExperiment(prisma, {
-      name: uniqueName('accept-experiment'),
-      targetId,
-      document: {
-        steps: [
-          {
-            name: 'submit',
-            action: {
-              method: 'POST',
-              relativePath: '/accept',
-              body: '{"checkoutIntentId":"CHK-2"}',
-              mutation: 'MUTATING',
-              contract: 'GENERIC_HTTP',
+    const created = await createExperiment(
+      prisma,
+      {
+        name: uniqueName('accept-experiment'),
+        targetId,
+        document: {
+          steps: [
+            {
+              name: 'submit',
+              action: {
+                method: 'POST',
+                relativePath: '/accept',
+                body: '{"checkoutIntentId":"CHK-2"}',
+                mutation: 'MUTATING',
+                contract: 'GENERIC_HTTP',
+              },
             },
-          },
-        ],
+          ],
+        },
       },
-    });
-    const run = await createRun(prisma, created.revisionId);
+      fixtureCredentialPolicy(),
+    );
+    const run = await createRun(prisma, created.revisionId, fixtureCredentialPolicy());
     const { StepProcessor } = await import('@rupturegrid/engine');
     const { createExecutionQueue, startExecutionWorker } = await import('@rupturegrid/queue');
     const env = loadTestEnv();

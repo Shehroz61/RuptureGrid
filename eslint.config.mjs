@@ -45,7 +45,10 @@ export default tseslint.config(
   // must never import the Demo Target's database client, the Demo Target
   // must never import RuptureGrid's Control DB client, and the browser
   // bundle must never import server-only database/config packages. These
-  // are lint errors, not comments.
+  // are lint errors, not comments. Phase 16 adds the second target's
+  // boundary (Demo Commerce, ADR-0020) in BOTH directions: no RuptureGrid
+  // app or package may import @rupturegrid/commerce-db, and neither demo
+  // target may import the other target's database package.
   {
     files: ['apps/api/**/*.ts', 'apps/worker/**/*.ts'],
     rules: {
@@ -57,6 +60,31 @@ export default tseslint.config(
               group: ['@rupturegrid/demo-db', '@rupturegrid/demo-db/*'],
               message:
                 'RuptureGrid apps must never import the Demo Target database (ADR-0002, R-05).',
+            },
+            {
+              group: ['@rupturegrid/commerce-db', '@rupturegrid/commerce-db/*'],
+              message:
+                'RuptureGrid apps must never import the Demo Commerce database (ADR-0002, ADR-0020, R-05).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // Every workspace package EXCEPT the Commerce DB itself: RuptureGrid
+    // platform/domain packages never reach into a target's database.
+    files: ['packages/**/*.ts'],
+    ignores: ['packages/commerce-db/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@rupturegrid/commerce-db', '@rupturegrid/commerce-db/*'],
+              message:
+                'RuptureGrid packages must never import the Demo Commerce database (ADR-0002, ADR-0020, R-05).',
             },
           ],
         },
@@ -76,9 +104,35 @@ export default tseslint.config(
                 '@rupturegrid/control-db/*',
                 '@rupturegrid/queue',
                 '@rupturegrid/queue/*',
+                '@rupturegrid/commerce-db',
+                '@rupturegrid/commerce-db/*',
               ],
               message:
-                'Demo Fintech is external to RuptureGrid and must never import Control DB or queue packages (ADR-0002, R-05).',
+                'Demo Fintech is external to RuptureGrid and must never import Control DB, queue, or the other target database (ADR-0002, ADR-0020, R-05).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ['apps/demo-commerce/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [
+                '@rupturegrid/control-db',
+                '@rupturegrid/control-db/*',
+                '@rupturegrid/queue',
+                '@rupturegrid/queue/*',
+                '@rupturegrid/demo-db',
+                '@rupturegrid/demo-db/*',
+              ],
+              message:
+                'Demo Commerce is external to RuptureGrid and must never import Control DB, queue, or the other target database (ADR-0002, ADR-0020, R-05).',
             },
           ],
         },

@@ -44,6 +44,11 @@ import { CONTRACT_KINDS, normalizeOrigin } from './target.js';
 import type { ContractKind } from './target.js';
 import { validateRelativePath, PathPolicyError } from './validate.js';
 import { EXECUTOR_CREDENTIAL_REFS } from '@rupturegrid/config';
+import {
+  CredentialAuthorizationError,
+  resolveSignatureCredentialBinding,
+} from './credential-authorization.js';
+import type { PolicyAuthorizationInput } from './credential-authorization.js';
 
 /** The executor's server-side credential-reference allowlist (ADR-0012). */
 const EXECUTOR_CREDENTIAL_REF_SET: ReadonlySet<string> = new Set(EXECUTOR_CREDENTIAL_REFS);
@@ -237,6 +242,21 @@ export interface TargetManifest {
 /** The v1.0 hard-coded signature header (Demo provider contract). */
 export const LEGACY_SIGNATURE_HEADER = 'x-rupturegrid-provider-signature';
 
+/**
+ * The Phase-13 historical signing credential REFERENCE (ADR-0024 §15):
+ * a frozen manifest-derived execution policy with `signatureHeader`
+ * present and `signatureCredentialRef` absent is a Phase-13 historical
+ * policy — its signature seam resolves EXACTLY this reference, which is
+ * the only ref the accepted Phase 13–15 executor could ever have used
+ * for such a policy (the accepted validation enforced it). This is an
+ * explicit, structurally-distinguished compatibility path for stored
+ * snapshots — never a general fallback and never a re-selection. NEW
+ * policy derivations always freeze the ref (pair invariant), so a new
+ * policy can never rely on or trigger this constant; the constant MAY
+ * also persist on the legacy manifest-less v1.0 path (§14).
+ */
+export const PHASE13_HISTORICAL_SIGNING_REF = 'DEMO_PROVIDER_SIGNING_SECRET';
+
 /** The v1.0 hard-coded fault-gate delivery path (Demo webhook contract). */
 export const LEGACY_DEMO_FAULT_HOOK_PATH = '/webhooks/provider';
 
@@ -245,11 +265,37 @@ export const LEGACY_DEMO_FAULT_HOOK_PATH = '/webhooks/provider';
  * re-derived at definition time. Present on a snapshot only when the
  * target registered with a manifest (legacy snapshots are unchanged
  * byte-for-byte).
+ *
+ * Phase 16 (ADR-0024 §9): `signatureCredentialRef` is the
+ * platform-resolved, NON-SECRET reference NAME backing the declared
+ * `signatureHeader` — a reference that is BOTH authorized for the
+ * target's registered origins AND signing-capable. It is an INTERNAL
+ * execution-policy field: never a target-manifest/v1 field, never
+ * manifest JSON, and never a secret value (the policy layer never
+ * sees values at all).
+ *
+ * FROZEN PAIR INVARIANT (ADR-0024 §9): in every NEWLY derived policy
+ *
+ *     signatureHeader present  ⟺  signatureCredentialRef present
+ *
+ * A header without a ref is invalid; a ref without a header is
+ * invalid; this builder is structurally unable to emit either
+ * half-state. A manifest without `signatureHeader` has no signature
+ * seam at all. Historical Phase-13 policies (header present, ref
+ * absent) remain executable under their explicit compatibility rule —
+ * the executor resolves DEMO_PROVIDER_SIGNING_SECRET for that exact
+ * frozen shape (ADR-0024 §15) — but a NEW derivation never emits it.
  */
 export interface ManifestExecutionPolicy {
   readonly manifestVersion: string;
   /** Declared signature-header name, when declared. */
   readonly signatureHeader?: string;
+  /**
+   * The platform-frozen signing credential REFERENCE NAME (name only,
+   * never a value — ADR-0012/ADR-0024). Present exactly when
+   * `signatureHeader` is present, in every newly derived policy.
+   */
+  readonly signatureCredentialRef?: string;
   readonly faultHook?: {
     readonly path: string;
     readonly kinds: readonly ControlledFaultKind[];
@@ -306,17 +352,48 @@ export function effectiveFaultHook(
  * that no longer validates can never silently become execution
  * policy); corruption fails closed. Returns undefined for a legacy
  * (manifest-less) registration.
+ *
+ * Phase 16 (ADR-0024 §8, §15, §16): for a manifest-bearing derivation
+ * the platform authorization context is REQUIRED. Under the CURRENT
+ * platform policy it runs Stage 1 (all declared refs authorized for
+ * the target's registered origins) and Stage 2 (exactly one declared
+ * authorized signing-capable ref when `signatureHeader` is declared),
+ * then freezes the resolved `signatureCredentialRef` alongside the
+ * header (pair invariant — §9). A stored manifest whose authorization
+ * no longer holds fails closed and never becomes policy; grant or
+ * signing-set changes are consulted ONLY here, never at execution.
  */
-export function deriveExecutionPolicy(manifestJson: unknown): ManifestExecutionPolicy | undefined {
+export function deriveExecutionPolicy(
+  manifestJson: unknown,
+  authorization: PolicyAuthorizationInput,
+): ManifestExecutionPolicy | undefined {
   if (manifestJson === null || manifestJson === undefined) {
-    return undefined;
+    return undefined; // Legacy (manifest-less) targets: unchanged seams.
+  }
+  if (authorization === undefined) {
+    throw new CredentialAuthorizationError([
+      'execution-policy derivation requires the platform target-origin credential authorization context (ADR-0024 §8); no manifest-bearing policy can be derived without it (fail closed)',
+    ]);
   }
   const manifest = validateTargetManifest(manifestJson);
+  const binding = resolveSignatureCredentialBinding(
+    authorization.policy,
+    authorization.origins,
+    manifest,
+  );
   const policy: ManifestExecutionPolicy = {
     manifestVersion: manifest.manifestVersion,
     ...(manifest.signatureHeader === undefined
       ? {}
-      : { signatureHeader: manifest.signatureHeader }),
+      : {
+          // Pair invariant (§9): both fields are emitted together or
+          // not at all. binding is defined exactly when signatureHeader
+          // is declared (Stage 2 resolved it or threw).
+          signatureHeader: manifest.signatureHeader,
+          ...(binding === undefined
+            ? {}
+            : { signatureCredentialRef: binding.signatureCredentialRef }),
+        }),
     ...(manifest.faultHook === undefined
       ? {}
       : {
@@ -1330,16 +1407,14 @@ export function validateTargetManifest(raw: unknown): TargetManifest {
     }
   }
 
-  // Cross-field closure: a declared signature header is computed by the
-  // executor with the DEMO_PROVIDER_SIGNING_SECRET credential (ADR-0012,
-  // request-time only). A manifest that declares the header without
-  // declaring that reference could never have its signature computed —
-  // fail fast at registration instead of at execution.
-  if (signatureHeader !== undefined && !credentialRefs.includes('DEMO_PROVIDER_SIGNING_SECRET')) {
-    issues.push(
-      'signatureHeader requires the DEMO_PROVIDER_SIGNING_SECRET credentialRef (the executor computes the HMAC with it at request time; ADR-0012)',
-    );
-  }
+  // Phase 16 (ADR-0024 §1, §8): the Demo-specific cross-field rule is
+  // REMOVED from the structural manifest boundary. WHICH credentials a
+  // target may use, and WHICH of them supplies the HMAC key, are
+  // PLATFORM-owned policy (ADR-0024 §2, §4), not manifest schema:
+  // authorization runs at registration and at every NEW policy
+  // derivation (deriveExecutionPolicy / registerTarget) through
+  // resolveSignatureCredentialBinding — never as a manifest-schema
+  // rule, and never as a name heuristic. The manifest stays data-only.
 
   if (issues.length > 0) {
     throw new ManifestValidationError(issues);

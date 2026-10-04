@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { ConfigValidationError, loadConfig, pickRuptureGridEnv } from '@rupturegrid/config';
-import { apiConfigSchema, demoConfigSchema, workerConfigSchema } from '@rupturegrid/config';
+import {
+  apiConfigSchema,
+  commerceConfigSchema,
+  demoConfigSchema,
+  workerConfigSchema,
+} from '@rupturegrid/config';
 
 const VALID_API_ENV = {
   NODE_ENV: 'development',
@@ -32,6 +37,16 @@ const VALID_DEMO_ENV = {
   DEMO_PROVIDER_SIGNING_SECRET: 'demo-provider-signing-secret-0001',
 };
 
+const VALID_COMMERCE_ENV = {
+  NODE_ENV: 'development',
+  LOG_LEVEL: 'info',
+  COMMERCE_HOST: '127.0.0.1',
+  COMMERCE_PORT: '3003',
+  COMMERCE_DATABASE_URL: 'postgresql://u:p@127.0.0.1:5445/commerce',
+  COMMERCE_ADMIN_TOKEN: 'commerce-admin-dev-token-0001',
+  DEMO_COMMERCE_SIGNING_SECRET: 'demo-commerce-signing-secret-0001',
+};
+
 describe('config validation — success', () => {
   it('accepts a valid API environment', () => {
     const config = loadConfig(apiConfigSchema, VALID_API_ENV);
@@ -48,6 +63,12 @@ describe('config validation — success', () => {
   it('accepts a valid Demo Fintech environment', () => {
     const config = loadConfig(demoConfigSchema, VALID_DEMO_ENV);
     expect(config.DEMO_PORT).toBe(3002);
+  });
+
+  it('accepts a valid Demo Commerce environment (Phase 16, ADR-0020)', () => {
+    const config = loadConfig(commerceConfigSchema, VALID_COMMERCE_ENV);
+    expect(config.COMMERCE_PORT).toBe(3003);
+    expect(config.DEMO_COMMERCE_SIGNING_SECRET).toBe('demo-commerce-signing-secret-0001');
   });
 
   it('applies defaults for optional values', () => {
@@ -122,6 +143,27 @@ describe('config validation — failure (fail fast)', () => {
     ).toThrow(ConfigValidationError);
   });
 
+  it('rejects a Commerce environment missing the target database URL', () => {
+    const env: Record<string, string> = { ...VALID_COMMERCE_ENV };
+    delete env.COMMERCE_DATABASE_URL;
+    expect(() => loadConfig(commerceConfigSchema, env)).toThrow(ConfigValidationError);
+  });
+
+  it('rejects an invalid TARGET_ORIGIN_CREDENTIAL_GRANTS policy at API config load (fail fast, ADR-0024 §18)', () => {
+    expect(() =>
+      loadConfig(apiConfigSchema, {
+        ...VALID_API_ENV,
+        TARGET_ORIGIN_CREDENTIAL_GRANTS: '{"http://127.0.0.1:1":["NOT_A_REAL_REF"]}',
+      }),
+    ).toThrow(ConfigValidationError);
+    expect(() =>
+      loadConfig(apiConfigSchema, {
+        ...VALID_API_ENV,
+        TARGET_ORIGIN_CREDENTIAL_GRANTS: 'not-json',
+      }),
+    ).toThrow(ConfigValidationError);
+  });
+
   it('reports all issues together (fail-fast clarity)', () => {
     try {
       loadConfig(apiConfigSchema, { LOG_LEVEL: 'verbose' });
@@ -142,10 +184,13 @@ describe('config ownership boundaries (contract tests)', () => {
   const SHARED_DEV_ENV = {
     ...VALID_API_ENV,
     ...VALID_DEMO_ENV,
+    ...VALID_COMMERCE_ENV,
     CONTROL_POSTGRES_PASSWORD: 'rupturegrid_dev_password',
     DEMO_POSTGRES_PASSWORD: 'demo_dev_password',
+    COMMERCE_POSTGRES_PASSWORD: 'commerce_dev_password',
     CONTROL_POSTGRES_PORT: '5443',
     DEMO_POSTGRES_PORT: '5444',
+    COMMERCE_POSTGRES_PORT: '5445',
     REDIS_PORT: '6380',
   };
 
@@ -171,6 +216,37 @@ describe('config ownership boundaries (contract tests)', () => {
     expect(config).not.toHaveProperty('QUEUE_PREFIX');
   });
 
+  it('Demo Commerce config never exposes RuptureGrid Control/Redis or Fintech credentials (Phase 16)', () => {
+    const config = loadConfig(commerceConfigSchema, SHARED_DEV_ENV) as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(config).not.toHaveProperty('CONTROL_DATABASE_URL');
+    expect(config).not.toHaveProperty('CONTROL_POSTGRES_PASSWORD');
+    expect(config).not.toHaveProperty('REDIS_URL');
+    expect(config).not.toHaveProperty('QUEUE_PREFIX');
+    expect(config).not.toHaveProperty('DEMO_DATABASE_URL');
+    expect(config).not.toHaveProperty('DEMO_ADMIN_TOKEN');
+    expect(config).not.toHaveProperty('DEMO_PROVIDER_SIGNING_SECRET');
+    // No inspection credential exists for Commerce (credential-free contract).
+    expect(config).not.toHaveProperty('COMMERCE_INSPECTION_TOKEN');
+  });
+
+  it('no RuptureGrid app config ever exposes the Commerce database (ADR-0002, R-05)', () => {
+    // Two separate calls (not a union array): each schema infers its
+    // own output type, so neither leaks into the other's field set.
+    for (const config of [
+      loadConfig(apiConfigSchema, SHARED_DEV_ENV),
+      loadConfig(workerConfigSchema, SHARED_DEV_ENV),
+    ] as const) {
+      const record = config as unknown as Record<string, unknown>;
+      expect(record).not.toHaveProperty('COMMERCE_DATABASE_URL');
+      expect(record).not.toHaveProperty('COMMERCE_POSTGRES_PASSWORD');
+      expect(record).not.toHaveProperty('COMMERCE_SHADOW_DATABASE_URL');
+      expect(record).not.toHaveProperty('COMMERCE_ADMIN_TOKEN');
+    }
+  });
+
   // Phase 3 update (ADR-0012 §55): the worker is the EXECUTOR, so it
   // legitimately receives target credential VALUES for the reference
   // names experiments may declare (DEMO_ADMIN_TOKEN,
@@ -192,6 +268,9 @@ describe('config ownership boundaries (contract tests)', () => {
     expect(config).toHaveProperty('DEMO_ADMIN_TOKEN');
     expect(config).toHaveProperty('DEMO_INSPECTION_TOKEN');
     expect(config).toHaveProperty('DEMO_PROVIDER_SIGNING_SECRET');
+    // Phase 16: the Commerce signing credential VALUE is equally
+    // executor-resolvable (ADR-0024 §20) — still never the DB URL.
+    expect(config).toHaveProperty('DEMO_COMMERCE_SIGNING_SECRET');
   });
 
   it('compose-service variables never leak into any app config', () => {
@@ -224,6 +303,9 @@ describe('config ownership boundaries (contract tests)', () => {
         'NODE_ENV',
         'QUEUE_PREFIX',
         'REDIS_URL',
+        // Phase 16 (ADR-0024 §4): the server-owned target-origin
+        // credential grant policy is API platform configuration.
+        'TARGET_ORIGIN_CREDENTIAL_GRANTS',
       ].sort(),
     );
   });

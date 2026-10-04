@@ -209,6 +209,9 @@ async function ensureApi(): Promise<string> {
       REDIS_URL: env.redisUrl,
       QUEUE_PREFIX: env.queuePrefix,
       CORS_ORIGINS: ['http://localhost:3000'],
+      // Fail-closed platform grants: golden registration goes through
+      // the engine helper directly, not this API's HTTP boundary (ADR-0024).
+      TARGET_ORIGIN_CREDENTIAL_GRANTS: {},
     },
     controlDb,
   });

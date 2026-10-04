@@ -475,6 +475,9 @@ describe('Phase 4 APIs (deterministic evidence/evaluation surfaces)', () => {
         REDIS_URL: env.redisUrl,
         QUEUE_PREFIX: env.queuePrefix,
         CORS_ORIGINS: ['http://localhost:3000'],
+        // Fail-closed platform grants: this suite registers no
+        // manifest through the HTTP API (ADR-0024).
+        TARGET_ORIGIN_CREDENTIAL_GRANTS: {},
       },
       controlDb,
     });

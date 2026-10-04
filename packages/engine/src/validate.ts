@@ -22,6 +22,12 @@ import {
   effectiveFaultHook,
   effectiveSignatureHeader,
 } from './manifest.js';
+import { DENY_ALL_TARGET_ORIGIN_CREDENTIAL_POLICY } from './credential-authorization.js';
+import type { TargetOriginCredentialPolicy } from './credential-authorization.js';
+// Phase 16 (B-1 repair): the ONE `${credential.<REF>}` token grammar,
+// shared with the executor so definition-time extraction and runtime
+// substitution recognize exactly the same token form.
+import { credentialTokenRefs } from './credential-token.js';
 import { deriveGenericInvariantBindings } from './generic-invariant-registry.js';
 import type { GenericInvariantInstance } from './generic-invariant-registry.js';
 import type {
@@ -169,6 +175,12 @@ export function validateRelativePath(rawPath: string): string {
 export interface ValidateExperimentInput {
   readonly document: unknown;
   readonly target: TargetRegistration & { origins: { origin: string }[] };
+  /**
+   * Phase 16 (ADR-0024 §8): the SERVER-OWNED platform credential
+   * policy under which the target's stored manifest is re-derived
+   * during definition-time validation (fail-closed deny-all default).
+   */
+  readonly credentialPolicy?: TargetOriginCredentialPolicy;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -253,7 +265,10 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
     // name may carry the literal ${signature} token; the executor
     // computes the value at request time (secret never in the document).
     const signatureHeaderName = effectiveSignatureHeader(
-      deriveExecutionPolicy(input.target.manifestJson),
+      deriveExecutionPolicy(input.target.manifestJson, {
+        policy: input.credentialPolicy ?? DENY_ALL_TARGET_ORIGIN_CREDENTIAL_POLICY,
+        origins: input.target.origins.map((entry) => entry.origin),
+      }),
     );
     if (rawHeaders !== undefined) {
       if (!isRecord(rawHeaders)) {
@@ -314,6 +329,25 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
               );
               continue;
             }
+          }
+          // ADR-0024 §13 (B-1 repair): EVERY `${credential.<REF>}` token
+          // in an allowed header value is credential USE. REF must
+          // belong to the target's FROZEN declared credential reference
+          // set — a header token cannot gain credential authority merely
+          // by spelling a globally resolvable reference name, and this
+          // applies regardless of action.credentialRefs (which is
+          // preserved, unchanged, above). All tokens are checked, so a
+          // later unauthorized token is never masked by an earlier
+          // authorized one. The issue names references only; no value.
+          const tokenRefs = [...new Set(credentialTokenRefs(headerValue))];
+          const unauthorizedRefs = tokenRefs.filter((ref) => !targetRefs.has(ref));
+          if (unauthorizedRefs.length > 0) {
+            issues.push(
+              `steps[${index}].action.headers["${headerName}"] references credential ${unauthorizedRefs
+                .map((ref) => `"${ref}"`)
+                .join(', ')}, which is not declared on the target (ADR-0024 §13)`,
+            );
+            continue;
           }
           headers[lower] = headerValue;
         }
@@ -422,7 +456,10 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
         // Legacy targets keep the v1.0 gate exactly (DEMO_FINTECH_WEBHOOK
         // + /webhooks/provider + the full kind vocabulary).
         const faultHook = effectiveFaultHook(
-          deriveExecutionPolicy(input.target.manifestJson),
+          deriveExecutionPolicy(input.target.manifestJson, {
+            policy: input.credentialPolicy ?? DENY_ALL_TARGET_ORIGIN_CREDENTIAL_POLICY,
+            origins: input.target.origins.map((entry) => entry.origin),
+          }),
           targetContract,
         );
         const hookPath = faultHook?.path ?? '<no declared fault hook>';
@@ -714,6 +751,11 @@ export async function createExperiment(
     readonly targetId: string;
     readonly document: unknown;
   },
+  /**
+   * Phase 16 (ADR-0024): the server-owned platform credential policy
+   * for definition-time manifest re-derivation (fail-closed default).
+   */
+  credentialPolicy?: TargetOriginCredentialPolicy,
 ): Promise<{ definitionId: string; revisionId: string; revisionNumber: number }> {
   if (typeof input.name !== 'string' || input.name.trim().length < 3) {
     throw new ExperimentValidationError(['name must be at least 3 characters']);
@@ -725,7 +767,11 @@ export async function createExperiment(
   if (target === null) {
     throw new ExperimentValidationError([`target ${input.targetId} is not registered`]);
   }
-  const document = validateExperimentDocument({ document: input.document, target });
+  const document = validateExperimentDocument({
+    document: input.document,
+    target,
+    ...(credentialPolicy === undefined ? {} : { credentialPolicy }),
+  });
   return prisma.$transaction(async (tx) => {
     const definition = await tx.experimentDefinition.create({
       data: {

@@ -16,6 +16,12 @@ import { TARGET_ENVIRONMENTS } from '@rupturegrid/shared';
 import type { PrismaClient } from '@rupturegrid/control-db';
 import type { TargetRegistration } from './prisma-types.js';
 import { validateTargetManifest } from './manifest.js';
+import {
+  DENY_ALL_TARGET_ORIGIN_CREDENTIAL_POLICY,
+  assertCredentialRefsAuthorized,
+  resolveSignatureCredentialBinding,
+} from './credential-authorization.js';
+import type { TargetOriginCredentialPolicy } from './credential-authorization.js';
 
 export const CONTRACT_KINDS = ['DEMO_FINTECH_WEBHOOK', 'GENERIC_HTTP'] as const;
 export type ContractKind = (typeof CONTRACT_KINDS)[number];
@@ -104,10 +110,30 @@ export interface TargetRegistrationResult {
 /**
  * Registers a target with normalized origins and policy enforcement.
  * Runs in one transaction: target + origins are created atomically.
+ *
+ * Phase 16 (ADR-0024 §5, §8, §11): for manifest-declaring targets the
+ * SERVER-OWNED target-origin credential policy is enforced BEFORE any
+ * durable row is written —
+ *   1. normalize/validate origins; 2. global ref vocabulary;
+ *   3. platform grants for EVERY declared ref, keyed by the
+ *      NORMALIZED ORIGIN AUTHORITY (registration requests cannot grant
+ *      themselves credentials); 4. structural manifest validation;
+ *   5. manifest/registration consistency (consistency, NEVER
+ *      authorization); 6. the two-stage signing binding;
+ *   7. persist. An authorization failure creates NO registration row.
+ * Legacy (manifest-less) v1.0 registrations are NOT governed by
+ * grants (ADR-0024 §14) and keep their accepted behavior exactly.
  */
 export async function registerTarget(
   prisma: PrismaClient,
   input: RegisterTargetInput,
+  /**
+   * The SERVER-OWNED platform credential policy (validated config —
+   * never caller data). Defaults to the fail-closed deny-all policy:
+   * a caller that omits it denies every credential-bearing manifest
+   * registration, never widens access.
+   */
+  credentialPolicy: TargetOriginCredentialPolicy = DENY_ALL_TARGET_ORIGIN_CREDENTIAL_POLICY,
 ): Promise<TargetRegistrationResult> {
   if (typeof input.displayName !== 'string' || input.displayName.trim().length < 3) {
     throw new TargetRegistrationError('displayName must be at least 3 characters');
@@ -140,6 +166,18 @@ export async function registerTarget(
   const duplicate = normalized.find((origin, index) => normalized.indexOf(origin) !== index);
   if (duplicate !== undefined) {
     throw new TargetRegistrationError(`duplicate origins in request: ${duplicate}`);
+  }
+
+  // ---- Phase 16 (ADR-0024 §11 step 3): platform grant enforcement ----
+  // For manifest-declaring targets, EVERY declared credential ref must
+  // be platform-authorized for EVERY registered normalized origin
+  // (intersection semantics — §6). The declaration itself never grants
+  // access; the equality check below is consistency, never
+  // authorization (§12). This runs BEFORE manifest validation and
+  // before any row write: an authorization failure is a registration
+  // failure with NO durable row.
+  if (input.manifest !== undefined) {
+    assertCredentialRefsAuthorized(credentialPolicy, normalized, credentialRefs);
   }
 
   // ---- Phase 13: manifest validation + consistency (ADR-0016) ----
@@ -186,6 +224,12 @@ export async function registerTarget(
         `manifest.contract.kind (${manifest.contract.kind}) must equal the registration contractKind (${input.contractKind})`,
       );
     }
+    // ---- Phase 16 (ADR-0024 §8/§11 step 6): the two-stage signing
+    // binding. Stage 1 (authorization) already ran above; Stage 2
+    // requires EXACTLY ONE declared authorized signing-capable ref when
+    // signatureHeader is declared — zero or 2+ reject the registration
+    // before any row is written. No heuristic ever selects a key.
+    resolveSignatureCredentialBinding(credentialPolicy, normalized, manifest);
     // Provenance is the EXACT submitted document — no re-shaping, no
     // field dropping (the validator already rejected unknown fields).
     manifestJson = JSON.parse(JSON.stringify(input.manifest)) as object;

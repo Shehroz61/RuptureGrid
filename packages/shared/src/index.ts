@@ -11,6 +11,7 @@ export const SERVICE_NAMES = {
   worker: 'rupturegrid-worker',
   web: 'rupturegrid-web',
   demoFintech: 'demo-fintech',
+  demoCommerce: 'demo-commerce',
 } as const;
 
 export type ServiceName = (typeof SERVICE_NAMES)[keyof typeof SERVICE_NAMES];

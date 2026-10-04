@@ -16,7 +16,7 @@ import { createExecutionQueue, startExecutionWorker, executionJobId } from '@rup
 import type { ExecutionJobPayload } from '@rupturegrid/queue';
 import {
   StepProcessor,
-  createDemoCredentialResolver,
+  createCredentialResolver,
   runReconcileSweep,
   reconcileExpiredLeases,
   markRunDispatching,
@@ -292,7 +292,19 @@ export async function startExecutionWorkerRuntime(): Promise<ExecutionWorkerRunt
       WORKER_LEASE_DURATION_MS: config.WORKER_LEASE_DURATION_MS,
       WORKER_HEARTBEAT_INTERVAL_MS: config.WORKER_HEARTBEAT_INTERVAL_MS,
     },
-    credentials: createDemoCredentialResolver(config),
+    // Phase 16 (ADR-0024 §21): the GENERIC credential resolver — a
+    // validated-config-driven map of reference NAME → value, resolved
+    // at request time only (ADR-0012). No target-specific branch
+    // exists: every platform-allowed reference resolves identically,
+    // including the Phase 16 Commerce signing reference. A reference
+    // whose value is absent from this environment fails pre-send with
+    // a bounded, secret-free CredentialResolutionError.
+    credentials: createCredentialResolver({
+      DEMO_ADMIN_TOKEN: config.DEMO_ADMIN_TOKEN,
+      DEMO_INSPECTION_TOKEN: config.DEMO_INSPECTION_TOKEN,
+      DEMO_PROVIDER_SIGNING_SECRET: config.DEMO_PROVIDER_SIGNING_SECRET,
+      DEMO_COMMERCE_SIGNING_SECRET: config.DEMO_COMMERCE_SIGNING_SECRET,
+    }),
     dispatchNextStep,
     evidenceSink,
     captureEvidenceAdapter,

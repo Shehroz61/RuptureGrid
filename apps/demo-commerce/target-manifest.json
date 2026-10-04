@@ -1,0 +1,342 @@
+{
+  "manifestVersion": "target-manifest/v1",
+  "displayName": "Demo Commerce",
+  "environment": "LOCAL_DEVELOPMENT",
+  "origins": ["http://127.0.0.1:3003"],
+  "credentialRefs": ["DEMO_COMMERCE_SIGNING_SECRET"],
+  "contract": { "kind": "GENERIC_HTTP" },
+  "inspection": [
+    {
+      "queryId": "checkoutIntents",
+      "roleId": "checkoutIntent",
+      "description": "Logical checkout intents (one row per logical business intent)",
+      "path": "/inspection/checkout-intents",
+      "fields": {
+        "checkoutIntentId": "string",
+        "customerId": "string",
+        "cartId": "string",
+        "totalMinor": "integer-minor-units",
+        "currency": "string",
+        "sku": "string",
+        "status": "string",
+        "verificationScopeId": "string",
+        "generationId": "integer-minor-units"
+      },
+      "identityFields": ["checkoutIntentId"]
+    },
+    {
+      "queryId": "requestAttempts",
+      "roleId": "requestAttempt",
+      "description": "Physical checkout submissions (executor-assigned request identity, recorded verbatim)",
+      "path": "/inspection/request-attempts",
+      "fields": {
+        "requestAttemptId": "string",
+        "checkoutIntentId": "string",
+        "verificationScopeId": "string",
+        "generationId": "integer-minor-units"
+      },
+      "identityFields": ["requestAttemptId"]
+    },
+    {
+      "queryId": "processingAttempts",
+      "roleId": "processingAttempt",
+      "description": "Finished target-side processing attempts with authoritative timing and start ordering",
+      "path": "/inspection/processing-attempts",
+      "fields": {
+        "processingAttemptId": "string",
+        "requestAttemptId": "string",
+        "startSequence": "integer-minor-units",
+        "startedAt": "timestamp",
+        "finishedAt": "timestamp",
+        "outcome": "string",
+        "verificationScopeId": "string",
+        "generationId": "integer-minor-units"
+      },
+      "identityFields": ["processingAttemptId"]
+    },
+    {
+      "queryId": "orders",
+      "roleId": "order",
+      "description": "Order effects (accepted or rejected) with the intent equivalence tuple",
+      "path": "/inspection/orders",
+      "fields": {
+        "orderId": "string",
+        "checkoutIntentId": "string",
+        "processingAttemptId": "string",
+        "customerId": "string",
+        "cartId": "string",
+        "totalMinor": "integer-minor-units",
+        "currency": "string",
+        "status": "string",
+        "verificationScopeId": "string",
+        "generationId": "integer-minor-units"
+      },
+      "identityFields": ["orderId"]
+    },
+    {
+      "queryId": "reservations",
+      "roleId": "reservation",
+      "description": "Reservation effects against a SKU (accepted consumption)",
+      "path": "/inspection/reservations",
+      "fields": {
+        "reservationId": "string",
+        "orderId": "string",
+        "sku": "string",
+        "reservedUnits": "integer-minor-units",
+        "status": "string",
+        "verificationScopeId": "string",
+        "generationId": "integer-minor-units"
+      },
+      "identityFields": ["reservationId"]
+    },
+    {
+      "queryId": "skus",
+      "roleId": "sku",
+      "description": "Stocked resources",
+      "path": "/inspection/skus",
+      "fields": {
+        "sku": "string",
+        "verificationScopeId": "string",
+        "generationId": "integer-minor-units"
+      },
+      "identityFields": ["sku"]
+    },
+    {
+      "queryId": "skuBaseline",
+      "roleId": "skuBaseline",
+      "description": "Baseline stock facts (initialAvailableUnits; never inferred)",
+      "path": "/inspection/sku-baseline",
+      "fields": {
+        "sku": "string",
+        "initialAvailableUnits": "integer-minor-units",
+        "verificationScopeId": "string",
+        "generationId": "integer-minor-units"
+      },
+      "identityFields": ["sku"]
+    },
+    {
+      "queryId": "skuRemaining",
+      "roleId": "skuRemaining",
+      "description": "Current remaining stock facts (remainingAvailableUnits; may legitimately be negative)",
+      "path": "/inspection/sku-remaining",
+      "fields": {
+        "sku": "string",
+        "remainingAvailableUnits": "integer-minor-units",
+        "verificationScopeId": "string",
+        "generationId": "integer-minor-units"
+      },
+      "identityFields": ["sku"]
+    },
+    {
+      "queryId": "ordersSummary",
+      "roleId": "ordersSummary",
+      "description": "Per-intent accepted-order totals (observed-total completeness surface; zero totals included)",
+      "path": "/inspection/orders-summary",
+      "fields": {
+        "checkoutIntentId": "string",
+        "acceptedOrderTotal": "integer-minor-units",
+        "verificationScopeId": "string",
+        "generationId": "integer-minor-units"
+      },
+      "identityFields": ["checkoutIntentId"]
+    },
+    {
+      "queryId": "reservationsSummary",
+      "roleId": "reservationsSummary",
+      "description": "Per-SKU accepted-reservation totals (observed-total completeness surface; zero totals included)",
+      "path": "/inspection/reservations-summary",
+      "fields": {
+        "sku": "string",
+        "acceptedReservationTotal": "integer-minor-units",
+        "verificationScopeId": "string",
+        "generationId": "integer-minor-units"
+      },
+      "identityFields": ["sku"]
+    },
+    {
+      "queryId": "quiescence",
+      "roleId": "quiescence",
+      "description": "Per-scope quiescence evidence: in-flight and total processing attempts (bounded-poll settle surface)",
+      "path": "/inspection/quiescence",
+      "fields": {
+        "inFlightProcessingAttempts": "integer-minor-units",
+        "totalProcessingAttempts": "integer-minor-units",
+        "verificationScopeId": "string",
+        "generationId": "integer-minor-units"
+      },
+      "identityFields": ["verificationScopeId"]
+    }
+  ],
+  "identityModel": {
+    "nodes": [
+      {
+        "roleId": "checkoutIntent",
+        "description": "A logical checkout intent (the scenario subject)",
+        "fields": {
+          "checkoutIntentId": "string",
+          "customerId": "string",
+          "cartId": "string",
+          "totalMinor": "integer-minor-units",
+          "currency": "string",
+          "sku": "string",
+          "status": "string",
+          "verificationScopeId": "string",
+          "generationId": "integer-minor-units"
+        }
+      },
+      {
+        "roleId": "requestAttempt",
+        "description": "One physical checkout submission",
+        "fields": {
+          "requestAttemptId": "string",
+          "checkoutIntentId": "string",
+          "verificationScopeId": "string",
+          "generationId": "integer-minor-units"
+        }
+      },
+      {
+        "roleId": "processingAttempt",
+        "description": "One target-side processing attempt of a submission",
+        "fields": {
+          "processingAttemptId": "string",
+          "requestAttemptId": "string",
+          "startSequence": "integer-minor-units",
+          "startedAt": "timestamp",
+          "finishedAt": "timestamp",
+          "outcome": "string",
+          "verificationScopeId": "string",
+          "generationId": "integer-minor-units"
+        }
+      },
+      {
+        "roleId": "order",
+        "description": "An accepted-or-rejected order effect",
+        "fields": {
+          "orderId": "string",
+          "checkoutIntentId": "string",
+          "processingAttemptId": "string",
+          "customerId": "string",
+          "cartId": "string",
+          "totalMinor": "integer-minor-units",
+          "currency": "string",
+          "status": "string",
+          "verificationScopeId": "string",
+          "generationId": "integer-minor-units"
+        }
+      },
+      {
+        "roleId": "reservation",
+        "description": "An accepted reservation effect against a SKU",
+        "fields": {
+          "reservationId": "string",
+          "orderId": "string",
+          "sku": "string",
+          "reservedUnits": "integer-minor-units",
+          "status": "string",
+          "verificationScopeId": "string",
+          "generationId": "integer-minor-units"
+        }
+      },
+      {
+        "roleId": "sku",
+        "description": "A stocked resource",
+        "fields": {
+          "sku": "string",
+          "verificationScopeId": "string",
+          "generationId": "integer-minor-units"
+        }
+      },
+      {
+        "roleId": "skuBaseline",
+        "description": "A baseline stock fact",
+        "fields": {
+          "sku": "string",
+          "initialAvailableUnits": "integer-minor-units",
+          "verificationScopeId": "string",
+          "generationId": "integer-minor-units"
+        }
+      },
+      {
+        "roleId": "skuRemaining",
+        "description": "A remaining stock fact",
+        "fields": {
+          "sku": "string",
+          "remainingAvailableUnits": "integer-minor-units",
+          "verificationScopeId": "string",
+          "generationId": "integer-minor-units"
+        }
+      },
+      {
+        "roleId": "ordersSummary",
+        "description": "A per-intent accepted-order total",
+        "fields": {
+          "checkoutIntentId": "string",
+          "acceptedOrderTotal": "integer-minor-units",
+          "verificationScopeId": "string",
+          "generationId": "integer-minor-units"
+        }
+      },
+      {
+        "roleId": "reservationsSummary",
+        "description": "A per-SKU accepted-reservation total",
+        "fields": {
+          "sku": "string",
+          "acceptedReservationTotal": "integer-minor-units",
+          "verificationScopeId": "string",
+          "generationId": "integer-minor-units"
+        }
+      },
+      {
+        "roleId": "quiescence",
+        "description": "A per-scope quiescence fact",
+        "fields": {
+          "inFlightProcessingAttempts": "integer-minor-units",
+          "totalProcessingAttempts": "integer-minor-units",
+          "verificationScopeId": "string",
+          "generationId": "integer-minor-units"
+        }
+      }
+    ],
+    "causalEdges": [
+      {
+        "fromRoleId": "checkoutIntent",
+        "toRoleId": "requestAttempt",
+        "edgeKind": "submitted-as",
+        "linkFields": ["checkoutIntentId"]
+      },
+      {
+        "fromRoleId": "requestAttempt",
+        "toRoleId": "processingAttempt",
+        "edgeKind": "processed-as",
+        "linkFields": ["requestAttemptId"]
+      },
+      {
+        "fromRoleId": "processingAttempt",
+        "toRoleId": "order",
+        "edgeKind": "accepted-as",
+        "linkFields": ["processingAttemptId"]
+      },
+      {
+        "fromRoleId": "order",
+        "toRoleId": "reservation",
+        "edgeKind": "reserved-as",
+        "linkFields": ["orderId"]
+      },
+      {
+        "fromRoleId": "sku",
+        "toRoleId": "reservation",
+        "edgeKind": "reserved-from",
+        "linkFields": ["sku"]
+      }
+    ],
+    "effectRoleIds": ["order", "reservation"],
+    "subjectRoleId": "checkoutIntent"
+  },
+  "sensitiveFields": [],
+  "signatureHeader": "X-Commerce-Signature",
+  "faultHook": {
+    "version": "controlled-fault/v1",
+    "path": "/checkout/submit",
+    "kinds": ["PRE_MUTATION_REJECTION", "CRASH_MID_PROCESSING", "RESPONSE_TRUNCATION"]
+  }
+}

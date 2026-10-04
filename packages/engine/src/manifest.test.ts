@@ -20,9 +20,29 @@ import {
   ManifestValidationError,
   validateTargetManifest,
 } from './manifest.js';
+import type { PolicyAuthorizationInput } from './credential-authorization.js';
 import { classifyInvocation } from './classify.js';
 import { validateRelativePath } from './validate.js';
 import { MANIFEST_LIMITS } from '@rupturegrid/shared';
+
+// ---------------------------------------------------------------------
+// Phase 16 (ADR-0024): a permissive SERVER-OWNED test authorization
+// context for derivation. The platform signing classification is the
+// explicit two-ref set; grants are given only for the origins/refs a
+// specific test manifest declares (never inferred from names).
+// ---------------------------------------------------------------------
+
+const TEST_SIGNING_REFS = ['DEMO_PROVIDER_SIGNING_SECRET', 'DEMO_COMMERCE_SIGNING_SECRET'] as const;
+
+function authFor(origins: readonly string[], refs: readonly string[]): PolicyAuthorizationInput {
+  return {
+    policy: {
+      signingCredentialRefs: [...TEST_SIGNING_REFS],
+      originGrants: Object.fromEntries(origins.map((origin) => [origin, [...refs]])),
+    },
+    origins,
+  };
+}
 
 // ---------------------------------------------------------------------
 // Fixtures (no secrets — reference names only, ADR-0012/R-13)
@@ -137,11 +157,17 @@ describe('target-manifest/v1 accepted shapes', () => {
     expect(manifest.contract.metadata.noEffectOnRejection).toBeUndefined();
   });
 
-  it('rejects a signatureHeader without the signing credential reference (cross-field closure)', () => {
-    expectRejected(
-      validManifest({ signatureHeader: 'X-Acme-Signature' }),
-      /signatureHeader requires the DEMO_PROVIDER_SIGNING_SECRET credentialRef/,
-    );
+  it('leaves the signature/seam credential requirement to PLATFORM policy, not manifest schema (ADR-0024 §1/§8)', () => {
+    // Phase 16 (ADR-0024): the Demo-specific cross-field rule was
+    // REPLACED by the platform-owned two-stage pipeline. Structurally,
+    // signatureHeader is just a validated header name; WHICH credential
+    // backs it (exactly one authorized signing-capable ref) is enforced
+    // at registration and at every new policy derivation — never as a
+    // manifest-schema rule (the enumerated Stage-1/Stage-2 rejections
+    // live in credential-authorization tests).
+    const manifest = validateTargetManifest(validManifest({ signatureHeader: 'X-Acme-Signature' }));
+    expect(manifest.signatureHeader).toBe('x-acme-signature');
+    expect(manifest.credentialRefs).toEqual(['DEMO_INSPECTION_TOKEN']);
   });
 
   it('accepts a one-node identity model with zero edges (shape freedom)', () => {
@@ -901,7 +927,7 @@ describe('target-manifest/v1 server-side limits', () => {
 // ---------------------------------------------------------------------
 
 describe('manifest execution-policy derivation', () => {
-  it('freezes the declared signature header and fault hook into policy', () => {
+  it('freezes the declared signature header, its platform-resolved signing ref, and the fault hook into policy (ADR-0024 §9 pair invariant)', () => {
     const policy = deriveExecutionPolicy(
       validManifest({
         environment: 'LOCAL_DEVELOPMENT',
@@ -914,18 +940,49 @@ describe('manifest execution-policy derivation', () => {
           kinds: ['RESPONSE_TRUNCATION'],
         },
       }),
+      authFor(['http://127.0.0.1:45001'], ['DEMO_PROVIDER_SIGNING_SECRET']),
     );
     expect(policy?.signatureHeader).toBe('x-acme-signature');
+    // The pair invariant: the header ALWAYS freezes alongside the
+    // platform-resolved signing reference (name only — never a value).
+    expect(policy?.signatureCredentialRef).toBe('DEMO_PROVIDER_SIGNING_SECRET');
     expect(policy?.faultHook).toEqual({ path: '/hooks/checkout', kinds: ['RESPONSE_TRUNCATION'] });
     expect(policy?.contractMetadata.noEffectOnRejection).toBe(true);
+  });
+
+  it('derives NO signature fields when the manifest declares no signatureHeader (no seam, ADR-0024 §9)', () => {
+    const policy = deriveExecutionPolicy(
+      validManifest(),
+      authFor(['https://api.acme.example:8443'], ['DEMO_INSPECTION_TOKEN']),
+    );
+    expect(policy?.signatureHeader).toBeUndefined();
+    expect(policy?.signatureCredentialRef).toBeUndefined();
   });
 
   it('re-validates stored provenance and FAILS CLOSED on corruption', () => {
     const corrupted = validManifest();
     (corrupted as Record<string, unknown>)['injected'] = true;
-    expect(() => deriveExecutionPolicy(corrupted)).toThrow(ManifestValidationError);
-    expect(deriveExecutionPolicy(null)).toBeUndefined();
-    expect(deriveExecutionPolicy(undefined)).toBeUndefined();
+    expect(() =>
+      deriveExecutionPolicy(
+        corrupted,
+        authFor(['https://api.acme.example:8443'], ['DEMO_INSPECTION_TOKEN']),
+      ),
+    ).toThrow(ManifestValidationError);
+    expect(deriveExecutionPolicy(null, authFor([], []))).toBeUndefined();
+    expect(deriveExecutionPolicy(undefined, authFor([], []))).toBeUndefined();
+  });
+
+  it('refuses manifest-bearing derivation WITHOUT the platform authorization context (fail closed, ADR-0024 §8)', () => {
+    // Cast preserves the runtime shape while asserting the type-level
+    // contract: the authorization context is REQUIRED for manifest
+    // derivations, so an omitted context cannot silently become policy.
+    const manifest = validManifest();
+    expect(() =>
+      deriveExecutionPolicy(
+        manifest,
+        undefined as unknown as Parameters<typeof deriveExecutionPolicy>[1],
+      ),
+    ).toThrow(/requires the platform target-origin credential authorization context/);
   });
 
   it('legacy (manifest-less) targets keep the v1.0 seams exactly', () => {
@@ -950,15 +1007,22 @@ describe('manifest execution-policy derivation', () => {
           kinds: ['RESPONSE_TRUNCATION'],
         },
       }),
+      authFor(['http://127.0.0.1:45001'], ['DEMO_INSPECTION_TOKEN']),
     );
     const hook = effectiveFaultHook(policy, 'GENERIC_HTTP');
     expect(hook?.path).toBe('/hooks/checkout');
     expect(hook?.kinds).toEqual(['RESPONSE_TRUNCATION']);
     // A manifest target without a faultHook has NO hook at all.
-    const none = effectiveFaultHook(deriveExecutionPolicy(validManifest()), 'GENERIC_HTTP');
+    const defaultAuth = authFor(['https://api.acme.example:8443'], ['DEMO_INSPECTION_TOKEN']);
+    const none = effectiveFaultHook(
+      deriveExecutionPolicy(validManifest(), defaultAuth),
+      'GENERIC_HTTP',
+    );
     expect(none).toBeNull();
     // A manifest target without a signatureHeader has NO signature seam.
-    expect(effectiveSignatureHeader(deriveExecutionPolicy(validManifest()))).toBeNull();
+    expect(
+      effectiveSignatureHeader(deriveExecutionPolicy(validManifest(), defaultAuth)),
+    ).toBeNull();
   });
 });
 
@@ -969,7 +1033,10 @@ describe('manifest execution-policy derivation', () => {
 describe('noEffectOnRejection never manufactures KNOWN_ABSENT', () => {
   // The declared metadata is recorded — but classification never reads it.
   it('records the declaration while GENERIC_HTTP classification stays conservative', () => {
-    const policy = deriveExecutionPolicy(validManifest());
+    const policy = deriveExecutionPolicy(
+      validManifest(),
+      authFor(['https://api.acme.example:8443'], ['DEMO_INSPECTION_TOKEN']),
+    );
     expect(policy?.contractMetadata.noEffectOnRejection).toBe(true);
 
     // For a mutating request that crossed REQUEST_SENT:

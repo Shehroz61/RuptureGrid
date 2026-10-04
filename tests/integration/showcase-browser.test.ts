@@ -125,6 +125,9 @@ describe('Phase 8 — real browser capture over a real golden run', () => {
           REDIS_URL: env.redisUrl,
           QUEUE_PREFIX: env.queuePrefix,
           CORS_ORIGINS: ['http://localhost:3000'],
+          // Fail-closed platform grants: no manifest registration via
+          // the HTTP API in this suite (ADR-0024).
+          TARGET_ORIGIN_CREDENTIAL_GRANTS: {},
         },
         controlDb,
       });

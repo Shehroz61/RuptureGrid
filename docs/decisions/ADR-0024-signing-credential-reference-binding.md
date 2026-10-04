@@ -102,8 +102,10 @@ permission.
 this normalized origin authority?" Only the grant confers target access (§4).
 
 **C. SIGNING CAPABILITY — `EXECUTOR_SIGNING_CREDENTIAL_REFS`.** A platform-owned **subset** of the
-executor set whose values may serve as `${signature}` HMAC keys; seeded in Phase 16 as exactly
-`['DEMO_PROVIDER_SIGNING_SECRET']` (the v1.0 Demo signing reference). Signing capability is a
+executor set whose values may serve as `${signature}` HMAC keys; seeded in Phase 16 as the Demo
+Provider signing reference `DEMO_PROVIDER_SIGNING_SECRET` **and** the Demo Commerce signing
+reference `DEMO_COMMERCE_SIGNING_SECRET` (both are signing-capable under ADR-0024 §8/§20; neither
+is authorized for a destination by that classification). Signing capability is a
 classification of credentials — it is NOT target authorization and grants access to nothing by
 itself (§19).
 
@@ -363,6 +365,17 @@ three). The substitution mechanism itself is NOT redesigned: same request-time r
 (ADR-0012), same redaction-before-persistence, same fail-fast `CredentialResolutionError`. This
 closure freezes only the authorization boundary in front of registration and derivation.
 
+**Header-token membership (B-1 repair, case 31).** A `${credential.<REF>}` token in an HTTP header
+is itself credential USE, so it is bounded independently of `action.credentialRefs`: REF must be a
+member of the target's frozen declared credential reference set. This is enforced at BOTH
+definition-time validation (every token in every allowed header value; a bounded, name-only issue
+otherwise) and pre-send substitution (the executor checks the FROZEN snapshot target refs before
+resolving, so an unauthorized reference never resolves or transmits). The runtime check uses frozen
+snapshot authority only — never live registration, never current grants, never the signing
+classification — so historical runs keep their frozen behavior (§16). The original Phase 16
+implementation enforced token FORM but not token ref membership, and resolved ordinary tokens
+through the global resolver; that gap was blocker B-1, closed here.
+
 ### 14. Legacy manifest-less targets are unchanged
 
 The v1.0 Demo Fintech manifest-less path keeps its explicit constants —
@@ -588,6 +601,14 @@ The implementing phase (Phase 16) commits tests proving at least:
 30. Grant-store hygiene: grants persist reference NAMES + normalized origins ONLY; a grant naming
     a ref outside `EXECUTOR_CREDENTIAL_REFS` fails platform configuration validation; no secret
     value ever enters the grant store.
+31. Ordinary `${credential.<REF>}` header token, ref globally available but NOT in the target's
+    frozen declared credential reference set: definition-time validation REJECTS (the token form
+    passes, but REF is not a declared target reference) AND, independently, the executor's pre-send
+    substitution seam rejects against the FROZEN snapshot target refs — zero request transmission,
+    the resolver is never called for the unauthorized ref, and the bounded issue/error names the
+    reference (never the value). Applies header-independently (`authorization` and `idempotency-key`
+    both covered), and every token in one value is checked. This is the B-1 adversarial case added
+    by the Phase 16 B-1 repair (§13).
 
 ## Alternatives considered
 

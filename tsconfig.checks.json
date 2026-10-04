@@ -36,6 +36,7 @@
       "@rupturegrid/logger": ["packages/logger/src/index.ts"],
       "@rupturegrid/control-db": ["packages/control-db/src/index.ts"],
       "@rupturegrid/demo-db": ["packages/demo-db/src/index.ts"],
+      "@rupturegrid/commerce-db": ["packages/commerce-db/src/index.ts"],
       "@rupturegrid/queue": ["packages/queue/src/index.ts"],
       "@rupturegrid/engine": ["packages/engine/src/index.ts"],
       "@rupturegrid/evidence": ["packages/evidence/src/index.ts"],

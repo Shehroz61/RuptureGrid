@@ -85,6 +85,9 @@ beforeAll(async () => {
       REDIS_URL: env2.redisUrl,
       QUEUE_PREFIX: env2.queuePrefix,
       CORS_ORIGINS: [`http://127.0.0.1:${WEB_P9B_PORT}`],
+      // Fail-closed platform grants: no manifest registration via
+      // the HTTP API in this suite (ADR-0024).
+      TARGET_ORIGIN_CREDENTIAL_GRANTS: {},
     },
     controlDb,
   });

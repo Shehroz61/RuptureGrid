@@ -3,7 +3,7 @@
   "displayName": "Demo Commerce",
   "environment": "LOCAL_DEVELOPMENT",
   "origins": ["http://127.0.0.1:3003"],
-  "credentialRefs": ["DEMO_COMMERCE_SIGNING_SECRET"],
+  "credentialRefs": ["DEMO_COMMERCE_SIGNING_SECRET", "COMMERCE_ADMIN_TOKEN"],
   "contract": { "kind": "GENERIC_HTTP" },
   "inspection": [
     {

@@ -425,6 +425,17 @@ export function genericEvidenceSetHash(input: {
     readonly gap: string | null;
     readonly failureMechanism: string | null;
   };
+  /**
+   * Checkpoint C (ADR-0026 §13, additive for GATED runs): the run-owned
+   * anchor tuple `(observedScope, observedGeneration)` and the
+   * eligibility protocol version enter the hash — same frozen intent +
+   * new observed generation ⇒ new hash ⇒ new row under the existing
+   * append-only discipline. Legacy-compat runs leave both absent so the
+   * pre-gating hash discipline is preserved byte-for-byte (changed
+   * gated hash semantics can never hide under the old version).
+   */
+  readonly anchor?: { readonly observedScope: string; readonly observedGeneration: number } | null;
+  readonly eligibilityVersion?: string;
 }): string {
   return createHash('sha256')
     .update(
@@ -442,6 +453,10 @@ export function genericEvidenceSetHash(input: {
         verdict: input.evidence.verdict,
         gap: input.evidence.gap,
         failureMechanism: input.evidence.failureMechanism,
+        ...(input.anchor === undefined ? {} : { anchor: input.anchor }),
+        ...(input.eligibilityVersion === undefined
+          ? {}
+          : { eligibilityVersion: input.eligibilityVersion }),
       }),
     )
     .digest('hex');

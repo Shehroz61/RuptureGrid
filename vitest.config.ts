@@ -10,6 +10,14 @@ const aliases = {
   '@rupturegrid/control-db': resolve('packages/control-db/src/index.ts'),
   '@rupturegrid/demo-db': resolve('packages/demo-db/src/index.ts'),
   '@rupturegrid/queue': resolve('packages/queue/src/index.ts'),
+  // Phase 17 CLI unit tests consume engine/evidence/forensics from
+  // source (same rule as every other workspace package).
+  '@rupturegrid/engine': resolve('packages/engine/src/index.ts'),
+  '@rupturegrid/evidence': resolve('packages/evidence/src/index.ts'),
+  '@rupturegrid/forensics': resolve('packages/forensics/src/index.ts'),
+  '@rupturegrid/controlled-faults': resolve('packages/controlled-faults/src/index.ts'),
+  '@rupturegrid/incident-zero': resolve('packages/incident-zero/src/index.ts'),
+  '@rupturegrid/commerce-db': resolve('packages/commerce-db/src/index.ts'),
 };
 
 export default defineConfig({

@@ -37,6 +37,7 @@ No agent may implement the whole product in one uncontrolled jump. Phases are or
 
 - Typecheck, lint, and build are run and shown clean — every phase, no exceptions.
 - Runtime verification uses the real stack; simulated environments cannot satisfy runtime gates for correctness-relevant behavior ([testing-strategy.md](testing-strategy.md) §3).
+- Local pre-commit hooks (Husky + lint-staged) **validate** staged files as a convenience guard only: `prettier --check` and ESLint without `--fix`. The hook is mutation-free — it never rewrites files or re-stages them, so an unstaged change in a partially staged file can never be swept into a commit; a badly formatted or lint-failing staged file simply blocks the commit, and contributors run `pnpm format` manually before staging. Hooks are bypassable (`--no-verify`, `HUSKY=0`) and therefore never replace CI or the gates in this section — CI runs the same `format:check`, `lint`, `typecheck`, `test:unit`, `build`, migration, and integration gates on every push and pull request.
 - "Verified" means: the command was run, its output was observed, and it is referenced in the phase's evidence. An agent must never claim verification it did not perform ([AGENTS.md](../AGENTS.md) R-07).
 
 ## 4. Git discipline

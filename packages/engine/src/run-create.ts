@@ -8,12 +8,25 @@
 // PostgreSQL and the reconciler recovers it (ADR-0003 §9; Phase 3 §40).
 // Production-classified targets are DENIED at creation (ADR-0011).
 
+import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@rupturegrid/control-db';
 import type { TargetEnvironment } from '@rupturegrid/shared';
 import type { RunSnapshotDocument } from './types.js';
 import { freezeSnapshot } from './snapshot.js';
 import type { FrozenSnapshot } from './snapshot.js';
 import type { TargetOriginCredentialPolicy } from './credential-authorization.js';
+import {
+  acquireRunLock,
+  advanceProvenanceRevision,
+  PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+  PROVENANCE_TRANSACTION_TIMEOUT_MS,
+} from './truth-input-head.js';
+
+/** Bounded provenance-writer transaction (writer protocol, ADR-0026 §13). */
+const PROVENANCE_TX = {
+  timeout: PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  maxWait: PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+} as const;
 
 export class RunCreationError extends Error {
   public constructor(message: string) {
@@ -63,24 +76,31 @@ export async function createRun(
     );
   }
 
-  const runId = await prisma.$transaction(async (tx) => {
-    const run = await tx.experimentRun.create({
+  // The run id is generated here so the per-run advisory lock can be
+  // taken FIRST, before the run's own truth-bearing rows (the run row and
+  // its step rows) are written — and `P` advanced for them in the SAME
+  // transaction (ADR-0026 §13 writer protocol).
+  const runId = randomUUID();
+  await prisma.$transaction(async (tx) => {
+    await acquireRunLock(tx, runId);
+    await tx.experimentRun.create({
       data: {
+        id: runId,
         snapshotId: frozen.snapshotId,
         state: 'SNAPSHOT_PINNED',
       },
     });
     await tx.experimentStepRun.createMany({
       data: document.steps.map((step, sequence) => ({
-        runId: run.id,
+        runId,
         sequence,
         name: step.name,
         state: 'PENDING',
         dispatchState: 'PENDING',
       })),
     });
-    return run.id;
-  });
+    await advanceProvenanceRevision(tx, runId);
+  }, PROVENANCE_TX);
 
   const stepRuns = await prisma.experimentStepRun.findMany({
     where: { runId },
@@ -101,10 +121,17 @@ export async function createRun(
  * enqueue failure the run REMAINS here and reconciliation recovers.
  */
 export async function markRunDispatching(prisma: PrismaClient, runId: string): Promise<void> {
-  await prisma.experimentRun.updateMany({
-    where: { id: runId, state: 'SNAPSHOT_PINNED' },
-    data: { state: 'DISPATCHING' },
-  });
+  await prisma.$transaction(async (tx) => {
+    await acquireRunLock(tx, runId);
+    const updated = await tx.experimentRun.updateMany({
+      where: { id: runId, state: 'SNAPSHOT_PINNED' },
+      data: { state: 'DISPATCHING' },
+    });
+    // Idempotent re-marking writes nothing and advances nothing.
+    if (updated.count > 0) {
+      await advanceProvenanceRevision(tx, runId);
+    }
+  }, PROVENANCE_TX);
 }
 
 /** Loads a snapshot document by run id (worker-side authoritative load). */

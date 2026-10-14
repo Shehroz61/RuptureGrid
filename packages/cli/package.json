@@ -1,0 +1,44 @@
+{
+  "name": "@rupturegrid/cli",
+  "version": "1.1.0",
+  "private": true,
+  "description": "RuptureGrid v1.1 headless CLI (Phase 17, ADR-0019): source-only orchestration and rupturegrid-report/v1 serialization over accepted Control-Plane truth — runs from a RuptureGrid checkout; not a distributed executable",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "rupturegrid": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "schemas",
+    "scenarios"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@rupturegrid/config": "workspace:*",
+    "@rupturegrid/control-db": "workspace:*",
+    "@rupturegrid/engine": "workspace:*",
+    "@rupturegrid/evidence": "workspace:*",
+    "@rupturegrid/forensics": "workspace:*",
+    "@rupturegrid/queue": "workspace:*",
+    "@rupturegrid/shared": "workspace:*",
+    "ajv": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3"
+  }
+}

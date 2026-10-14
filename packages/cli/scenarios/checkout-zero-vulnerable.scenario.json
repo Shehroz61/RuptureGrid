@@ -1,0 +1,129 @@
+{
+  "schemaVersion": "rupturegrid-scenario/v1",
+  "name": "checkout-zero-vulnerable",
+  "description": "Checkout Zero (VULNERABLE): two deliberately concurrent submissions of the same logical checkout intent against one unit of stock. The vulnerable target accepts both (naive check-then-reserve), overselling the SKU. Expectations document the committed regression intent; they never influence evaluation or exit classification.",
+  "target": {
+    "displayName": "checkout-zero-commerce"
+  },
+  "experiment": {
+    "steps": [
+      {
+        "name": "establish-scenario",
+        "action": {
+          "method": "POST",
+          "relativePath": "/demo/admin/scenario",
+          "headers": {
+            "content-type": "application/json",
+            "authorization": "Bearer ${credential.COMMERCE_ADMIN_TOKEN}"
+          },
+          "body": "{\"scopeToken\":\"checkout-zero\",\"sku\":\"SKU-001\",\"initialAvailableUnits\":1,\"mode\":\"VULNERABLE\"}",
+          "mutation": "MUTATING",
+          "retryPolicy": "NONE",
+          "repeat": 1,
+          "concurrency": 1,
+          "contract": "GENERIC_HTTP",
+          "credentialRefs": ["COMMERCE_ADMIN_TOKEN"]
+        }
+      },
+      {
+        "name": "checkout-submit",
+        "action": {
+          "method": "POST",
+          "relativePath": "/checkout/submit",
+          "headers": {
+            "content-type": "application/json",
+            "x-commerce-signature": "${signature}"
+          },
+          "body": "{\"checkoutIntentId\":\"CHK-001\",\"customerId\":\"CUST-001\",\"cartId\":\"CART-001\",\"totalMinor\":\"500000\",\"currency\":\"PKR\",\"sku\":\"SKU-001\"}",
+          "mutation": "MUTATING",
+          "retryPolicy": "NONE",
+          "repeat": 2,
+          "concurrency": 2,
+          "contract": "GENERIC_HTTP"
+        }
+      }
+    ],
+    "invariantBindings": [
+      {
+        "key": "INV-CHK-1",
+        "kind": "atMostOneAcceptedEffect",
+        "registryVersion": "business-invariant/v1",
+        "params": {
+          "subjectRole": "checkoutIntent",
+          "subjectIdentityField": "checkoutIntentId",
+          "effectRole": "order",
+          "effectIdentityField": "orderId",
+          "acceptedMatch": {
+            "field": "status",
+            "value": "ACCEPTED"
+          },
+          "equivalenceFields": [
+            "checkoutIntentId",
+            "customerId",
+            "cartId",
+            "totalMinor",
+            "currency"
+          ],
+          "maxAcceptedEffects": 1,
+          "completenessProof": {
+            "kind": "observed-total",
+            "queryId": "ordersSummary",
+            "subjectField": "checkoutIntentId",
+            "totalField": "acceptedOrderTotal"
+          },
+          "scopeBinding": {
+            "fields": ["verificationScopeId"],
+            "generationField": "generationId"
+          }
+        }
+      },
+      {
+        "key": "INV-INV-1",
+        "kind": "resourceConservation",
+        "registryVersion": "business-invariant/v1",
+        "params": {
+          "resourceIdentityField": "sku",
+          "baselineRole": "skuBaseline",
+          "baselineUnitsField": "initialAvailableUnits",
+          "remainingRole": "skuRemaining",
+          "remainingUnitsField": "remainingAvailableUnits",
+          "consumptionEffectRole": "reservation",
+          "consumptionEffectIdentityField": "reservationId",
+          "consumptionUnitsField": "reservedUnits",
+          "consumptionAcceptedMatch": {
+            "field": "status",
+            "value": "ACCEPTED"
+          },
+          "completenessProof": {
+            "kind": "observed-total",
+            "queryId": "reservationsSummary",
+            "subjectField": "sku",
+            "totalField": "acceptedReservationTotal"
+          },
+          "scopeBinding": {
+            "fields": ["verificationScopeId"],
+            "generationField": "generationId"
+          }
+        }
+      }
+    ],
+    "runScope": {
+      "version": "run-scope/v1",
+      "setupStep": "establish-scenario",
+      "declaredScope": "checkout-zero",
+      "scopeField": "verificationScopeId",
+      "generationField": "generationId",
+      "subjects": {
+        "INV-CHK-1": ["CHK-001"],
+        "INV-INV-1": ["SKU-001"]
+      }
+    }
+  },
+  "expectations": {
+    "exitClass": "INVARIANT_FAIL",
+    "invariantVerdicts": {
+      "INV-CHK-1": "FAIL",
+      "INV-INV-1": "FAIL"
+    }
+  }
+}

@@ -20,6 +20,14 @@ export interface TestEnv {
   readonly commerceDatabaseUrl: string;
   readonly commerceAdminToken: string;
   readonly commerceSigningSecret: string;
+  /**
+   * The commerce instance's provisioner password (compose initdb
+   * identity). Test-harness-only: used by the Phase 17 E2E to create
+   * a throwaway commerce database per suite run. Never a RuptureGrid
+   * Control-Plane credential (ADR-0002/R-05 — the platform never
+   * receives it).
+   */
+  readonly commercePostgresPassword: string;
 }
 
 function requireValue(name: string, missing: string[]): string {
@@ -73,6 +81,10 @@ export function loadTestEnv(): TestEnv {
   const commerceAdminToken = process.env.COMMERCE_ADMIN_TOKEN ?? 'commerce-admin-dev-token-0001';
   const commerceSigningSecret =
     process.env.DEMO_COMMERCE_SIGNING_SECRET ?? 'demo-commerce-signing-secret-0001';
+  // The instance provisioner password (compose initdb identity) for the
+  // Phase 17 throwaway-database helper — same documented dev default.
+  const commercePostgresPassword =
+    process.env.COMMERCE_POSTGRES_PASSWORD ?? 'commerce_dev_password';
   const queuePrefix = process.env.QUEUE_PREFIX ?? 'rupturegrid';
 
   if (missing.length > 0) {
@@ -93,5 +105,6 @@ export function loadTestEnv(): TestEnv {
     commerceDatabaseUrl,
     commerceAdminToken,
     commerceSigningSecret,
+    commercePostgresPassword,
   };
 }

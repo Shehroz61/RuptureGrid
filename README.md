@@ -103,6 +103,7 @@ AGENTS.md                        engineering constitution for all contributors
 compose.yaml                     local infrastructure (control/demo postgres, redis)
 .env.example                     documented non-production environment template
 eslint.config.mjs / .prettierrc.json / vitest.config.ts   root quality tooling
+.lintstagedrc.json / .husky/pre-commit                   staged-file pre-commit hook (Husky + lint-staged)
 tsconfig.base.json / tsconfig.checks.json / tsconfig.checks.ui.json
                                  shared compiler options + test-typecheck gate programs
 apps/
@@ -139,7 +140,7 @@ docs/             architecture, product spec, security boundaries, decision reco
 
 ## For contributors (human and AI)
 
-Read [AGENTS.md](AGENTS.md) before touching anything. It is the constitution: phase boundaries, truth rules, ownership rules, and verification rules are not negotiable per-task.
+Read [AGENTS.md](AGENTS.md) before touching anything. It is the constitution: phase boundaries, truth rules, ownership rules, and verification rules are not negotiable per-task. `pnpm install` installs a Husky pre-commit hook that **validates** (never rewrites) **staged** files — `prettier --check` plus ESLint without `--fix` via `lint-staged`; it is a local guard only — CI remains the authoritative gate. Run `pnpm format` manually before staging. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

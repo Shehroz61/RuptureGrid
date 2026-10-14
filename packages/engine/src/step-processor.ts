@@ -30,6 +30,18 @@ import { executeHttp, CredentialResolutionError } from './executor.js';
 import type { CredentialResolver } from './executor.js';
 import { noopTelemetry } from './telemetry.js';
 import type { EngineTelemetry } from './telemetry.js';
+import {
+  acquireRunLock,
+  advanceProvenanceRevision,
+  PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+  PROVENANCE_TRANSACTION_TIMEOUT_MS,
+} from './truth-input-head.js';
+
+/** Bounded provenance-writer transaction (writer protocol, ADR-0026 §13). */
+const PROVENANCE_TX = {
+  timeout: PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  maxWait: PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+} as const;
 
 export interface StepProcessorDeps {
   readonly prisma: PrismaClient;
@@ -178,6 +190,28 @@ export function createDemoCredentialResolver(
     DEMO_INSPECTION_TOKEN: config.DEMO_INSPECTION_TOKEN,
     DEMO_PROVIDER_SIGNING_SECRET: config.DEMO_PROVIDER_SIGNING_SECRET,
   });
+}
+
+/**
+ * Monotone side-effect-knowledge aggregation (Phase 17 final audit §9).
+ * Returns the more-conservative of two knowledge values so a sibling
+ * concurrent repeat slot's `KNOWN_ABSENT` can never overwrite an earlier
+ * `INDETERMINATE` or a definite `KNOWN_OCCURRED`:
+ *   NOT_APPLICABLE < KNOWN_ABSENT < KNOWN_OCCURRED < INDETERMINATE
+ * Both read-only semantics (NOT_APPLICABLE) and every mutating value are
+ * covered; no new vocabulary is introduced.
+ */
+function worstKnowledge(
+  a: ClassifyResult['sideEffectKnowledge'],
+  b: ClassifyResult['sideEffectKnowledge'],
+): ClassifyResult['sideEffectKnowledge'] {
+  const rank: Record<ClassifyResult['sideEffectKnowledge'], number> = {
+    NOT_APPLICABLE: 0,
+    KNOWN_ABSENT: 1,
+    KNOWN_OCCURRED: 2,
+    INDETERMINATE: 3,
+  };
+  return rank[a] >= rank[b] ? a : b;
 }
 
 export class StepProcessor {
@@ -438,10 +472,15 @@ export class StepProcessor {
 
       let waveIndex = 0;
       let attempts = 0;
-      let last: ClassifyResult = {
-        intentOutcome: 'FAILED',
-        sideEffectKnowledge: 'NOT_APPLICABLE',
-      };
+      // Monotone aggregate knowledge (Phase 17 final audit §9). The normal
+      // path records EVERY physical attempt, so completeness IS established
+      // here — but a concurrent wave's later KNOWN_ABSENT must never
+      // overwrite an earlier sibling's INDETERMINATE or KNOWN_OCCURRED
+      // (the old last-outcome-wins aggregation could deny a committed
+      // effect: KNOWN_OCCURRED then KNOWN_ABSENT → false KNOWN_ABSENT).
+      // Uncertainty dominates; a definite occurrence is preserved.
+      //   NOT_APPLICABLE < KNOWN_ABSENT < KNOWN_OCCURRED < INDETERMINATE
+      let aggregateKnowledge: ClassifyResult['sideEffectKnowledge'] = 'NOT_APPLICABLE';
       let lastError: string | null = null;
       let aggregateOk = true;
 
@@ -505,17 +544,7 @@ export class StepProcessor {
           if (!outcome.ok) {
             aggregateOk = false;
           }
-          if (outcome.sideEffectKnowledge === 'INDETERMINATE') {
-            last = {
-              intentOutcome: 'FAILED',
-              sideEffectKnowledge: 'INDETERMINATE',
-            };
-          } else {
-            last = {
-              intentOutcome: outcome.intentOutcome,
-              sideEffectKnowledge: outcome.sideEffectKnowledge,
-            };
-          }
+          aggregateKnowledge = worstKnowledge(aggregateKnowledge, outcome.sideEffectKnowledge);
           if (outcome.error !== null) {
             lastError = outcome.error;
           }
@@ -530,14 +559,14 @@ export class StepProcessor {
       }
 
       const terminal = aggregateOk ? 'SUCCEEDED' : 'FAILED';
+      // A fully-successful mutating step is KNOWN_OCCURRED; every other
+      // case reports the MONOTONE aggregate (never a false KNOWN_ABSENT).
       const finalKnowledge: ClassifyResult['sideEffectKnowledge'] =
-        last.sideEffectKnowledge === 'INDETERMINATE'
-          ? 'INDETERMINATE'
-          : terminal === 'SUCCEEDED'
-            ? action.mutation === 'MUTATING'
-              ? 'KNOWN_OCCURRED'
-              : 'NOT_APPLICABLE'
-            : last.sideEffectKnowledge;
+        terminal === 'SUCCEEDED'
+          ? action.mutation === 'MUTATING'
+            ? 'KNOWN_OCCURRED'
+            : 'NOT_APPLICABLE'
+          : aggregateKnowledge;
       await writeTerminalState(
         prisma,
         claim.stepRunId,
@@ -712,29 +741,52 @@ export class StepProcessor {
     if (next === null || next.state !== 'PENDING' || next.dispatchState === 'DISPATCHED') {
       return; // No next step, already terminal (cancel path), or already dispatched.
     }
-    const promoted = await this.prisma.experimentStepRun.updateMany({
-      where: { id: next.id, dispatchState: 'PENDING' },
-      data: { dispatchState: 'RECONCILE' },
-    });
-    if (promoted.count === 0) {
+    // Dispatch-marker writes are truth-bearing provenance (ADR-0026
+    // §13): each guarded marker change and its `P` advance commit in one
+    // transaction under the shared per-run lock. The ENQUEUE itself stays
+    // outside any lock (no network/queue I/O under the DB lock).
+    const promoted = await this.prisma.$transaction(async (tx) => {
+      await acquireRunLock(tx, runId);
+      const marker = await tx.experimentStepRun.updateMany({
+        where: { id: next.id, dispatchState: 'PENDING' },
+        data: { dispatchState: 'RECONCILE' },
+      });
+      if (marker.count > 0) {
+        await advanceProvenanceRevision(tx, runId);
+      }
+      return marker.count > 0;
+    }, PROVENANCE_TX);
+    if (!promoted) {
       return; // Another path (reconciler/duplicate) already claimed it.
     }
     try {
       await this.dispatchNextStep(runId, next.id);
-      await this.prisma.experimentStepRun.updateMany({
-        where: { id: next.id, dispatchState: 'RECONCILE' },
-        data: { dispatchState: 'DISPATCHED', dispatchedAt: new Date(), lastDispatchError: null },
-      });
+      await this.prisma.$transaction(async (tx) => {
+        await acquireRunLock(tx, runId);
+        const marker = await tx.experimentStepRun.updateMany({
+          where: { id: next.id, dispatchState: 'RECONCILE' },
+          data: { dispatchState: 'DISPATCHED', dispatchedAt: new Date(), lastDispatchError: null },
+        });
+        if (marker.count > 0) {
+          await advanceProvenanceRevision(tx, runId);
+        }
+      }, PROVENANCE_TX);
     } catch (error) {
       // Enqueue failed (e.g. Redis down): durable RECONCILE marker
       // stays; the reconciler enqueues when Redis recovers (ADR-0003 §9).
-      await this.prisma.experimentStepRun.updateMany({
-        where: { id: next.id, dispatchState: 'RECONCILE' },
-        data: {
-          lastDispatchError:
-            error instanceof Error ? error.message.slice(0, 500) : 'next-step enqueue failed',
-        },
-      });
+      await this.prisma.$transaction(async (tx) => {
+        await acquireRunLock(tx, runId);
+        const marker = await tx.experimentStepRun.updateMany({
+          where: { id: next.id, dispatchState: 'RECONCILE' },
+          data: {
+            lastDispatchError:
+              error instanceof Error ? error.message.slice(0, 500) : 'next-step enqueue failed',
+          },
+        });
+        if (marker.count > 0) {
+          await advanceProvenanceRevision(tx, runId);
+        }
+      }, PROVENANCE_TX);
     }
   }
 
@@ -1038,6 +1090,17 @@ export class StepProcessor {
 
   public get id(): string {
     return this.ownerId;
+  }
+
+  /**
+   * Read-only access to the processor's Control-Plane client for the
+   * worker runtime's durable failure path (a processJob-level
+   * exception must fail the step durably instead of leaving it to the
+   * lease sweep — ADR-0008; R-02). Read-only: no state writes happen
+   * through this accessor inside the engine itself.
+   */
+  public get prismaClient(): PrismaClient {
+    return this.prisma;
   }
 }
 

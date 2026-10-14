@@ -16,6 +16,7 @@ import { deriveExecutionPolicy, deriveEvidencePolicy } from './manifest.js';
 import { DENY_ALL_TARGET_ORIGIN_CREDENTIAL_POLICY } from './credential-authorization.js';
 import type { TargetOriginCredentialPolicy } from './credential-authorization.js';
 import { deriveGenericInvariantBindings } from './generic-invariant-registry.js';
+import { validateRunScopeDeclaration } from './run-scope.js';
 import { canonicalizeAndHash, CANONICALIZATION_ALGORITHM } from './canonicalize.js';
 import type { ExperimentDocument, RunSnapshotDocument } from './types.js';
 
@@ -124,6 +125,32 @@ export function buildSnapshotDocument(input: {
             );
           })()
       : deriveGenericInvariantBindings(rawInvariantBindings, manifestEvidencePolicy);
+  // Phase 17 (ADR-0026 §3/§10, additive frozen seam): the experiment
+  // document's `runScope` block is validated against the FROZEN steps,
+  // generic bindings, and evidence policy at freeze time — and frozen
+  // into `target.runScopeBinding`, covered by `snapshotContentHash`.
+  // Legacy documents carry none; the frozen block is intent only (the
+  // observed generation never enters it — §10). A runScope without its
+  // required bindings is already rejected at definition time; this
+  // re-validation is the same fail-closed freeze-time defense in depth.
+  const rawRunScope = isRecordSafe(input.revision.stepsJson)
+    ? (input.revision.stepsJson as Record<string, unknown>)['runScope']
+    : undefined;
+  const runScopeBinding =
+    rawRunScope === undefined || rawRunScope === null
+      ? undefined
+      : manifestEvidencePolicy === undefined
+        ? (() => {
+            throw new SnapshotError(
+              'the experiment document declares runScope but the target freezes no manifest evidence policy; run-scope/v1 requires a manifest-declaring target (ADR-0026 §3)',
+            );
+          })()
+        : validateRunScopeDeclaration({
+            rawRunScope,
+            steps: (input.revision.stepsJson as ExperimentDocument).steps,
+            invariantBindings,
+            policy: manifestEvidencePolicy,
+          });
   const document: RunSnapshotDocument = {
     engineVersion: EXECUTION_ENGINE_VERSION,
     canonicalization: CANONICALIZATION_ALGORITHM,
@@ -139,6 +166,7 @@ export function buildSnapshotDocument(input: {
       ...(invariantBindings !== undefined && invariantBindings.length > 0
         ? { invariantBindings }
         : {}),
+      ...(runScopeBinding === undefined ? {} : { runScopeBinding }),
     },
     experiment: {
       definitionId: input.definition.id,

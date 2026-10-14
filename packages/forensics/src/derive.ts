@@ -21,10 +21,38 @@
 //     (§72).
 //   - Offline derivation (§77/§78): inputs come exclusively from
 //     durable Control-DB rows — no Demo call, no target network.
+//
+// Phase 17 B2 (ADR-0026 §13): this module is a COMPLETENESS-MARKED
+// derived writer (class B — `run-forensics/v1`). It neither reads nor
+// advances the raw evidence chain, but its projection (`finding`,
+// `finding_evidence_reference`, `forensic_timeline_entry`,
+// `reproduction_definition`, and the `forensic_derivation` record) is a
+// deterministic function of ALREADY-COVERED inputs: the chain `C`, the
+// provenance revision `P`, the `D`-covered derived projection, and the
+// persisted invariant evaluations. NO evaluation/eligibility/anchor/
+// completeness read path consumes those tables (the evaluator input
+// loaders read raw observations and the normalized/derived graph only),
+// so a partial forensic projection can never alter a verdict — and it
+// deliberately does NOT advance `D`, because advancing it for a
+// report-facing projection would make every current-evaluation pointer
+// stale on every report emission (endless re-analysis churn; ADR-0026
+// §13 forbids that). Completeness is instead PROVEN per source watermark
+// by the SAME attempt protocol used by the D-participating writer:
+// an IN_PROGRESS attempt is made durable before the first write, and
+// COMPLETE is published only when `(C, P, D)` did not move during the
+// pass. Report/reproduction surfaces must consult
+// `readDerivationReadiness(runId, 'run-forensics/v1')` and fail closed.
 
 import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@rupturegrid/control-db';
-import type { InvariantEvaluationModel } from '@rupturegrid/control-db';
+import type { ExperimentRunModel, InvariantEvaluationModel } from '@rupturegrid/control-db';
+import {
+  DERIVATION_KIND_RUN_FORENSICS,
+  beginDerivationAttempt,
+  completeDerivationAttempt,
+  failDerivationAttempt,
+} from '@rupturegrid/evidence';
+import type { DerivationAttemptResolution } from '@rupturegrid/evidence';
 import {
   deriveFindingFromEvaluation,
   FINDING_REASON_CODES,
@@ -76,6 +104,14 @@ export interface ForensicDerivationResult {
   readonly findings: DerivedFindingSummary[];
   readonly timelineEntryCount: number;
   readonly derived: boolean;
+  /**
+   * B2: the durable completeness resolution of THIS forensic pass
+   * (`run-forensics/v1`). COMPLETE only when the `(C, P, D)` source
+   * watermark did not move during the pass; otherwise INCOMPLETE with the
+   * named reason. Report surfaces certify against
+   * `readDerivationReadiness` — never against this field alone.
+   */
+  readonly derivationCompleteness: DerivationAttemptResolution;
 }
 
 /**
@@ -237,6 +273,11 @@ async function persistTimelineEntry(
  * Deterministic forensic derivation for one run. Throws
  * ForensicDerivationError when the run does not exist. Never mutates
  * Phase 3 execution rows or Phase 4 evidence/evaluation rows.
+ *
+ * B2: the pass is tracked by a durable `run-forensics/v1` attempt — the
+ * IN_PROGRESS marker is written BEFORE the first forensic row (never a
+ * silent partial projection), and COMPLETE is published only when the
+ * captured `(C, P, D)` source watermark is unchanged at completion.
  */
 export async function deriveRunForensics(
   prisma: PrismaClient,
@@ -249,7 +290,21 @@ export async function deriveRunForensics(
   if (run === null) {
     throw new ForensicDerivationError(`run ${runId} does not exist`);
   }
+  const attempt = await beginDerivationAttempt(prisma, runId, DERIVATION_KIND_RUN_FORENSICS);
+  try {
+    return await deriveRunForensicsWithinAttempt(prisma, runId, run, attempt);
+  } catch (error) {
+    await failDerivationAttempt(prisma, attempt, error);
+    throw error;
+  }
+}
 
+async function deriveRunForensicsWithinAttempt(
+  prisma: PrismaClient,
+  runId: string,
+  run: Pick<ExperimentRunModel, 'id' | 'state' | 'terminalAt'>,
+  attempt: Awaited<ReturnType<typeof beginDerivationAttempt>>,
+): Promise<ForensicDerivationResult> {
   // ---- Load the persisted Phase 3 execution truth (read-only). ----
   const [steps, invocations, observations, events, relationships, evaluations] = await Promise.all([
     prisma.experimentStepRun.findMany({
@@ -308,7 +363,28 @@ export async function deriveRunForensics(
     }),
   ]);
 
-  // ---- Findings: derive from EVERY persisted evaluation (§37). ----
+  // ---- Findings: derive from the CURRENT evaluations (§37 + ADR-0026). ----
+  // Checkpoint C (ADR-0026 §13/§15): once a run has an authoritative
+  // current-evaluation publication, findings derive ONLY from the CURRENT
+  // eligible pointer-selected rows — a superseded (stale) FAIL row, a
+  // foreign-scope row, or a pre-gating history row can never produce a
+  // current-run business finding. Runs with no publication (legacy
+  // manifest-less paths, analysis of a non-terminal run, pre-C history)
+  // keep the as-observed discipline: every persisted evaluation is
+  // considered, exactly as before. The full evaluation set is still used
+  // below for the timeline/reproduction surfaces — those are historical
+  // records, not verdicts.
+  const currentPointerRows = await prisma.currentEvaluationPointer.findMany({
+    where: { runId },
+    select: { currentEvaluationId: true },
+  });
+  const currentEvaluationIds = new Set(
+    currentPointerRows.map((pointer) => pointer.currentEvaluationId),
+  );
+  const findingEvaluations =
+    currentEvaluationIds.size === 0
+      ? evaluations
+      : evaluations.filter((evaluation) => currentEvaluationIds.has(evaluation.id));
   // Execution uncertainty (evidence-model §8): the run's own INDETERMINATE
   // invocation outcomes feed every Finding's confidence scope.
   const executionUncertainty: FindingExecutionScope = {
@@ -317,7 +393,7 @@ export async function deriveRunForensics(
       .map((invocation) => invocation.id),
   };
   const findings: DerivedFindingSummary[] = [];
-  for (const evaluation of evaluations) {
+  for (const evaluation of findingEvaluations) {
     // Phase 15 (additive): generic business-invariant/v1 evaluations
     // route to the generic finding-rule registry. The frozen legacy
     // INV-IZ-1 rule is untouched and stays the ONLY rule for legacy
@@ -523,6 +599,20 @@ export async function deriveRunForensics(
     // Identical inputs already recorded — convergence (§68).
   }
 
+  // ---- B2: publish the attempt's completeness resolution. ----
+  // For this completeness-marked kind the captured `(C, P, D)` must be
+  // COMPLETELY unchanged: the projection's inputs include the derived
+  // graph, so a foreign derived commit during the pass makes this pass's
+  // output incomplete for the current state (INCOMPLETE; a later pass
+  // re-establishes completeness — nothing is deleted or rewritten).
+  const derivationCompleteness = await completeDerivationAttempt(prisma, attempt, {
+    projectionCounts: {
+      findings: findings.length,
+      timelineEntries: totalEntries,
+      timelineEntriesDerived: ordered.length,
+    },
+  });
+
   return {
     runId,
     derivationVersion: TIMELINE_DERIVATION_VERSION,
@@ -530,6 +620,7 @@ export async function deriveRunForensics(
     findings,
     timelineEntryCount: totalEntries,
     derived: true,
+    derivationCompleteness,
   };
 }
 

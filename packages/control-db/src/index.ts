@@ -9,6 +9,13 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from './generated/client/client.js';
 
 export type { PrismaClient } from './generated/client/client.js';
+/**
+ * The Prisma namespace — notably `Prisma.TransactionClient`, the
+ * transaction-scoped client an interactive `$transaction` callback
+ * receives. Exported so domain writers can type the derived-write and
+ * completeness-check surfaces without naming the generated client path.
+ */
+export type { Prisma } from './generated/client/client.js';
 export * from './generated/client/enums.js';
 export type {
   TargetRegistrationModel,

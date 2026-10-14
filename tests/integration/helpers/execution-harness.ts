@@ -76,6 +76,15 @@ export function uniqueName(prefix: string): string {
  * authoritative registration BEFORE use, with bounded regeneration.
  * The security property is untouched: the origin remains a plain
  * loopback http origin the registration contract can fully validate.
+ *
+ * NOTE (Phase 17 B1 session): this allocator only ever hands out UNBOUND
+ * origins. A suite that BINDS a fixture server must verify the resulting
+ * origin is unregistered BEFORE it registers a target on it — otherwise
+ * it silently inherits whatever a previous run left there (measured on the
+ * shared dev database: 294 of 466 origins in the 33000–38999 band
+ * belonged to manifest-less targets, which is exactly how a Commerce/Phase-15
+ * fixture ended up validating a target with no manifest). That check lives
+ * in the binding suites themselves, not here.
  */
 export async function uniqueTestOrigin(prisma: PrismaClient): Promise<string> {
   for (let attempt = 0; attempt < 16; attempt += 1) {

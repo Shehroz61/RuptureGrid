@@ -1,6 +1,6 @@
 # RuptureGrid v1.1 — Checkout Zero (Second-Domain Scenario)
 
-Status: **Frozen design contract (Phase 12 design freeze). Target implementation in Phase 16; scenario, invariants, and headless CLI execution in Phase 17; regression permanence in Phase 18. Not yet implemented — nothing in this document claims runtime behavior.**
+Status: **Frozen design contract (Phase 12 design freeze). Target implemented in Phase 16 (demo-commerce target, both modes); golden scenarios, invariants, and headless CLI execution implemented and E2E-verified in Phase 17 (`packages/cli`, `tests/integration/phase17-cli.test.ts`; see [cli.md](cli.md)). Regression permanence (replay) remains Phase 18 scope. Phase 17 acceptance evidence is the committed E2E suite and builder self-audit — nothing here is a substitute for the independent Phase 17 audit.**
 
 Checkout Zero is the v1.1 second-domain proof scenario: a purpose-built commerce target that either oversells stock under two deliberately concurrent checkout submissions of one logical intent (vulnerable mode) or stays business-correct (secure mode), with RuptureGrid proving which happened from real evidence — using a different topology, a different failure driver, and a different invariant shape than Incident Zero.
 

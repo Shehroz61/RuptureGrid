@@ -127,6 +127,38 @@ export {
 } from './derive.js';
 export type { DerivationResult, DerivedEventRow, DerivedRelationshipRow } from './derive.js';
 
+// Phase 17 B2 — derivation generation `D`, attempt completeness, readiness
+export {
+  DERIVATION_KIND_RUN_EVIDENCE,
+  DERIVATION_KIND_RUN_FORENSICS,
+  DERIVATION_KIND_POLICY,
+  readChainIdentity,
+  chainIdentitiesEqual,
+  readTruthInputWatermark,
+  serializeTruthInputWatermark,
+  truthInputWatermarksEqual,
+  beginDerivationAttempt,
+  completeDerivationAttempt,
+  failDerivationAttempt,
+  abandonDerivationAttempt,
+  readDerivationReadiness,
+  captureStage1Source,
+  captureStage2Watermark,
+  validateWatermarkCurrent,
+} from './derivation-attempts.js';
+export type { SerializedTruthInputWatermark } from './derivation-attempts.js';
+export type {
+  DerivationKind,
+  ChainIdentity,
+  TruthInputWatermark,
+  DerivationSourceWatermark,
+  DerivationAttemptHandle,
+  DerivationAttemptResolution,
+  DerivationReadiness,
+  DerivationReadinessState,
+  CompleteDerivationAttemptInput,
+} from './derivation-attempts.js';
+
 export {
   evaluateInvIz1,
   evaluateInvDf1,
@@ -141,7 +173,12 @@ export type {
   EvaluatorVersion,
 } from './invariants.js';
 
-export { runRunAnalysis, ensureInvariantDefinitions, AnalysisError } from './analysis.js';
+export {
+  runRunAnalysis,
+  ensureInvariantDefinitions,
+  AnalysisError,
+  RUN_ANALYSIS_MAX_CYCLES,
+} from './analysis.js';
 export type { AnalysisRunResult, PersistedEvaluation } from './analysis.js';
 
 // Phase 15 — business-invariant/v1 closed registry + generic evaluators
@@ -197,8 +234,71 @@ export {
   loadFrozenGenericInstances,
   ensureGenericInvariantDefinitions,
   GENERIC_INVARIANT_EVALUATOR_VERSION,
+  GENERIC_INVARIANT_EVALUATOR_VERSION_GATED,
+  GENERIC_ANALYSIS_MODE_STRICT,
+  GENERIC_ANALYSIS_MODE_LEGACY,
+  COVERAGE_LIMITATION_STATEMENT,
 } from './generic-invariant-analysis.js';
-export type { GenericAnalysisResult } from './generic-invariant-analysis.js';
+export type {
+  GenericAnalysisResult,
+  GenericKeyAnalysisResult,
+  GenericCoverageProof,
+  GenericPersistedEvaluation,
+} from './generic-invariant-analysis.js';
+
+// Phase 17 Checkpoint C — run-owned anchor + eligibility partitioning
+export { deriveRunAnchor, loadFrozenRunScopeBinding } from './run-anchor.js';
+export type {
+  RunAnchor,
+  RunAnchorGap,
+  RunAnchorState,
+  RunAnchorDerivationResult,
+  StaleAnchorGeneration,
+} from './run-anchor.js';
+export { selectEligibleSubjects, declaredSubjectsFor } from './generic-eligibility.js';
+export type {
+  GenericEligibilityInput,
+  GenericEligibilityResult,
+  EligibleSubjectPartition,
+  UnexpectedSubject,
+  IndeterminateEvidence,
+  ForeignScopeCount,
+} from './generic-eligibility.js';
+
+// Phase 17 Checkpoint C — authoritative current-evaluation publication
+export {
+  publishAnalysisGeneration,
+  readCurrentEvaluationPublication,
+  pointersFor,
+  LEGACY_COVERAGE_STATEMENT,
+  PUBLICATION_MODE_STRICT,
+  PUBLICATION_MODE_LEGACY,
+} from './analysis-publication.js';
+export type {
+  PublicationAttemptResult,
+  PublicationCoverage,
+  PublicationKey,
+  PublicationSubject,
+  CurrentEvaluationPublicationRead,
+  CurrentEvaluationRead,
+  EligibilityProofRead,
+  CurrentPublicationState,
+} from './analysis-publication.js';
+
+// Phase 17 Checkpoint D — Boundary B report authorization
+export { authorizeReportFinalization } from './report-authorization.js';
+export type {
+  ReportReadDb,
+  ReportAuthorizationAnomalyKind,
+  ReportAuthorizationAnomaly,
+  AuthorizedKeyProof,
+  AuthorizedPointer,
+  AuthorizedEvaluation,
+  AuthorizedReportState,
+  ReportAuthorizationDisposition,
+  ReportAuthorizationResult,
+  AuthorizeReportOptions,
+} from './report-authorization.js';
 
 export { verifyRunEvidenceChain } from './integrity.js';
 export type { IntegrityReport, ChainProblem } from './integrity.js';

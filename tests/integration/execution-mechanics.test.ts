@@ -284,17 +284,32 @@ describe('execution mechanics over real infrastructure', () => {
     expect(secondRow.state).toBe('SUCCEEDED');
     expect(secondRow.fencingToken).toBe(1n);
 
-    // Reconciler settles the run COMPLETED.
-    await runReconcileSweep({
-      prisma: controlDb.prisma,
-      dispatchBatch: 10,
-      settleBatch: 10,
-      leaseRecoveryBatch: 10,
-      enqueue: async () => {},
-    });
-    const run = await controlDb.prisma.experimentRun.findUniqueOrThrow({
+    // Reconciler settles the run COMPLETED. The sweep settles in BOUNDED
+    // batches with no ORDER BY (the accepted multi-run sweep discipline),
+    // and this shared development database carries RUNNING runs left by
+    // earlier suites — a single batch of ten may contain other eligible
+    // runs. Repeated sweeps are the reconciler's real convergence
+    // mechanism, so the test sweeps until THIS run settles (bounded) and
+    // asserts the same terminal truth.
+    const settleDeadline = Date.now() + 60_000;
+    let run = await controlDb.prisma.experimentRun.findUniqueOrThrow({
       where: { id: made.runId },
     });
+    while (run.state !== 'COMPLETED' && Date.now() < settleDeadline) {
+      await runReconcileSweep({
+        prisma: controlDb.prisma,
+        dispatchBatch: 10,
+        settleBatch: 10,
+        leaseRecoveryBatch: 10,
+        enqueue: async () => {},
+      });
+      run = await controlDb.prisma.experimentRun.findUniqueOrThrow({
+        where: { id: made.runId },
+      });
+      if (run.state !== 'COMPLETED') {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
     expect(run.state).toBe('COMPLETED');
   });
 

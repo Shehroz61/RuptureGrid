@@ -172,21 +172,48 @@ async function ensureManifestTarget(): Promise<{ targetId: string; displayName: 
     });
     return { targetId: existing.id, displayName: existing.displayName };
   }
-  const displayName = uniqueName('manifest-target');
-  const registered = await registerTarget(
-    prisma,
-    {
-      displayName,
-      environment: 'LOCAL_DEVELOPMENT',
-      origins: [baseUrl],
-      contractKind: 'GENERIC_HTTP',
-      credentialRefs: ['DEMO_PROVIDER_SIGNING_SECRET'],
-      manifest: { ...MANIFEST, displayName, origins: [baseUrl] },
-    },
-    fixtureCredentialPolicy(),
-  );
-  manifestTargetId = registered.targetId;
-  return { targetId: registered.targetId, displayName };
+  // Collision-safe ephemeral binding (§16): the OS may hand this run a
+  // port an EARLIER run already registered as an origin authority in the
+  // shared development database (registrations are global and persist).
+  // The refusal is honoured — the fixture rebinds to a fresh ephemeral
+  // port and retries; the origin rule is never bypassed and the assertion
+  // set is unchanged.
+  for (let attempt = 0; ; attempt += 1) {
+    const displayName = uniqueName('manifest-target');
+    try {
+      const registered = await registerTarget(
+        prisma,
+        {
+          displayName,
+          environment: 'LOCAL_DEVELOPMENT',
+          origins: [baseUrl],
+          contractKind: 'GENERIC_HTTP',
+          credentialRefs: ['DEMO_PROVIDER_SIGNING_SECRET'],
+          manifest: { ...MANIFEST, displayName, origins: [baseUrl] },
+        },
+        fixtureCredentialPolicy(),
+      );
+      manifestTargetId = registered.targetId;
+      return { targetId: registered.targetId, displayName };
+    } catch (error) {
+      if (!(error instanceof TargetRegistrationError) || attempt >= 4) {
+        throw error;
+      }
+      await rebindFixture();
+    }
+  }
+}
+
+/** Binds the HTTP fixture to a NEW free ephemeral port (bounded retries). */
+async function rebindFixture(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    fixture.close(() => resolve());
+  });
+  await new Promise<void>((resolve) => {
+    fixture.listen(0, '127.0.0.1', () => resolve());
+  });
+  const address = fixture.address() as AddressInfo;
+  baseUrl = `http://127.0.0.1:${address.port}`;
 }
 
 describe('Phase 13: manifest registration and storage', () => {

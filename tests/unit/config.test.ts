@@ -235,6 +235,11 @@ describe('config ownership boundaries (contract tests)', () => {
   it('no RuptureGrid app config ever exposes the Commerce database (ADR-0002, R-05)', () => {
     // Two separate calls (not a union array): each schema infers its
     // own output type, so neither leaks into the other's field set.
+    // Phase 17 (ADR-0025): COMMERCE_ADMIN_TOKEN is now an executor
+    // credential reference (the worker resolves its VALUE for declared
+    // steps) — the ownership boundary that must not move is the
+    // target's DATABASE, not the executor's credential resolution.
+    // The API still receives no commerce admin token at all.
     for (const config of [
       loadConfig(apiConfigSchema, SHARED_DEV_ENV),
       loadConfig(workerConfigSchema, SHARED_DEV_ENV),
@@ -243,8 +248,8 @@ describe('config ownership boundaries (contract tests)', () => {
       expect(record).not.toHaveProperty('COMMERCE_DATABASE_URL');
       expect(record).not.toHaveProperty('COMMERCE_POSTGRES_PASSWORD');
       expect(record).not.toHaveProperty('COMMERCE_SHADOW_DATABASE_URL');
-      expect(record).not.toHaveProperty('COMMERCE_ADMIN_TOKEN');
     }
+    expect(loadConfig(apiConfigSchema, SHARED_DEV_ENV)).not.toHaveProperty('COMMERCE_ADMIN_TOKEN');
   });
 
   // Phase 3 update (ADR-0012 §55): the worker is the EXECUTOR, so it
@@ -254,6 +259,8 @@ describe('config ownership boundaries (contract tests)', () => {
   // DATABASE URL remains strictly forbidden — the worker reaches the
   // target over HTTP only. The ownership boundary that must not move
   // is database access, not the executor's credential resolution.
+  // Phase 17 (ADR-0025): COMMERCE_ADMIN_TOKEN joins the executor set
+  // (the Commerce target's own admin boundary).
   it('worker config receives executor credential values but NEVER the Demo database', () => {
     const config = loadConfig(workerConfigSchema, SHARED_DEV_ENV) as unknown as Record<
       string,
@@ -271,6 +278,9 @@ describe('config ownership boundaries (contract tests)', () => {
     // Phase 16: the Commerce signing credential VALUE is equally
     // executor-resolvable (ADR-0024 §20) — still never the DB URL.
     expect(config).toHaveProperty('DEMO_COMMERCE_SIGNING_SECRET');
+    // Phase 17: the Commerce admin token VALUE is equally executor-
+    // resolvable (ADR-0025) — still never any target's database URL.
+    expect(config).toHaveProperty('COMMERCE_ADMIN_TOKEN');
   });
 
   it('compose-service variables never leak into any app config', () => {

@@ -21,6 +21,11 @@ import {
   reconcileExpiredLeases,
   markRunDispatching,
   settleCancelledRun,
+  repairEmergencyStepTerminal,
+  acquireRunLock,
+  advanceProvenanceRevision,
+  PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  PROVENANCE_TRANSACTION_MAX_WAIT_MS,
 } from '@rupturegrid/engine';
 import {
   createEngineEvidenceSink,
@@ -32,6 +37,12 @@ import {
 } from '@rupturegrid/evidence';
 import { loadRunSnapshot } from '@rupturegrid/engine';
 import { createLoggerTelemetry } from '@rupturegrid/engine';
+
+/** Bounded provenance-writer transaction (ADR-0026 §13 writer protocol). */
+const PROVENANCE_TX = {
+  timeout: PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  maxWait: PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+} as const;
 
 export interface ExecutionWorkerRuntime {
   readonly ready: Promise<void>;
@@ -304,6 +315,7 @@ export async function startExecutionWorkerRuntime(): Promise<ExecutionWorkerRunt
       DEMO_INSPECTION_TOKEN: config.DEMO_INSPECTION_TOKEN,
       DEMO_PROVIDER_SIGNING_SECRET: config.DEMO_PROVIDER_SIGNING_SECRET,
       DEMO_COMMERCE_SIGNING_SECRET: config.DEMO_COMMERCE_SIGNING_SECRET,
+      COMMERCE_ADMIN_TOKEN: config.COMMERCE_ADMIN_TOKEN,
     }),
     dispatchNextStep,
     evidenceSink,
@@ -428,15 +440,74 @@ export async function startExecutionWorkerRuntime(): Promise<ExecutionWorkerRunt
     // production (30s lease) still checks at 30s.
     stalledIntervalMs: Math.max(config.WORKER_LEASE_DURATION_MS, 5_000),
     processJob: async (payload: ExecutionJobPayload) => {
-      const outcome = await processor.processStep(payload.stepRunId);
-      if (outcome === 'not-claimable') {
-        // Duplicate delivery, live lease elsewhere, terminal, or
-        // cancelled run — exit safely without executing.
-        logger.info('step job skipped', {
+      try {
+        const outcome = await processor.processStep(payload.stepRunId);
+        if (outcome === 'not-claimable') {
+          // Duplicate delivery, live lease elsewhere, terminal, or
+          // cancelled run — exit safely without executing.
+          logger.info('step job skipped', {
+            stepRunId: payload.stepRunId,
+            runId: payload.runId,
+            reason: 'not-claimable',
+          });
+        }
+      } catch (error) {
+        // A worker-side exception escaping processStep must NEVER leave
+        // the claimed step to the lease sweep silently hanging: the
+        // throwable terminates the step durably RIGHT HERE. But the
+        // terminal sideEffectKnowledge is DERIVED FROM DURABLE TRUTH —
+        // never asserted KNOWN_ABSENT from the exception alone (Phase 17
+        // B1) and never from a persisted invocation set alone (final
+        // audit F-1: a post-send persistence failure leaves a sent
+        // attempt with NO row, so "every persisted row is KNOWN_ABSENT"
+        // does not prove every attempted mutation was pre-send). The
+        // derivation lives in the engine's `repairEmergencyStepTerminal`
+        // (the SAME function the committed worker-emergency tests call):
+        //
+        //   - a mutating request may already have crossed the send
+        //     boundary (recorded KNOWN_OCCURRED / INDETERMINATE
+        //     invocation truth keeps the step INDETERMINATE — never
+        //     downgraded);
+        //   - KNOWN_ABSENT requires the INDEPENDENT durable pre-send
+        //     proof (`executingAt IS NULL`), never a row count;
+        //   - a non-null `executingAt` (or zero recorded attempts) means
+        //     the send boundary is unknown: conservative INDETERMINATE —
+        //     the same conclusion the lease sweep would reach;
+        //   - read-only steps keep the platform's NOT_APPLICABLE
+        //     semantics.
+        //
+        // The write is fencing-conditional (owner + token + still
+        // non-terminal): an already-terminal step is never overwritten,
+        // a stale generation writes nothing, and the lease sweep
+        // remains the safety net when the write cannot land (ADR-0009;
+        // repair mandate §9).
+        const message = error instanceof Error ? error.message.slice(0, 500) : String(error);
+        logger.error('step job failed before terminal state', {
           stepRunId: payload.stepRunId,
           runId: payload.runId,
-          reason: 'not-claimable',
+          error: message,
         });
+        // The PRODUCTION emergency-repair path (engine). It re-loads the
+        // durable emergency context (frozen mutation classification +
+        // append-only invocation facts + independent pre-send proof from
+        // the step row) and writes the terminal row fenced. A null
+        // context (a terminal step) writes nothing — newer durable truth
+        // stands.
+        const emergencyWrite = await repairEmergencyStepTerminal({
+          prisma: processor.prismaClient,
+          ownerId: processor.id,
+          stepRunId: payload.stepRunId,
+          error,
+        });
+        logger.error('emergency step terminal', {
+          stepRunId: payload.stepRunId,
+          runId: payload.runId,
+          attempted: emergencyWrite.attempted,
+          written: emergencyWrite.written,
+          sideEffectKnowledge: emergencyWrite.truth?.sideEffectKnowledge ?? null,
+          attemptCount: emergencyWrite.truth?.attemptCount ?? null,
+        });
+        throw error; // BullMQ marks the job failed; truth is durable.
       }
     },
   });
@@ -493,17 +564,31 @@ export async function dispatchRun(
   for (const step of steps) {
     try {
       await queue.enqueueStep({ runId, stepRunId: step.id, sequence: step.sequence });
-      await controlDb.prisma.experimentStepRun.updateMany({
-        where: { id: step.id, dispatchState: 'PENDING' },
-        data: { dispatchState: 'DISPATCHED', dispatchedAt: new Date() },
-      });
+      // Dispatch marker = truth-bearing provenance (ADR-0026 §13): the
+      // marker write and its `P` advance commit in one-lock transaction.
+      await controlDb.prisma.$transaction(async (tx) => {
+        await acquireRunLock(tx, runId);
+        const marker = await tx.experimentStepRun.updateMany({
+          where: { id: step.id, dispatchState: 'PENDING' },
+          data: { dispatchState: 'DISPATCHED', dispatchedAt: new Date() },
+        });
+        if (marker.count > 0) {
+          await advanceProvenanceRevision(tx, runId);
+        }
+      }, PROVENANCE_TX);
       enqueued += 1;
     } catch {
       failed += 1;
-      await controlDb.prisma.experimentStepRun.updateMany({
-        where: { id: step.id },
-        data: { lastDispatchError: 'enqueue failed (Redis unavailable)' },
-      });
+      await controlDb.prisma.$transaction(async (tx) => {
+        await acquireRunLock(tx, runId);
+        const marker = await tx.experimentStepRun.updateMany({
+          where: { id: step.id },
+          data: { lastDispatchError: 'enqueue failed (Redis unavailable)' },
+        });
+        if (marker.count > 0) {
+          await advanceProvenanceRevision(tx, runId);
+        }
+      }, PROVENANCE_TX);
     }
   }
   return { enqueued, failed };

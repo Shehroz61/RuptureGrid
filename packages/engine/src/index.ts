@@ -58,6 +58,28 @@ export type {
   GenericInvariantInstance,
   DefinitionIssue,
 } from './generic-invariant-registry.js';
+export {
+  RUN_SCOPE_VERSION,
+  RUN_SCOPE_COVERAGE_MODE,
+  RUN_SCOPE_ELIGIBILITY_VERSION,
+  RUN_SCOPE_LIMITS,
+  RUN_SCOPE_KEYS,
+  validateRunScopeDeclaration,
+  isRedactedAnchorFieldName,
+  RunScopeDefinitionError,
+} from './run-scope.js';
+export type { RunScopeDeclaration, RunScopeIssue } from './run-scope.js';
+export {
+  acquireRunLock,
+  advanceProvenanceRevision,
+  advanceDerivationGeneration,
+  readTruthInputHead,
+  resolveRunIdOfStep,
+  PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+  DEFAULT_RUN_LOCK_TIMEOUT_MS,
+} from './truth-input-head.js';
+export type { TruthInputHead, RunLockedTx, RawReadable } from './truth-input-head.js';
 export type {
   TargetManifest,
   ManifestIdentityNode,
@@ -141,6 +163,19 @@ export {
   settleRuns,
   settleCancelledRun,
 } from './recovery.js';
+export {
+  deriveEmergencyStepTruth,
+  writeEmergencyStepTerminal,
+  loadEmergencyContext,
+  repairEmergencyStepTerminal,
+} from './engine-emergency.js';
+export type {
+  EmergencyStepTruth,
+  EmergencyInvocationFacts,
+  EmergencyMutationClassification,
+  EmergencyTerminalWrite,
+  EmergencyRepairDeps,
+} from './engine-emergency.js';
 export type { ReconcileSweepResult } from './recovery.js';
 export { runReconcileSweep, reconcileExpiredLeases } from './reconciler.js';
 export type { ReconcilerSweepDeps, SweepResult } from './reconciler.js';

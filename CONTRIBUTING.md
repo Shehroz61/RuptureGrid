@@ -25,6 +25,10 @@ pnpm install --frozen-lockfile
 cp .env.example .env   # local, gitignored environment (non-production values)
 ```
 
+`pnpm install` runs the `prepare` script, which installs the Git hooks
+into `.husky/_` (Husky). No manual, machine-specific setup step is
+required, and no administrator privileges are needed.
+
 ## Infrastructure & migrations
 
 ```bash
@@ -67,6 +71,36 @@ Both gates cover the whole tree: package tests are typechecked via
 `tsconfig.checks.json` / `tsconfig.checks.ui.json` and linted by the root
 ESLint program. `pnpm release:verify` additionally runs the Incident Zero
 and Controlled Faults golden verifiers against real infrastructure.
+
+## Formatting & pre-commit hooks
+
+The pre-commit hook is a **local convenience guard**, not a security
+boundary — CI remains the authoritative gate. On `git commit`, Husky runs
+`lint-staged` against only the **staged** files. The hook is
+**mutation-free**: it **validates** the staged content and never rewrites
+files, so it can never pull an unstaged edit into your commit.
+
+- TypeScript / TSX: `prettier --check`, then ESLint (no `--fix`).
+- JavaScript, JSON, YAML, and CSS: `prettier --check`.
+- Markdown is intentionally excluded (hand-maintained docs), and
+  generated/frozen paths follow [`.prettierignore`](.prettierignore).
+
+If a staged file is not formatted, `prettier --check` fails and the commit
+is **blocked**; if ESLint reports an error, the commit is **blocked**. The
+hook does **not** fix or re-stage anything for you, and it never touches
+files you have not staged: **unstaged and partially staged changes stay
+out of the commit and remain in your working tree**. The workflow is to
+format first, stage, and commit:
+
+```bash
+pnpm format        # write formatting across the repository (MANUAL step)
+pnpm format:check  # verify formatting (what CI runs)
+pnpm lint          # ESLint across the workspace and root tests
+```
+
+A malformed or poorly formatted staged file is a normal, expected outcome —
+run `pnpm format`, re-stage, and commit again. **Do not** use
+`git commit --no-verify` as a habit.
 
 ## Architecture & security boundaries
 

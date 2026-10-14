@@ -88,10 +88,26 @@ describe('Phase 4 evidence capture (real full stack)', () => {
       // One observation per invocation: 6 step invocations (reset, mode,
       // create, deliver×2, lineage capture) + the adapter's
       // target_observation.
-      const observations = await prisma.rawObservation.findMany({
-        where: { runId: made.runId },
-        orderBy: { chainIndex: 'asc' },
-      });
+      //
+      // The adapter capture runs AFTER the terminal step write by contract
+      // (an observation that could not be persisted is honest
+      // incompleteness — it never blocks the already-persisted execution
+      // outcome), so the run can be observably COMPLETED for a moment
+      // before the last append lands. The test therefore waits for the
+      // DURABLE evidence it asserts (bounded), then asserts the exact
+      // same fact — the count is never relaxed, only its observation
+      // point is undisputed.
+      const observations = await waitFor(
+        async () => {
+          const rows = await prisma.rawObservation.findMany({
+            where: { runId: made.runId },
+            orderBy: { chainIndex: 'asc' },
+          });
+          return rows.length >= 7 ? rows : null;
+        },
+        30_000,
+        250,
+      );
       expect(observations.length).toBeGreaterThanOrEqual(7);
       expect(observations.every((observation) => observation.origin === 'OBSERVED')).toBe(true);
 

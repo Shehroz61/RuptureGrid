@@ -11,6 +11,7 @@
 import type { ContractKind } from './target.js';
 import type { ManifestExecutionPolicy, ManifestEvidencePolicy } from './manifest.js';
 import type { GenericInvariantInstance } from './generic-invariant-registry.js';
+import type { RunScopeDeclaration } from './run-scope.js';
 import type { ControlledFaultActivation, ControlledFaultKind } from '@rupturegrid/shared';
 
 /** The only HTTP methods the v1 executor accepts. */
@@ -114,6 +115,17 @@ export interface ExperimentDocument {
    * carry none.
    */
   readonly invariantBindings?: readonly GenericInvariantInstance[];
+  /**
+   * Phase 17 (ADR-0026 §3, additive + OPTIONAL): the run-owned anchor
+   * intent — a closed, backward-compatible `runScope/v1` declaration
+   * validated at definition/freeze time against the frozen steps,
+   * generic bindings, and evidence policy. Legacy documents carry none
+   * and are byte-identical to today. It freezes into
+   * `snapshot.target.runScopeBinding` and is covered by
+   * `snapshotContentHash` (frozen intent only — never observed
+   * generation, run id, or wall clock).
+   */
+  readonly runScope?: RunScopeDeclaration;
 }
 
 /**
@@ -161,6 +173,16 @@ export interface RunSnapshotDocument {
      * frozen copy — never live definition rows (ADR-0010, §11).
      */
     readonly invariantBindings?: readonly GenericInvariantInstance[];
+    /**
+     * Phase 17 (ADR-0026 §3/§10, additive seam): the frozen run-owned
+     * anchor intent frozen at snapshot time. Present ONLY when the
+     * experiment document declares `runScope`; legacy snapshots carry
+     * none and their documents remain byte-identical. It participates
+     * deterministically in `snapshotContentHash`; the OBSERVED
+     * generation is recorded per analysis (evaluation details + the
+     * eligibility proof), never in the frozen intent hash.
+     */
+    readonly runScopeBinding?: RunScopeDeclaration;
   };
   readonly experiment: {
     readonly definitionId: string;

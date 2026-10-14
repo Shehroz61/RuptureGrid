@@ -42,12 +42,18 @@
     "verify:integration": "pnpm infra:up && pnpm db:migrate && pnpm test:integration",
     "controlled-faults:verify": "pnpm build && node packages/controlled-faults/dist/cli.js",
     "incident-zero:verify": "pnpm build && node packages/incident-zero/dist/cli.js",
-    "showcase:generate": "pnpm build && node packages/showcase/dist/cli.js"
+    "showcase:generate": "pnpm build && node packages/showcase/dist/cli.js",
+    "rupturegrid": "pnpm build:packages && node packages/cli/dist/cli.js",
+    "prepare": "husky"
   },
   "devDependencies": {
-    "playwright": "1.63.0",
     "@eslint/js": "^10.0.0",
+    "@types/pg": "8.23.0",
     "eslint": "^10.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
+    "pg": "8.23.0",
+    "playwright": "1.63.0",
     "prettier": "^3.6.2",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.0",

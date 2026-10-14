@@ -11,6 +11,18 @@
 
 import type { PrismaClient } from '@rupturegrid/control-db';
 import { findUndispatchedSteps, settleRuns, resolveExpiredLease } from './recovery.js';
+import {
+  acquireRunLock,
+  advanceProvenanceRevision,
+  PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+  PROVENANCE_TRANSACTION_TIMEOUT_MS,
+} from './truth-input-head.js';
+
+/** Bounded provenance-writer transaction (writer protocol, ADR-0026 §13). */
+const PROVENANCE_TX = {
+  timeout: PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  maxWait: PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+} as const;
 
 export interface ReconcilerSweepDeps {
   readonly prisma: PrismaClient;
@@ -42,27 +54,43 @@ export async function runReconcileSweep(deps: ReconcilerSweepDeps): Promise<Swee
   for (const step of steps) {
     try {
       await deps.enqueue(step.stepRunId, step.runId, step.sequence);
-      await prisma.experimentStepRun.updateMany({
-        where: {
-          id: step.stepRunId,
-          dispatchState: { in: ['PENDING', 'RECONCILE'] },
-          state: { in: ['PENDING', 'DISPATCHED'] },
-        },
-        data: {
-          dispatchState: 'DISPATCHED',
-          dispatchedAt: new Date(),
-          lastDispatchError: null,
-        },
-      });
+      // Dispatch marker = truth-bearing provenance (ADR-0026 §13): the
+      // guarded marker write and its `P` advance commit together under
+      // the shared per-run lock. Per-run commits keep a multi-run sweep
+      // from ever holding two run locks at once.
+      await prisma.$transaction(async (tx) => {
+        await acquireRunLock(tx, step.runId);
+        const marker = await tx.experimentStepRun.updateMany({
+          where: {
+            id: step.stepRunId,
+            dispatchState: { in: ['PENDING', 'RECONCILE'] },
+            state: { in: ['PENDING', 'DISPATCHED'] },
+          },
+          data: {
+            dispatchState: 'DISPATCHED',
+            dispatchedAt: new Date(),
+            lastDispatchError: null,
+          },
+        });
+        if (marker.count > 0) {
+          await advanceProvenanceRevision(tx, step.runId);
+        }
+      }, PROVENANCE_TX);
       requeued += 1;
     } catch (error) {
-      await prisma.experimentStepRun.updateMany({
-        where: { id: step.stepRunId, dispatchState: { in: ['PENDING', 'RECONCILE'] } },
-        data: {
-          lastDispatchError:
-            error instanceof Error ? error.message.slice(0, 500) : 'enqueue failed',
-        },
-      });
+      await prisma.$transaction(async (tx) => {
+        await acquireRunLock(tx, step.runId);
+        const marker = await tx.experimentStepRun.updateMany({
+          where: { id: step.stepRunId, dispatchState: { in: ['PENDING', 'RECONCILE'] } },
+          data: {
+            lastDispatchError:
+              error instanceof Error ? error.message.slice(0, 500) : 'enqueue failed',
+          },
+        });
+        if (marker.count > 0) {
+          await advanceProvenanceRevision(tx, step.runId);
+        }
+      }, PROVENANCE_TX);
     }
   }
 

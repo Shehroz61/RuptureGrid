@@ -118,8 +118,15 @@ export function createApp(deps: AppDeps): express.Express {
         initialAvailableUnits,
         mode,
       });
+      // ADR-0026 §5 + §3 rule 4: the run-owned anchor is read from THIS
+      // fenced 2xx response, so the scope value is exposed under a name
+      // that the platform's persistent-redaction name pattern does not
+      // mask (`*token*` names are redacted in every stored observation by
+      // construction). `scopeToken` remains the REQUEST-side name and is
+      // still returned for existing clients.
       res.status(200).json({
         scopeToken: context.scopeToken,
+        verificationScopeId: context.scopeToken,
         generationId: context.generationId,
         sku: context.sku,
         initialAvailableUnits: context.initialAvailableUnits,

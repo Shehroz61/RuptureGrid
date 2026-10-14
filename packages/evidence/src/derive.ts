@@ -9,11 +9,36 @@
 // identity chain ONLY (evidence-model §6): providerPaymentId /
 // providerEventId / deliveryAttemptId / processingAttemptId carried in
 // payloads — never timestamp proximity.
+//
+// Phase 17 B2 (ADR-0026 §13 derived-projection rule): this module is the
+// D-PARTICIPATING derived writer. Every pass is tracked by a durable
+// derivation ATTEMPT (`derivation-attempts.ts`): the attempt is made
+// IN_PROGRESS before the first derived write, every COMMITTED derived
+// row advances `D` by exactly +1 in the SAME transaction (under the B1
+// per-run advisory lock), an idempotent no-op advances nothing, and the
+// attempt is published COMPLETE only after its completeness checks pass
+// against the source watermark it captured. A crash between writes
+// leaves IN_PROGRESS/FAILED — never a false COMPLETE — and persisted
+// truthful rows are never deleted or rewritten to hide an incomplete
+// pass.
 
 import { createHash } from 'node:crypto';
-import type { PrismaClient } from '@rupturegrid/control-db';
+import type { Prisma, PrismaClient } from '@rupturegrid/control-db';
 import type { ManifestEvidencePolicy } from '@rupturegrid/engine';
-import { canonicalizeJson } from '@rupturegrid/engine';
+import {
+  PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+  PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  acquireRunLock,
+  advanceDerivationGeneration,
+  canonicalizeJson,
+} from '@rupturegrid/engine';
+import {
+  DERIVATION_KIND_RUN_EVIDENCE,
+  beginDerivationAttempt,
+  completeDerivationAttempt,
+  failDerivationAttempt,
+} from './derivation-attempts.js';
+import type { DerivationAttemptResolution } from './derivation-attempts.js';
 import { eventInputHash } from './normalize.js';
 import type { NormalizedEventSpec } from './normalize.js';
 import { GENERIC_INSPECTION_NORMALIZER_NAME } from './versions.js';
@@ -71,6 +96,54 @@ export interface DerivationResult {
    * durable provenance of what was excluded.
    */
   readonly genericInvalidations: number;
+  /**
+   * B2: the durable completeness resolution of THIS pass
+   * (`run-evidence/v1`). COMPLETE only when the source watermark did not
+   * move during the pass and every completeness check passed; otherwise
+   * INCOMPLETE (with the named reason) or NOT_APPLIED (the attempt was
+   * already finished by another writer — never overwritten). A caller
+   * that needs to certify a projection must read
+   * `readDerivationReadiness`; this field is the pass's own record.
+   */
+  readonly derivationCompleteness: DerivationAttemptResolution;
+}
+
+/** Bounded derived-writer transaction (B2 writer protocol, ADR-0026 §13). */
+const DERIVED_WRITE_TX = {
+  timeout: PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  maxWait: PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+} as const;
+
+/**
+ * B2 — the D-participating derived-writer primitive. ONE derived row
+ * write and its `D` advance (`derivationGeneration = derivationGeneration
+ * + 1`) commit in the SAME transaction, inside the SAME per-run advisory
+ * lock the B1 writer protocol and the raw-chain append primitive use. A
+ * P2002 on the deterministic identity means an identical row already
+ * exists: converge on the winner OUTSIDE the aborted transaction and
+ * advance nothing — an idempotent no-op is never a projection change.
+ * The lock is never held across anything but this bounded DB-local write.
+ */
+async function writeDerivedRow<T>(input: {
+  readonly prisma: PrismaClient;
+  readonly runId: string;
+  readonly create: (tx: Prisma.TransactionClient) => Promise<T>;
+  readonly readExisting: () => Promise<T>;
+}): Promise<{ readonly row: T; readonly created: boolean }> {
+  try {
+    const row = await input.prisma.$transaction(async (tx) => {
+      await acquireRunLock(tx, input.runId);
+      const created = await input.create(tx);
+      await advanceDerivationGeneration(tx, input.runId);
+      return created;
+    }, DERIVED_WRITE_TX);
+    return { row, created: true };
+  } catch (error) {
+    if ((error as { code?: string }).code !== 'P2002') {
+      throw error;
+    }
+    return { row: await input.readExisting(), created: false };
+  }
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -207,10 +280,50 @@ export async function loadFrozenEvidencePolicy(
 /**
  * Derives and persists events + relationships for a run. Returns the
  * full derived set (existing + newly created). Idempotent.
+ *
+ * B2: the pass runs as a durable derivation ATTEMPT — the attempt row is
+ * made IN_PROGRESS (with its captured source watermark) BEFORE the first
+ * derived write, every derived write commits with its `D` advance, and
+ * COMPLETE is published only when the source did not move during the pass
+ * and the completeness checks pass under the run lock. A missing run
+ * keeps the legacy empty-result behavior (no attempt is fabricated for a
+ * run that does not exist).
  */
 export async function deriveRunEvidence(
   prisma: PrismaClient,
   runId: string,
+): Promise<DerivationResult> {
+  const run = await prisma.experimentRun.findUnique({
+    where: { id: runId },
+    select: { id: true },
+  });
+  if (run === null) {
+    return {
+      events: [],
+      relationships: [],
+      genericDerivationGaps: 0,
+      genericInvalidations: 0,
+      derivationCompleteness: {
+        status: 'NOT_APPLIED',
+        attemptGeneration: '0',
+        committedDerivationGeneration: null,
+        reason: 'RUN_NOT_FOUND',
+      },
+    };
+  }
+  const attempt = await beginDerivationAttempt(prisma, runId, DERIVATION_KIND_RUN_EVIDENCE);
+  try {
+    return await deriveRunEvidenceWithinAttempt(prisma, runId, attempt);
+  } catch (error) {
+    await failDerivationAttempt(prisma, attempt, error);
+    throw error;
+  }
+}
+
+async function deriveRunEvidenceWithinAttempt(
+  prisma: PrismaClient,
+  runId: string,
+  attempt: Awaited<ReturnType<typeof beginDerivationAttempt>>,
 ): Promise<DerivationResult> {
   const inputs = await loadNormalizerInputs(prisma, runId);
   const specs: NormalizedEventSpec[] = [];
@@ -238,9 +351,20 @@ export async function deriveRunEvidence(
   }
 
   // Persist events idempotently: the (run, normalizer, version,
-  // inputHash) unique key converges repeats/concurrency on one row.
+  // inputHash) unique key converges repeats/concurrency on one row. B2:
+  // each CREATED row commits with its own `D` advance; an existing row is
+  // an idempotent no-op and advances nothing.
   const events: DerivedEventRow[] = [];
   const seen = new Set<string>();
+  const eventSelect = {
+    id: true,
+    eventType: true,
+    subjectKey: true,
+    normalizerName: true,
+    normalizerVersion: true,
+    inputHash: true,
+  } as const;
+  let eventsCreated = 0;
   for (const spec of specs) {
     // The idempotency key covers BOTH the source hashes and the event's
     // own semantic payload: one lineage observation normalizes into many
@@ -261,57 +385,40 @@ export async function deriveRunEvidence(
         inputHash,
       },
     } as const;
-    try {
-      const row = await prisma.normalizedEvent.upsert({
-        where,
-        create: {
-          runId,
-          eventType: spec.eventType,
-          subjectKey: spec.subjectKey,
-          payload: JSON.parse(JSON.stringify(spec.payload)) as object,
-          normalizerName: spec.normalizerName,
-          normalizerVersion: spec.normalizerVersion,
-          inputHash,
-          origin: 'DETERMINISTIC_DERIVED',
-          sourceObservationHashes: [...spec.sourceObservationHashes],
-          primaryObservationIndex: spec.primaryObservationIndex,
-        },
-        update: {},
-        select: {
-          id: true,
-          eventType: true,
-          subjectKey: true,
-          normalizerName: true,
-          normalizerVersion: true,
-          inputHash: true,
-        },
-      });
-      events.push(row);
-    } catch (error) {
+    const outcome = await writeDerivedRow({
+      prisma,
+      runId,
+      create: (tx) =>
+        tx.normalizedEvent.create({
+          data: {
+            runId,
+            eventType: spec.eventType,
+            subjectKey: spec.subjectKey,
+            payload: JSON.parse(JSON.stringify(spec.payload)) as object,
+            normalizerName: spec.normalizerName,
+            normalizerVersion: spec.normalizerVersion,
+            inputHash,
+            origin: 'DETERMINISTIC_DERIVED',
+            sourceObservationHashes: [...spec.sourceObservationHashes],
+            primaryObservationIndex: spec.primaryObservationIndex,
+          },
+          select: eventSelect,
+        }),
       // Concurrent derivation passes race on the same deterministic
       // key (worker sweep + explicit analysis). The winner's row is
-      // THE row: re-read it and converge — never duplicate.
-      if ((error as { code?: string }).code !== 'P2002') {
-        throw error;
-      }
-      const existing = await prisma.normalizedEvent.findUniqueOrThrow({
-        where,
-        select: {
-          id: true,
-          eventType: true,
-          subjectKey: true,
-          normalizerName: true,
-          normalizerVersion: true,
-          inputHash: true,
-        },
-      });
-      events.push(existing);
+      // THE row: converge on it — never duplicate, never re-advance `D`.
+      readExisting: () => prisma.normalizedEvent.findUniqueOrThrow({ where, select: eventSelect }),
+    });
+    if (outcome.created) {
+      eventsCreated += 1;
     }
+    events.push(outcome.row);
   }
 
   // ---- Causal relationships (identity chain ONLY, evidence-model §6) ----
   const relationships: DerivedRelationshipRow[] = [];
   const relSeen = new Set<string>();
+  let relationshipsCreated = 0;
   const addRelationship = async (input: {
     readonly fromEventId: string;
     readonly toEventId: string;
@@ -324,54 +431,47 @@ export async function deriveRunEvidence(
       return;
     }
     relSeen.add(key);
-    const existing = await prisma.causalRelationship.findUnique({
-      where: {
-        runId_fromEventId_toEventId_relationKind_basis: {
-          runId,
-          fromEventId: input.fromEventId,
-          toEventId: input.toEventId,
-          relationKind: input.relationKind,
-          basis: input.basis,
-        },
+    const where = {
+      runId_fromEventId_toEventId_relationKind_basis: {
+        runId,
+        fromEventId: input.fromEventId,
+        toEventId: input.toEventId,
+        relationKind: input.relationKind,
+        basis: input.basis,
       },
+    } as const;
+    const existing = await prisma.causalRelationship.findUnique({
+      where,
       select: { id: true },
     });
     if (existing !== null) {
       relationships.push({ ...input, id: existing.id });
       return;
     }
-    try {
-      const created = await prisma.causalRelationship.create({
-        data: {
-          runId,
-          fromEventId: input.fromEventId,
-          toEventId: input.toEventId,
-          relationKind: input.relationKind,
-          basis: input.basis,
-          evidenceJson: JSON.parse(JSON.stringify(input.evidence)) as object,
-        },
-        select: { id: true },
-      });
-      relationships.push({ ...input, id: created.id });
-    } catch (error) {
-      // Concurrent passes converge on the same deterministic row.
-      if ((error as { code?: string }).code !== 'P2002') {
-        throw error;
-      }
-      const winner = await prisma.causalRelationship.findUniqueOrThrow({
-        where: {
-          runId_fromEventId_toEventId_relationKind_basis: {
+    // B2: a CREATED relationship commits with its own `D` advance; a
+    // concurrent pass's identical row converges without one.
+    const outcome = await writeDerivedRow({
+      prisma,
+      runId,
+      create: (tx) =>
+        tx.causalRelationship.create({
+          data: {
             runId,
             fromEventId: input.fromEventId,
             toEventId: input.toEventId,
             relationKind: input.relationKind,
             basis: input.basis,
+            evidenceJson: JSON.parse(JSON.stringify(input.evidence)) as object,
           },
-        },
-        select: { id: true },
-      });
-      relationships.push({ ...input, id: winner.id });
+          select: { id: true },
+        }),
+      readExisting: () =>
+        prisma.causalRelationship.findUniqueOrThrow({ where, select: { id: true } }),
+    });
+    if (outcome.created) {
+      relationshipsCreated += 1;
     }
+    relationships.push({ ...input, id: outcome.row.id });
   };
 
   // Index events for identity-chain walking.
@@ -537,7 +637,9 @@ export async function deriveRunEvidence(
   // 15 can honestly evaluate NOT_EVALUABLE where it requires the
   // contested linkage — never a Phase 15 verdict here.
   let genericDiagnostics: GenericDerivationDiagnosticSpec[] = [];
+  let genericDiagnosticsCreated = 0;
   let genericInvalidations = 0;
+  let genericInvalidationsCreated = 0;
   if (frozenGenericPolicy !== undefined) {
     const genericEventRows = eventRows
       .filter((row) => (row.payload as { rupturegrid?: unknown })?.['rupturegrid'] !== undefined)
@@ -599,9 +701,14 @@ export async function deriveRunEvidence(
       }
       genericDiagnostics = [...computation.diagnostics];
       // Persist gap diagnostics as versioned, RuptureGrid-owned events
-      // (NOT target events, NOT findings, NOT Phase 15 verdicts).
+      // (NOT target events, NOT findings, NOT Phase 15 verdicts). B2: a
+      // CREATED diagnostic advances `D` in its own commit; a converged
+      // repeat does not.
       for (const diagnostic of genericDiagnostics) {
-        await persistDerivationGapEvent(prisma, runId, diagnostic);
+        const created = await persistDerivationGapEvent(prisma, runId, diagnostic);
+        if (created) {
+          genericDiagnosticsCreated += 1;
+        }
       }
       // ---- B-2: durable invalidation provenance ----
       // For every contested identity group this pass: the stale,
@@ -633,19 +740,55 @@ export async function deriveRunEvidence(
           orderBy: { id: 'asc' },
         });
         const staleRelationshipIds = staleRows.map((row) => row.id);
-        await persistDerivationInvalidationEvent(prisma, runId, invalidation, {
+        const created = await persistDerivationInvalidationEvent(prisma, runId, invalidation, {
           staleRelationshipIds,
         });
+        if (created) {
+          genericInvalidationsCreated += 1;
+        }
         genericInvalidations += 1;
       }
     }
   }
+
+  // ---- B2: publish the attempt's completeness resolution ----
+  // UNDER the run lock, against the source watermark captured at attempt
+  // start: COMPLETE only when nothing moved during the pass AND every
+  // computed row is durable (the checks count the durable projection the
+  // pass observed); otherwise INCOMPLETE with a named reason. The
+  // projection rests as persisted rows either way — an incomplete pass is
+  // never "repaired" by deletion or rewriting.
+  const resolution = await completeDerivationAttempt(prisma, attempt, {
+    projectionCounts: {
+      events: events.length,
+      eventsCreated,
+      relationships: relationships.length,
+      relationshipsCreated,
+      genericDiagnostics: genericDiagnostics.length,
+      genericDiagnosticsCreated,
+      genericInvalidations,
+      genericInvalidationsCreated,
+    },
+    completenessChecks: [
+      {
+        name: 'normalized-events-durable',
+        check: async (tx) =>
+          (await tx.normalizedEvent.count({ where: { runId } })) >= events.length,
+      },
+      {
+        name: 'causal-relationships-durable',
+        check: async (tx) =>
+          (await tx.causalRelationship.count({ where: { runId } })) >= relationships.length,
+      },
+    ],
+  });
 
   return {
     events,
     relationships,
     genericDerivationGaps: genericDiagnostics.length,
     genericInvalidations,
+    derivationCompleteness: resolution,
   };
 }
 
@@ -656,13 +799,15 @@ export async function deriveRunEvidence(
  * P2002 races converge on the winner (same semantics — never aliased).
  * The tombstone NAMES the persisted relationship rows excluded from
  * the ACTIVE graph; it never deletes them (logically append-only).
+ * B2: returns TRUE only when the row was CREATED (a real projection
+ * change that advanced `D`); a converged repeat returns false.
  */
 async function persistDerivationInvalidationEvent(
   prisma: PrismaClient,
   runId: string,
   invalidation: GenericInvalidationSpec,
   stale: { readonly staleRelationshipIds: readonly string[] },
-): Promise<void> {
+): Promise<boolean> {
   const cappedIds = stale.staleRelationshipIds.slice(
     0,
     GENERIC_DERIVATION_CAPS.maxInvalidatedRelationshipIdsPerRow,
@@ -682,34 +827,33 @@ async function persistDerivationInvalidationEvent(
       inputHash,
     },
   } as const;
-  try {
-    await prisma.normalizedEvent.upsert({
-      where,
-      create: {
-        runId,
-        eventType: GENERIC_DERIVATION_INVALIDATION_EVENT_TYPE,
-        subjectKey:
-          `role:${String(invalidation.roleId)}:identity:${invalidation.identityTupleHash}`.slice(
-            0,
-            200,
-          ),
-        payload: JSON.parse(JSON.stringify(payload)) as object,
-        normalizerName: GENERIC_DERIVATION_INVALIDATION_NORMALIZER_NAME,
-        normalizerVersion: GENERIC_DERIVATION_INVALIDATION_NORMALIZER_VERSION,
-        inputHash,
-        origin: 'DETERMINISTIC_DERIVED',
-        sourceObservationHashes: [...invalidation.sourceObservationHashes],
-        primaryObservationIndex: null,
-      },
-      update: {},
-      select: { id: true },
-    });
-  } catch (error) {
-    if ((error as { code?: string }).code !== 'P2002') {
-      throw error;
-    }
+  const outcome = await writeDerivedRow({
+    prisma,
+    runId,
+    create: (tx) =>
+      tx.normalizedEvent.create({
+        data: {
+          runId,
+          eventType: GENERIC_DERIVATION_INVALIDATION_EVENT_TYPE,
+          subjectKey:
+            `role:${String(invalidation.roleId)}:identity:${invalidation.identityTupleHash}`.slice(
+              0,
+              200,
+            ),
+          payload: JSON.parse(JSON.stringify(payload)) as object,
+          normalizerName: GENERIC_DERIVATION_INVALIDATION_NORMALIZER_NAME,
+          normalizerVersion: GENERIC_DERIVATION_INVALIDATION_NORMALIZER_VERSION,
+          inputHash,
+          origin: 'DETERMINISTIC_DERIVED',
+          sourceObservationHashes: [...invalidation.sourceObservationHashes],
+          primaryObservationIndex: null,
+        },
+        select: { id: true },
+      }),
     // Converge on the winner's row (identical semantics by hash).
-  }
+    readExisting: () => prisma.normalizedEvent.findUniqueOrThrow({ where, select: { id: true } }),
+  });
+  return outcome.created;
 }
 
 /**
@@ -717,13 +861,14 @@ async function persistDerivationInvalidationEvent(
  * event owned by RuptureGrid (not a target event, not a finding, not a
  * Phase 15 verdict). Deterministic input hash ⇒ repeat/concurrent
  * derivation converges on the same row; P2002 races converge on the
- * winner (same semantics — never aliased).
+ * winner (same semantics — never aliased). B2: returns TRUE only when
+ * the row was CREATED (a real projection change that advanced `D`).
  */
 async function persistDerivationGapEvent(
   prisma: PrismaClient,
   runId: string,
   diagnostic: GenericDerivationDiagnosticSpec,
-): Promise<void> {
+): Promise<boolean> {
   const payload = {
     gapKind: diagnostic.gapKind,
     ...diagnostic.payload,
@@ -737,30 +882,29 @@ async function persistDerivationGapEvent(
       inputHash,
     },
   } as const;
-  try {
-    await prisma.normalizedEvent.upsert({
-      where,
-      create: {
-        runId,
-        eventType: GENERIC_DERIVATION_DIAGNOSTIC_EVENT_TYPE,
-        subjectKey: diagnostic.subjectKey.slice(0, 200),
-        payload: JSON.parse(JSON.stringify(payload)) as object,
-        normalizerName: GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_NAME,
-        normalizerVersion: GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_VERSION,
-        inputHash,
-        origin: 'DETERMINISTIC_DERIVED',
-        sourceObservationHashes: [...diagnostic.sourceObservationHashes],
-        primaryObservationIndex: null,
-      },
-      update: {},
-      select: { id: true },
-    });
-  } catch (error) {
-    if ((error as { code?: string }).code !== 'P2002') {
-      throw error;
-    }
+  const outcome = await writeDerivedRow({
+    prisma,
+    runId,
+    create: (tx) =>
+      tx.normalizedEvent.create({
+        data: {
+          runId,
+          eventType: GENERIC_DERIVATION_DIAGNOSTIC_EVENT_TYPE,
+          subjectKey: diagnostic.subjectKey.slice(0, 200),
+          payload: JSON.parse(JSON.stringify(payload)) as object,
+          normalizerName: GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_NAME,
+          normalizerVersion: GENERIC_DERIVATION_DIAGNOSTIC_NORMALIZER_VERSION,
+          inputHash,
+          origin: 'DETERMINISTIC_DERIVED',
+          sourceObservationHashes: [...diagnostic.sourceObservationHashes],
+          primaryObservationIndex: null,
+        },
+        select: { id: true },
+      }),
     // Converge on the winner's row (identical semantics by hash).
-  }
+    readExisting: () => prisma.normalizedEvent.findUniqueOrThrow({ where, select: { id: true } }),
+  });
+  return outcome.created;
 }
 
 /**

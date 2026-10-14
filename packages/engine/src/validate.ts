@@ -30,6 +30,8 @@ import type { TargetOriginCredentialPolicy } from './credential-authorization.js
 import { credentialTokenRefs } from './credential-token.js';
 import { deriveGenericInvariantBindings } from './generic-invariant-registry.js';
 import type { GenericInvariantInstance } from './generic-invariant-registry.js';
+import { validateRunScopeDeclaration, RunScopeDefinitionError } from './run-scope.js';
+import type { RunScopeDeclaration } from './run-scope.js';
 import type {
   ExperimentDocument,
   ExperimentStep,
@@ -62,6 +64,55 @@ export const FORBIDDEN_HEADER_NAMES = new Set([
   'transfer-encoding',
   'expect',
   'upgrade',
+]);
+
+// ---------------------------------------------------------------------
+// CLOSED step vocabulary (Phase 17 audit repair B3 §22).
+// The scenario/experiment contract is CLOSED: an unknown field inside
+// experiment.steps[*] (or its action / invariantBindings entries) must
+// be REJECTED — never silently stripped or ignored, because executable
+// intent that disappears at validation is exactly the defect where
+// "the closed schema is not load-bearing". The accepted step/action
+// vocabulary (validate.ts) is frozen below; each level rejects
+// unknown keys with a named issue.
+// NOTE (intentional permit): action.headers VALUES are free-form
+// strings by design (allowlisted NAMES only) — unknown HEADER names
+// are handled by ALLOWED_HEADER_NAMES, not by this key check.
+// ---------------------------------------------------------------------
+
+/** The closed step-level key set (parsed: name + action). */
+const CLOSED_STEP_KEYS = new Set(['name', 'action']);
+
+/**
+ * The closed action-level key set. This is the AUTHORED experiment
+ * vocabulary consumed by this validator and by the executor (and
+ * documented in docs/checkout-zero.md): one membership test for every
+ * validated action field. Extending it is a schema change requiring an
+ * ADR — unknown executable intent is never quietly accepted.
+ */
+const CLOSED_ACTION_KEYS: ReadonlySet<string> = new Set([
+  'method',
+  'relativePath',
+  'headers',
+  'body',
+  'mutation',
+  'contract',
+  'faultPlan',
+  'waveStaggerMs',
+  'repeat',
+  'concurrency',
+  'timeoutMs',
+  'retryPolicy',
+  'credentialRefs',
+  'evidenceAdapter',
+]);
+
+/** The closed keys of a business-invariant/v1 binding instance. */
+const CLOSED_INVARIANT_BINDING_KEYS: ReadonlySet<string> = new Set([
+  'key',
+  'kind',
+  'params',
+  'registryVersion',
 ]);
 
 export class PathPolicyError extends Error {
@@ -233,6 +284,15 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
     }
     seenNames.add(name);
 
+    // ---- CLOSED step shape: unknown keys rejected (B3 §22) ----
+    for (const stepKey of Object.keys(rawStep)) {
+      if (!CLOSED_STEP_KEYS.has(stepKey)) {
+        issues.push(
+          `steps[${index}]."${stepKey}": unknown step field (the experiment step vocabulary is closed)`,
+        );
+      }
+    }
+
     const rawAction = rawStep['action'];
     if (!isRecord(rawAction)) {
       issues.push(`steps[${index}].action must be an object`);
@@ -253,6 +313,17 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
         issues.push(
           `steps[${index}].action.relativePath: ${error instanceof Error ? error.message : 'invalid'}`,
         );
+      }
+    }
+
+    // ---- CLOSED action shape: unknown keys rejected (B3 §22) ----
+    if (isRecord(rawAction)) {
+      for (const actionKey of Object.keys(rawAction)) {
+        if (!CLOSED_ACTION_KEYS.has(actionKey)) {
+          issues.push(
+            `steps[${index}].action."${actionKey}": unknown action field (the action vocabulary is closed)`,
+          );
+        }
       }
     }
 
@@ -707,6 +778,21 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
           'document.invariantBindings requires a manifest-declaring target (generic invariants reference the frozen evidence policy)',
         );
       } else {
+        // ---- CLOSED binding shape: unknown top-level keys rejected
+        // here as well (the registry validator rejects them once
+        // parseable; this pass guarantees a named issue even for
+        // malformed entries that would abort earlier) (B3 §22).
+        for (const [bindingIndex, binding] of (rawInvariantBindings as unknown[]).entries()) {
+          if (isRecord(binding)) {
+            for (const bindingKey of Object.keys(binding)) {
+              if (!CLOSED_INVARIANT_BINDING_KEYS.has(bindingKey)) {
+                issues.push(
+                  `document.invariantBindings[${String(bindingIndex)}]."${bindingKey}": unknown binding field (business-invariant/v1 instances are closed)`,
+                );
+              }
+            }
+          }
+        }
         try {
           invariantBindings = deriveGenericInvariantBindings(rawInvariantBindings, policy).slice();
         } catch (error) {
@@ -720,10 +806,72 @@ export function validateExperimentDocument(input: ValidateExperimentInput): Expe
     }
   }
 
+  // ---- Phase 17 (ADR-0026 §3): the run-owned anchor intent. ----------------
+  // `runScope/v1` is a closed, backward-compatible declaration validated
+  // against the frozen steps, generic bindings, and evidence policy.
+  //
+  // Biconditional (frozen, ADR-0026 §3 rule 6): `runScope` present ⟺
+  // generic `invariantBindings` present. The symmetric direction —
+  // generic `invariantBindings` REQUIRE `runScope` — is enforced HERE
+  // for every NEW definition (Checkpoint C, resolving the gate
+  // Checkpoint A deliberately deferred): a new generic definition can
+  // never be frozen without a declared run-owned domain. Historical
+  // snapshots frozen before this rule carry no `runScopeBinding` and
+  // evaluate under the labeled legacy-compat mode (§17) — this rule is
+  // definition-time only and never re-validates an existing revision at
+  // freeze time, so replay of historical revisions is preserved.
+  const rawRunScope = raw['runScope'];
+  let runScope: RunScopeDeclaration | undefined;
+  if (rawRunScope !== undefined && rawRunScope !== null) {
+    const runScopePolicy = deriveEvidencePolicy(input.target.manifestJson);
+    if (runScopePolicy === undefined) {
+      issues.push(
+        'document.runScope requires a manifest-declaring target (run-scope/v1 validates against the frozen evidence policy)',
+      );
+    } else if (invariantBindings === undefined || invariantBindings.length === 0) {
+      issues.push(
+        'document.runScope requires generic invariantBindings (RUN_SCOPE_WITHOUT_GENERIC_BINDINGS: run-scope/v1 exists to bind generic subjects — there is no dead config)',
+      );
+    } else {
+      try {
+        runScope = validateRunScopeDeclaration({
+          rawRunScope,
+          steps,
+          invariantBindings,
+          policy: runScopePolicy,
+        });
+      } catch (error) {
+        issues.push(
+          error instanceof RunScopeDefinitionError
+            ? `document.runScope: ${error.issues
+                .map((entry) => `${entry.code}: ${entry.detail}`)
+                .join('; ')}`
+            : 'document.runScope failed definition-time validation',
+        );
+      }
+    }
+  }
+  // The symmetric presence rule (ADR-0026 §3 rule 6,
+  // `GENERIC_BINDINGS_WITHOUT_RUN_SCOPE`): a NEW definition that
+  // declares generic invariant bindings MUST declare the run-owned
+  // `runScope` domain they belong to — there is no implicit fallback
+  // for new definitions. Only a fully VALID binding set reaches this
+  // check (an invalid one is already rejected above with its own named
+  // issues), so the diagnostic never masks the binding failures.
+  if (invariantBindings !== undefined && runScope === undefined) {
+    issues.push(
+      'document.invariantBindings requires document.runScope (GENERIC_BINDINGS_WITHOUT_RUN_SCOPE: a new generic definition must declare its run-owned anchor intent and subject domain; legacy snapshots frozen before this rule evaluate under the labeled legacy-compat mode)',
+    );
+  }
+
   if (issues.length > 0) {
     throw new ExperimentValidationError(issues);
   }
-  return invariantBindings === undefined ? { steps } : { steps, invariantBindings };
+  return {
+    steps,
+    ...(invariantBindings === undefined ? {} : { invariantBindings }),
+    ...(runScope === undefined ? {} : { runScope }),
+  };
 }
 
 function placeholderStep(index: number): ExperimentStep {

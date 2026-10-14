@@ -54,6 +54,14 @@ const prisma = getControlPrisma();
 const SCOPE = 'checkout-zero-phase16';
 const SKU = 'SKU-001';
 const COMMERCE_SIGNING_REF = 'DEMO_COMMERCE_SIGNING_SECRET';
+// Phase 17 (ADR-0025): the commerce admin boundary is its OWN secret —
+// naming the Demo Fintech admin token never authenticates here.
+const COMMERCE_ADMIN_REF = 'COMMERCE_ADMIN_TOKEN';
+// Phase 17: the committed Commerce manifest declares BOTH the signing
+// reference and the admin reference (the golden scenario's setup step
+// authenticates through the target's own admin API). This suite's
+// policy/grant fixtures therefore grant both for the Commerce origin.
+const COMMERCE_DECLARED_REFS = [COMMERCE_SIGNING_REF, COMMERCE_ADMIN_REF] as const;
 
 let env: TestEnv;
 let running: RunningCommerce;
@@ -157,7 +165,9 @@ function inGeneration<T extends { verificationScopeId: string; generationId: num
 }
 
 function commerceCredentialPolicy(origin: string): TargetOriginCredentialPolicy {
-  return testTargetOriginCredentialPolicy({ [origin]: [COMMERCE_SIGNING_REF] });
+  return testTargetOriginCredentialPolicy({
+    [origin]: [...COMMERCE_DECLARED_REFS],
+  });
 }
 
 async function ensureCommerceTarget(): Promise<string> {
@@ -173,7 +183,7 @@ async function ensureCommerceTarget(): Promise<string> {
         environment: 'LOCAL_DEVELOPMENT',
         origins: [running.baseUrl],
         contractKind: 'GENERIC_HTTP',
-        credentialRefs: [COMMERCE_SIGNING_REF],
+        credentialRefs: [...COMMERCE_DECLARED_REFS],
         manifest: loadCommerceManifest(displayName, running.baseUrl),
       },
       commerceCredentialPolicy(running.baseUrl),
@@ -182,10 +192,21 @@ async function ensureCommerceTarget(): Promise<string> {
   } catch (error) {
     if (error instanceof TargetRegistrationError) {
       // A previous run on this persistent dev database already owns this
-      // origin (global by design) — reuse that registration.
+      // origin (global by design) — reuse that registration, but ONLY if
+      // it declares a Commerce manifest. Silently adopting a manifest-less
+      // target is what produced the observed Phase 16 failures; the
+      // beforeAll check makes this branch a race-only path, and a foreign
+      // registration is now a loud, actionable failure.
       const existing = await prisma.targetRegistration.findFirstOrThrow({
         where: { origins: { some: { origin: running.baseUrl } } },
       });
+      if (existing.manifestJson === null) {
+        throw new Error(
+          `Commerce fixture origin ${running.baseUrl} is registered to a target that declares NO manifest; ` +
+            'refusing to silently inherit a foreign target (the beforeAll check should have picked an unregistered origin)',
+          { cause: error },
+        );
+      }
       commerceTargetId = existing.id;
     } else {
       throw error;
@@ -199,7 +220,32 @@ beforeAll(async () => {
   // Random high port: the persistent dev database keeps every previous
   // run's origin registrations, so a fixed port would collide with an
   // older registration (origin authority is global by design).
-  const port = 33000 + Math.floor(Math.random() * 6000);
+  //
+  // CHECK-THEN-START (Phase 17 B1 fixture repair): a random port is only
+  // safe if its origin is verified UNREGISTERED before the process binds
+  // it — otherwise the registration below hits the clash path and this
+  // suite silently inherits a foreign, manifest-less target, which is
+  // exactly how Phase 16 failures appeared (null `manifestJson`, an
+  // undeclared signature header, “no declared fault hook”). Bounded
+  // repick, never a weakened assertion.
+  const pickFreePort = (): number => 33000 + Math.floor(Math.random() * 6000);
+  let port = pickFreePort();
+  for (let attempt = 0; ; attempt += 1) {
+    const candidate = `http://127.0.0.1:${String(port)}`;
+    const taken = await prisma.targetOrigin.findUnique({
+      where: { origin: candidate },
+      select: { id: true },
+    });
+    if (taken === null) {
+      break;
+    }
+    if (attempt >= 15) {
+      throw new Error(
+        `no unregistered loopback origin found for the Commerce fixture in 16 picks (last tried ${candidate})`,
+      );
+    }
+    port = pickFreePort();
+  }
   running = await startCommerceProcess(env, port);
   client = createCommerceClient(running);
   await client.resetScenario({
@@ -761,7 +807,9 @@ describe('Phase 16: Commerce target-manifest/v1 and engine signing seam', () => 
     const stored = row.manifestJson as Record<string, unknown>;
     expect(stored['manifestVersion']).toBe('target-manifest/v1');
     expect(stored['signatureHeader']).toBe('X-Commerce-Signature');
-    expect(stored['credentialRefs']).toEqual([COMMERCE_SIGNING_REF]);
+    // Phase 17: the committed manifest declares the signing ref AND the
+    // admin ref (the golden scenario's setup step uses the admin API).
+    expect(stored['credentialRefs']).toEqual([...COMMERCE_DECLARED_REFS]);
     expect(stored['faultHook']).toMatchObject({ path: '/checkout/submit' });
 
     // No secret VALUE can be anywhere in the stored provenance.
@@ -1075,7 +1123,7 @@ describe('Phase 16: ADR-0024 registration and snapshot enforcement (real Postgre
 
   it('Commerce → Provider: declaring the Provider signing ref is REJECTED with no durable row (matrix case 21)', async () => {
     const origin = await uniqueTestOrigin(prisma);
-    // The policy grants ONLY the Commerce ref for this origin, even
+    // The policy grants ONLY the Commerce refs for this origin, even
     // though the Provider ref is globally executable and signing-capable.
     const before = await prisma.targetRegistration.count();
     await expect(
@@ -1083,7 +1131,7 @@ describe('Phase 16: ADR-0024 registration and snapshot enforcement (real Postgre
         origin,
         { credentialRefs: ['DEMO_PROVIDER_SIGNING_SECRET'] },
         ['DEMO_PROVIDER_SIGNING_SECRET'],
-        commerceCredentialPolicy(origin),
+        testTargetOriginCredentialPolicy({ [origin]: [...COMMERCE_DECLARED_REFS] }),
       ),
     ).rejects.toThrow(CredentialAuthorizationError);
     expect(await prisma.targetRegistration.count()).toBe(before);
@@ -1148,7 +1196,7 @@ describe('Phase 16: ADR-0024 registration and snapshot enforcement (real Postgre
         },
         // Granted for A only: B contributes the empty set, so the
         // intersection excludes the ref.
-        testTargetOriginCredentialPolicy({ [originA]: [COMMERCE_SIGNING_REF] }),
+        testTargetOriginCredentialPolicy({ [originA]: [...COMMERCE_DECLARED_REFS] }),
       ),
     ).rejects.toThrow(/not platform-authorized/);
     expect(await prisma.targetOrigin.findUnique({ where: { origin: originA } })).toBeNull();
@@ -1179,7 +1227,9 @@ describe('Phase 16: ADR-0024 registration and snapshot enforcement (real Postgre
       environment: 'LOCAL_DEVELOPMENT' as const,
       origins: [origin],
       contractKind: 'GENERIC_HTTP' as const,
-      credentialRefs: [COMMERCE_SIGNING_REF],
+      // Equal to the committed manifest's declared refs (registration
+      // consistency is enforced separately from authorization).
+      credentialRefs: [...COMMERCE_DECLARED_REFS],
       manifest,
     };
     // Before the grant exists: rejected (declarations enable nothing).
@@ -1195,7 +1245,7 @@ describe('Phase 16: ADR-0024 registration and snapshot enforcement (real Postgre
   it('grant revoked after registration: a NEW run fails closed; historical snapshots are UNCHANGED (matrix case 28)', async () => {
     const origin = await uniqueTestOrigin(prisma);
     const grantedPolicy = commerceCredentialPolicy(origin);
-    const { targetId } = await registerOn(origin, {}, [COMMERCE_SIGNING_REF], grantedPolicy);
+    const { targetId } = await registerOn(origin, {}, [...COMMERCE_DECLARED_REFS], grantedPolicy);
 
     // A revision created + frozen while the grant exists.
     const created = await createExperiment(

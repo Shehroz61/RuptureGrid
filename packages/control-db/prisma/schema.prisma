@@ -176,20 +176,20 @@ enum TransportStage {
 model TargetRegistration {
   id             String            @id @default(uuid()) @db.Uuid
   displayName    String            @unique @db.VarChar(120)
-  environment    TargetEnvironment  /// Credential reference names steps on this target may declare.
+  environment    TargetEnvironment /// Credential reference names steps on this target may declare.
   /// Must be a subset of the executor's server-side allowlist
   /// (EXECUTOR_CREDENTIAL_REFS); enforced at registration.
   credentialRefs String[]
   /// Response-interpretation contract used by side-effect
   /// classification (architecture §7.1, prompt §27).
-  contractKind ContractKind
+  contractKind   ContractKind
   /// Phase 13 (ADR-0016): the registered target-manifest/v1 document —
   /// REGISTRATION PROVENANCE. Data-only, closed-schema, validated
   /// server-side before any row is written. NULL for legacy (v1.0)
   /// targets registered without a manifest; credential VALUES can
   /// never be present (manifests carry reference NAMES only — ADR-0012).
-  manifestJson Json?
-  createdAt    DateTime          @default(now()) @db.Timestamptz(6)
+  manifestJson   Json?
+  createdAt      DateTime          @default(now()) @db.Timestamptz(6)
 
   origins   TargetOrigin[]
   revisions ExperimentRevision[]
@@ -274,8 +274,8 @@ model RunSnapshot {
   content          Json
   createdAt        DateTime @default(now()) @db.Timestamptz(6)
 
-  revision ExperimentRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
-  runs     ExperimentRun[]
+  revision                ExperimentRevision       @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+  runs                    ExperimentRun[]
   reproductionDefinitions ReproductionDefinition[]
 
   @@index([revisionId])
@@ -288,32 +288,36 @@ model RunSnapshot {
 // ---------------------------------------------------------------------
 
 model ExperimentRun {
-  id            String    @id @default(uuid()) @db.Uuid
-  snapshotId    String    @db.Uuid
-  state         RunState
+  id                String    @id @default(uuid()) @db.Uuid
+  snapshotId        String    @db.Uuid
+  state             RunState
   /// Bounded terminal failure detail (FAILED runs). Never contains
   /// secrets (redaction before persistence).
-  failureReason String?   @db.VarChar(500)
-  createdAt     DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt     DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
-  terminalAt    DateTime? @db.Timestamptz(6)
+  failureReason     String?   @db.VarChar(500)
+  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  terminalAt        DateTime? @db.Timestamptz(6)
   /// Set by the API cancel endpoint; workers observe it at
   /// cooperative cancel points (before dispatch, between waves,
   /// before each retry) — never a mid-request abort (§8 §10).
   cancelRequestedAt DateTime? @db.Timestamptz(6)
 
-  snapshot RunSnapshot        @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
-  steps    ExperimentStepRun[]
-  rawObservations      RawObservation[]
-  normalizedEvents     NormalizedEvent[]
-  causalRelationships  CausalRelationship[]
-  evidenceIntegrityHead EvidenceIntegrityHead?
-  evaluationBatches    EvaluationBatch[]
-  invariantEvaluations InvariantEvaluation[]
-  findings             Finding[]
-  timelineEntries      ForensicTimelineEntry[]
-  forensicDerivations  ForensicDerivation[]
-  reproductionDefinitions ReproductionDefinition[]
+  snapshot                  RunSnapshot                @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  steps                     ExperimentStepRun[]
+  rawObservations           RawObservation[]
+  normalizedEvents          NormalizedEvent[]
+  causalRelationships       CausalRelationship[]
+  evidenceIntegrityHead     EvidenceIntegrityHead?
+  evaluationBatches         EvaluationBatch[]
+  invariantEvaluations      InvariantEvaluation[]
+  findings                  Finding[]
+  timelineEntries           ForensicTimelineEntry[]
+  forensicDerivations       ForensicDerivation[]
+  reproductionDefinitions   ReproductionDefinition[]
+  truthInputHead            RunTruthInputHead?
+  eligibilityProofs         RunEligibilityProof[]
+  currentEvaluationPointers CurrentEvaluationPointer[]
+  derivationAttempts        DerivationAttempt[]
 
   @@index([state])
   @@index([createdAt])
@@ -391,16 +395,16 @@ model StepInvocation {
   invocationIdentity String? @db.VarChar(120)
 
   /// Furthest transport stage reached (NULL = never started).
-  transportStage TransportStage?
-  httpStatus     Int?
-  requestBytes   Int?
-  responseBytes  Int?
+  transportStage        TransportStage?
+  httpStatus            Int?
+  requestBytes          Int?
+  responseBytes         Int?
   /// Bounded captured response body for legitimate variable-reference
   /// steps. Subject to redaction; capped by the response-size limit.
-  responseBody   String?
+  responseBody          String?
   /// 1-based index of the repeat wave; ordered so later steps can
   /// reference a specific delivery deterministically.
-  waveIndex      Int?
+  waveIndex             Int?
   /// Executor-side timing for the invocation (ms). Observation only —
   /// never authoritative for ownership decisions.
   durationMs            Int?
@@ -493,43 +497,43 @@ enum EvidenceOrigin {
 /// appended, carrying ITS writer identity; it can never regain
 /// authority over execution state.
 model RawObservation {
-  id                 String         @id @default(uuid()) @db.Uuid
-  runId              String         @db.Uuid
-  stepRunId          String?        @db.Uuid
+  id                     String          @id @default(uuid()) @db.Uuid
+  runId                  String          @db.Uuid
+  stepRunId              String?         @db.Uuid
   /// StepInvocation row this observation belongs to (execution
   /// correlation; evidence remains a separate concept — §13).
-  invocationId       String?        @db.Uuid
+  invocationId           String?         @db.Uuid
   /// The target-facing per-invocation identity observed on the wire.
-  invocationIdentity String?        @db.VarChar(120)
-  kind               ObservationKind
+  invocationIdentity     String?         @db.VarChar(120)
+  kind                   ObservationKind
   /// Explicit evidence-adapter kind for target_observation rows (e.g.
   /// demo-fintech-payment-lineage). Never inferred from paths.
-  adapterKind        String?        @db.VarChar(64)
+  adapterKind            String?         @db.VarChar(64)
   /// Versioned schema of `payload` so old evidence stays interpretable.
-  schemaVersion      String         @db.VarChar(32)
-  observedAt         DateTime       @db.Timestamptz(6)
+  schemaVersion          String          @db.VarChar(32)
+  observedAt             DateTime        @db.Timestamptz(6)
   /// The STORED REDACTED representation (bounded). Never raw secret-
   /// bearing bytes (ADR-0012); `redactionApplied` records honestly that
   /// redaction transformed the captured data.
-  payload            Json
-  redactionApplied   Boolean
-  redactionPolicyVersion String     @db.VarChar(32)
-  truncated          Boolean        @default(false)
+  payload                Json
+  redactionApplied       Boolean
+  redactionPolicyVersion String          @db.VarChar(32)
+  truncated              Boolean         @default(false)
   /// SHA-256 hex of the canonical UTF-8 bytes of the stored
   /// representation (redaction applied BEFORE hashing). An integrity
   /// and traceability field — NOT a global identity: two runs observing
   /// identical content each keep their own observation row.
-  contentHash        String         @db.VarChar(64)
+  contentHash            String          @db.VarChar(64)
   /// Position of this observation in its run's hash chain (0-based,
   /// gap-free under the append lock).
-  chainIndex         Int
+  chainIndex             Int
   /// contentHash of the predecessor observation of this run.
-  prevContentHash    String?        @db.VarChar(64)
-  origin             EvidenceOrigin
+  prevContentHash        String?         @db.VarChar(64)
+  origin                 EvidenceOrigin
   /// Writer provenance: which worker generation captured this.
-  writerOwnerId      String         @db.VarChar(120)
-  writerFencingToken BigInt?
-  createdAt          DateTime       @default(now()) @db.Timestamptz(6)
+  writerOwnerId          String          @db.VarChar(120)
+  writerFencingToken     BigInt?
+  createdAt              DateTime        @default(now()) @db.Timestamptz(6)
 
   run     ExperimentRun      @relation(fields: [runId], references: [id], onDelete: Restrict)
   stepRun ExperimentStepRun? @relation(fields: [stepRunId], references: [id], onDelete: Restrict)
@@ -552,31 +556,31 @@ model RawObservation {
 /// (evidence-model §1 NORMALIZED EVENT). Re-running the same normalizer
 /// version on the same input produces the same row (input-hash unique).
 model NormalizedEvent {
-  id                    String         @id @default(uuid()) @db.Uuid
-  runId                 String         @db.Uuid
+  id                      String         @id @default(uuid()) @db.Uuid
+  runId                   String         @db.Uuid
   /// Typed event name, namespaced by normalizer (e.g.
   /// demo.payment-delivery-observed).
-  eventType             String         @db.VarChar(64)
+  eventType               String         @db.VarChar(64)
   /// Business subject identity when the event has one (e.g. the
   /// providerPaymentId) — the join key for attribution.
-  subjectKey            String?        @db.VarChar(200)
-  payload               Json
-  normalizerName        String         @db.VarChar(80)
-  normalizerVersion     String         @db.VarChar(32)
+  subjectKey              String?        @db.VarChar(200)
+  payload                 Json
+  normalizerName          String         @db.VarChar(80)
+  normalizerVersion       String         @db.VarChar(32)
   /// SHA-256 of the canonical input tuple (source observation content
   /// hashes) — derivation idempotency.
-  inputHash             String         @db.VarChar(64)
-  origin                EvidenceOrigin @default(DETERMINISTIC_DERIVED)
+  inputHash               String         @db.VarChar(64)
+  origin                  EvidenceOrigin @default(DETERMINISTIC_DERIVED)
   /// Content hashes of the source RawObservations (traceability raw →
   /// derived).
   sourceObservationHashes String[]
   /// Chain index of the anchoring observation, when single-sourced.
   primaryObservationIndex Int?
-  createdAt             DateTime       @default(now()) @db.Timestamptz(6)
+  createdAt               DateTime       @default(now()) @db.Timestamptz(6)
 
-  run            ExperimentRun       @relation(fields: [runId], references: [id], onDelete: Restrict)
-  fromRelations  CausalRelationship[] @relation("CausalRelationshipFromEvent")
-  toRelations    CausalRelationship[] @relation("CausalRelationshipToEvent")
+  run           ExperimentRun        @relation(fields: [runId], references: [id], onDelete: Restrict)
+  fromRelations CausalRelationship[] @relation("CausalRelationshipFromEvent")
+  toRelations   CausalRelationship[] @relation("CausalRelationshipToEvent")
 
   @@unique([runId, normalizerName, normalizerVersion, inputHash])
   @@index([runId, eventType])
@@ -602,7 +606,7 @@ model CausalRelationship {
   evidenceJson Json
   createdAt    DateTime @default(now()) @db.Timestamptz(6)
 
-  run       ExperimentRun  @relation(fields: [runId], references: [id], onDelete: Restrict)
+  run       ExperimentRun   @relation(fields: [runId], references: [id], onDelete: Restrict)
   fromEvent NormalizedEvent @relation("CausalRelationshipFromEvent", fields: [fromEventId], references: [id], onDelete: Restrict)
   toEvent   NormalizedEvent @relation("CausalRelationshipToEvent", fields: [toEventId], references: [id], onDelete: Restrict)
 
@@ -618,20 +622,89 @@ model CausalRelationship {
 /// final chain head"). A mutable pointer row by design — it is
 /// coordination metadata, not observation truth.
 model EvidenceIntegrityHead {
-  runId             String   @id @db.Uuid
-  lastChainIndex    Int
-  headContentHash   String   @db.VarChar(64)
-  observationCount  Int
-  updatedAt         DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  runId                        String    @id @db.Uuid
+  lastChainIndex               Int
+  headContentHash              String    @db.VarChar(64)
+  observationCount             Int
+  updatedAt                    DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
   /// Last verification outcome (recomputed chain). Verification is
   /// re-runnable; it never rewrites observation rows.
-  lastVerifiedAt    DateTime? @db.Timestamptz(6)
-  lastVerifiedHeadHash String? @db.VarChar(64)
+  lastVerifiedAt               DateTime? @db.Timestamptz(6)
+  lastVerifiedHeadHash         String?   @db.VarChar(64)
   lastVerifiedObservationCount Int?
 
   run ExperimentRun @relation(fields: [runId], references: [id], onDelete: Restrict)
 
   @@map("evidence_integrity_head")
+  @@schema("evidence")
+}
+
+/// Phase 17 B2 (ADR-0026 §13 derived-projection completeness). One row
+/// per derivation ATTEMPT of a run. The set of derivation commits that
+/// have run is NOT derivable from the raw chain, so a partially built
+/// projection must never be treated as complete: an attempt is made
+/// durable BEFORE its first derived write, and it is marked COMPLETE
+/// only after its completeness checks pass. A reader that finds the
+/// newest attempt non-terminal, or terminal-but-stale against the
+/// current truth-input watermark, fails closed.
+///
+/// `attemptGeneration` is allocated under the per-run advisory lock
+/// (`max + 1` for the `(runId, derivationKind)` pair), so attempts are
+/// individually tracked: a newer attempt NEVER deletes or rewrites an
+/// older one, it only supersedes it by recording `ABANDONED` on the
+/// older row. Coordination metadata — never business truth, never a
+/// verdict (R-18).
+model DerivationAttempt {
+  id                String                  @id @default(uuid()) @db.Uuid
+  runId             String                  @db.Uuid
+  /// Derivation family, e.g. `run-evidence/v1` (D-participating) or
+  /// `run-forensics/v1` (class-B projection, completeness-marked only).
+  derivationKind    String                  @db.VarChar(64)
+  /// Per-(runId, derivationKind) monotone attempt counter (1-based).
+  attemptGeneration BigInt
+  status            DerivationAttemptStatus
+
+  /// Source truth-input watermark this attempt derived from (stage-1
+  /// capture): chain identity + provenance revision + derivation
+  /// generation at attempt start.
+  sourceChainHeadHash         String? @db.VarChar(64)
+  sourceChainObservationCount Int
+  sourceChainLastIndex        Int?
+  sourceProvenanceRevision    BigInt
+  sourceDerivationGeneration  BigInt
+
+  /// The `D` observed when this attempt was marked COMPLETE (for
+  /// D-participating kinds it equals the generation its own commits
+  /// produced plus any foreign commit already folded in).
+  committedDerivationGeneration BigInt?
+  /// Row counts of the projection this attempt committed (diagnostics /
+  /// completeness evidence; never a verdict).
+  projectionCounts              Json?
+  /// Bounded, secret-free reason for a non-COMPLETE terminal state.
+  reason                        String? @db.VarChar(500)
+
+  startedAt   DateTime  @default(now()) @db.Timestamptz(6)
+  completedAt DateTime? @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  run ExperimentRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  @@unique([runId, derivationKind, attemptGeneration])
+  @@index([runId, derivationKind, status])
+  @@map("derivation_attempt")
+  @@schema("evidence")
+}
+
+/// Terminal and non-terminal states of a derivation attempt. `ABANDONED`
+/// records a superseded in-progress attempt (its row is preserved — a
+/// newer attempt never silently clears an older one).
+enum DerivationAttemptStatus {
+  IN_PROGRESS
+  COMPLETE
+  INCOMPLETE
+  FAILED
+  ABANDONED
+
   @@schema("evidence")
 }
 
@@ -669,18 +742,18 @@ enum InvariantVerdict {
 /// The durable row is REGISTRY METADATA; run truth always comes from
 /// the definition frozen into the run snapshot (ADR-0010/ADR-0023).
 model InvariantDefinition {
-  id           String   @id @default(uuid()) @db.Uuid
-  invariantKey String   @unique @db.VarChar(80)
-  title        String   @db.VarChar(200)
-  description  String   @db.VarChar(1000)
+  id              String   @id @default(uuid()) @db.Uuid
+  invariantKey    String   @unique @db.VarChar(80)
+  title           String   @db.VarChar(200)
+  description     String   @db.VarChar(1000)
   /// Generic metadata triple (ALL-OR-NONE; legacy rows carry NULL):
   /// the closed invariant kind (atMostOneAcceptedEffect |
   /// resourceConservation), the definition protocol identity
   /// (business-invariant/v1), and the frozen §6 instance params.
-  kind           String?  @db.VarChar(40)
-  registryVersion String? @db.VarChar(24)
-  paramsJson     Json?
-  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  kind            String?  @db.VarChar(40)
+  registryVersion String?  @db.VarChar(24)
+  paramsJson      Json?
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
 
   evaluations InvariantEvaluation[]
 
@@ -716,35 +789,36 @@ model EvaluationBatch {
 /// evidenceSetHash, persisted ONCE. Re-evaluation under a new
 /// evaluator version adds a new row — never a mutation.
 model InvariantEvaluation {
-  id               String           @id @default(uuid()) @db.Uuid
-  batchId          String           @db.Uuid
-  runId            String           @db.Uuid
-  invariantKey     String           @db.VarChar(80)
-  evaluatorVersion String           @db.VarChar(32)
+  id                      String           @id @default(uuid()) @db.Uuid
+  batchId                 String           @db.Uuid
+  runId                   String           @db.Uuid
+  invariantKey            String           @db.VarChar(80)
+  evaluatorVersion        String           @db.VarChar(32)
   /// The business subject evaluated (e.g. providerPaymentId).
-  subjectKey       String           @db.VarChar(200)
-  verdict          InvariantVerdict
+  subjectKey              String           @db.VarChar(200)
+  verdict                 InvariantVerdict
   /// Bounded human-readable justification (deterministic, secret-free).
-  reason           String           @db.VarChar(500)
+  reason                  String           @db.VarChar(500)
   /// SHA-256 of the canonical evidence-set input tuple. Deterministic
   /// fingerprint of everything this verdict rests on.
-  evidenceSetHash  String           @db.VarChar(64)
+  evidenceSetHash         String           @db.VarChar(64)
   /// What the completeness claim rests on (e.g. lineage-complete,
   /// delivery-attributable).
-  completenessBasis String          @db.VarChar(64)
+  completenessBasis       String           @db.VarChar(64)
   /// Secret-free structured detail (counted effects, bases, gaps).
-  details          Json
+  details                 Json
   /// Traceability: content hashes of every raw observation, ids of
   /// every normalized event and causal relationship used.
   sourceObservationHashes String[]
   normalizedEventIds      String[]
   causalRelationshipIds   String[]
-  createdAt        DateTime         @default(now()) @db.Timestamptz(6)
+  createdAt               DateTime         @default(now()) @db.Timestamptz(6)
 
-  batch     EvaluationBatch     @relation(fields: [batchId], references: [id], onDelete: Restrict)
-  run       ExperimentRun       @relation(fields: [runId], references: [id], onDelete: Restrict)
-  invariant InvariantDefinition @relation(fields: [invariantKey], references: [invariantKey], onDelete: Restrict)
-  findings  Finding[]
+  batch           EvaluationBatch            @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  run             ExperimentRun              @relation(fields: [runId], references: [id], onDelete: Restrict)
+  invariant       InvariantDefinition        @relation(fields: [invariantKey], references: [invariantKey], onDelete: Restrict)
+  findings        Finding[]
+  currentPointers CurrentEvaluationPointer[]
 
   @@unique([runId, invariantKey, evaluatorVersion, subjectKey, evidenceSetHash])
   @@index([runId])
@@ -867,42 +941,42 @@ enum TimelineOrderingBasis {
 /// is immutable after creation; a changed rule version appends a NEW
 /// Finding — history is never rewritten (§45).
 model Finding {
-  id                 String   @id @default(uuid()) @db.Uuid
-  runId              String   @db.Uuid
+  id                    String            @id @default(uuid()) @db.Uuid
+  runId                 String            @db.Uuid
   /// The authoritative Phase 4 evaluation this Finding rests on. The
   /// Finding NEVER re-computes a verdict: one business truth engine.
-  invariantEvaluationId String @db.Uuid
-  invariantKey       String   @db.VarChar(80)
-  evaluatorVersion   String   @db.VarChar(32)
+  invariantEvaluationId String            @db.Uuid
+  invariantKey          String            @db.VarChar(80)
+  evaluatorVersion      String            @db.VarChar(32)
   /// Version of the deterministic finding rule that produced this row.
-  findingRuleVersion String   @db.VarChar(32)
+  findingRuleVersion    String            @db.VarChar(32)
   /// The business subject (e.g. providerPaymentId) — mirrors the
   /// evaluation's subject; one failing subject = one Finding (§43).
-  subjectKey         String   @db.VarChar(200)
-  reasonCode         FindingReasonCode
+  subjectKey            String            @db.VarChar(200)
+  reasonCode            FindingReasonCode
   /// Deterministic bounded title from fixed templates (§15). No AI prose.
-  title              String   @db.VarChar(200)
+  title                 String            @db.VarChar(200)
   /// Deterministic bounded summary from the evaluation's own details.
-  summary            String   @db.VarChar(500)
+  summary               String            @db.VarChar(500)
   /// SHA-256 over the canonical input tuple: rule version, evaluation
   /// identity, subject, and the ordered proof-reference set (§32). Wall
   /// clock never enters semantic identity.
-  inputFingerprint   String   @db.VarChar(64)
+  inputFingerprint      String            @db.VarChar(64)
   /// Deterministic structured detail (counts, amounts, basis) copied
   /// from the evaluation — never recomputed (§96/§50).
-  details            Json
+  details               Json
   /// Confidence scope (evidence-model §8): what the evidence PROVES
   /// versus what remains uncertain — INDETERMINATE invocation outcomes
   /// and non-identity attribution dependencies are listed explicitly,
   /// never smoothed over. Deterministic, derived from the run's own
   /// persisted execution rows; never an LLM judgement (ADR-0007).
-  provenScope        Json
-  uncertainScope     Json
-  createdAt          DateTime @default(now()) @db.Timestamptz(6)
+  provenScope           Json
+  uncertainScope        Json
+  createdAt             DateTime          @default(now()) @db.Timestamptz(6)
 
-  run            ExperimentRun       @relation(fields: [runId], references: [id], onDelete: Restrict)
-  evaluation     InvariantEvaluation @relation(fields: [invariantEvaluationId], references: [id], onDelete: Restrict)
-  evidenceRefs   FindingEvidenceReference[]
+  run          ExperimentRun              @relation(fields: [runId], references: [id], onDelete: Restrict)
+  evaluation   InvariantEvaluation        @relation(fields: [invariantEvaluationId], references: [id], onDelete: Restrict)
+  evidenceRefs FindingEvidenceReference[]
 
   /// Semantic idempotency is a DATABASE constraint, not an
   /// application-level check (§64): the same evaluation under the same
@@ -920,14 +994,14 @@ model Finding {
 /// events/relationships/observations that constitute the proof, typed
 /// and deterministically selected — never "every observation in the run".
 model FindingEvidenceReference {
-  id        String  @id @default(uuid()) @db.Uuid
-  findingId String  @db.Uuid
+  id        String              @id @default(uuid()) @db.Uuid
+  findingId String              @db.Uuid
   subject   EvidenceSubjectKind
   /// Durable row id (or observation contentHash for RAW_OBSERVATION —
   /// the stable raw-evidence handle Phase 4 already exposes).
-  sourceId  String  @db.VarChar(200)
+  sourceId  String              @db.VarChar(200)
   /// Role of this reference in the proof (bounded, deterministic).
-  role      String  @db.VarChar(64)
+  role      String              @db.VarChar(64)
   /// Deterministic 1-based position within the Finding's proof set.
   position  Int
 
@@ -946,14 +1020,14 @@ model FindingEvidenceReference {
 /// CausalRelationship — adjacency in this timeline is not causality
 /// (§23). Ordering carries an explicit basis (§21/§22).
 model ForensicTimelineEntry {
-  id                String @id @default(uuid()) @db.Uuid
-  runId             String @db.Uuid
-  derivationVersion String @db.VarChar(32)
+  id                String                @id @default(uuid()) @db.Uuid
+  runId             String                @db.Uuid
+  derivationVersion String                @db.VarChar(32)
   entryKind         TimelineEntryKind
   /// TYPED source reference (§47): the durable row (or observation
   /// contentHash) this entry presents. No source-less entries.
   sourceKind        EvidenceSubjectKind
-  sourceId          String @db.VarChar(200)
+  sourceId          String                @db.VarChar(200)
   /// Explicit ordering basis (evidence-model §9): `sequence` for
   /// engine-assigned ordinals, `wall_clock` where only timestamps
   /// exist, `unordered_overlap` for genuinely concurrent observations
@@ -967,16 +1041,16 @@ model ForensicTimelineEntry {
   sequenceNumber    Int
   /// Wall-clock instant of the underlying source (execution time,
   /// observedAt, or derivedAt — the semantics are named in `timeMeaning`).
-  occurredAt        DateTime @db.Timestamptz(6)
+  occurredAt        DateTime              @db.Timestamptz(6)
   /// Which time semantic `occurredAt` carries (§21): never one fake
   /// event timestamp collapsed across meanings.
-  timeMeaning       String  @db.VarChar(40)
+  timeMeaning       String                @db.VarChar(40)
   /// The business subject when the entry has one (providerPaymentId…).
-  subjectKey        String? @db.VarChar(200)
+  subjectKey        String?               @db.VarChar(200)
   /// Safe derived detail copied from the stored source (§99). Secret-
   /// free by construction: sources were redacted before persistence.
   details           Json
-  createdAt         DateTime @default(now()) @db.Timestamptz(6)
+  createdAt         DateTime              @default(now()) @db.Timestamptz(6)
 
   run ExperimentRun @relation(fields: [runId], references: [id], onDelete: Restrict)
 
@@ -996,18 +1070,18 @@ model ForensicTimelineEntry {
 /// recomputability is auditable. Repeat passes with identical input
 /// converge on the same row (unique per run + version + fingerprint).
 model ForensicDerivation {
-  id                 String   @id @default(uuid()) @db.Uuid
-  runId              String   @db.Uuid
-  derivationVersion  String   @db.VarChar(32)
+  id                 String    @id @default(uuid()) @db.Uuid
+  runId              String    @db.Uuid
+  derivationVersion  String    @db.VarChar(32)
   /// Fingerprint over the derivation INPUT tuple: finding-rule inputs
   /// (evaluations) + timeline source set (execution rows, observation
   /// hashes, derived events/relationships). Identical inputs ⇒ identical
   /// fingerprint ⇒ identical outputs (§135).
-  inputFingerprint   String   @db.VarChar(64)
-  startedAt          DateTime @default(now()) @db.Timestamptz(6)
+  inputFingerprint   String    @db.VarChar(64)
+  startedAt          DateTime  @default(now()) @db.Timestamptz(6)
   completedAt        DateTime? @db.Timestamptz(6)
-  findingCount       Int      @default(0)
-  timelineEntryCount Int      @default(0)
+  findingCount       Int       @default(0)
+  timelineEntryCount Int       @default(0)
 
   run ExperimentRun @relation(fields: [runId], references: [id], onDelete: Restrict)
 
@@ -1024,17 +1098,17 @@ model ForensicDerivation {
 /// results, so an investigator can answer "can we reproduce this?"
 /// from durable truth alone.
 model ReproductionDefinition {
-  id              String @id @default(uuid()) @db.Uuid
-  runId           String @db.Uuid
-  snapshotId      String @db.Uuid
-  snapshotContentHash String @db.VarChar(64)
+  id                     String   @id @default(uuid()) @db.Uuid
+  runId                  String   @db.Uuid
+  snapshotId             String   @db.Uuid
+  snapshotContentHash    String   @db.VarChar(64)
   /// The target processing mode the experiment requires (incident-replay
   /// §1.2), extracted from the frozen snapshot steps.
-  targetModeRequirement String? @db.VarChar(32)
+  targetModeRequirement  String?  @db.VarChar(32)
   /// Credential REFERENCE names required (never values, ADR-0012).
-  credentialRefs  String[]
+  credentialRefs         String[]
   /// Invariant definitions (versioned) the replay must evaluate.
-  invariantBindings Json
+  invariantBindings      Json
   /// Expected outcome classes (incident-replay §1.6) — for the
   /// canonical scenario the run's own deterministic verdicts.
   acceptanceExpectations Json
@@ -1044,8 +1118,8 @@ model ReproductionDefinition {
   /// from the snapshot (never from live state), with credential
   /// REFERENCE names only and NO credential values. Empty when the run
   /// declares no fault.
-  faultIntent Json?
-  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  faultIntent            Json?
+  createdAt              DateTime @default(now()) @db.Timestamptz(6)
 
   run      ExperimentRun @relation(fields: [runId], references: [id], onDelete: Restrict)
   snapshot RunSnapshot   @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
@@ -1055,5 +1129,144 @@ model ReproductionDefinition {
   @@unique([runId])
   @@index([snapshotId])
   @@map("reproduction_definition")
+  @@schema("analysis")
+}
+
+// =====================================================================
+// Phase 17 — RUN-OWNED EVALUATION ELIGIBILITY + COMPOSITE TRUTH-INPUT
+// WATERMARK (ADR-0026 §13)
+// =====================================================================
+// Design-only in the ADR; this migration is the honest additive
+// materialization (R-12 — no schema-push, no destructive rewrite, no
+// historical row touched).
+//
+//   control.run_truth_input_head     — the run-scoped composite
+//                                     watermark revision counters
+//                                     `(P, D)` of `W = (C, P, D)`
+//   analysis.current_evaluation_pointer — the persisted, analysis-owned
+//                                     current-truth reference per
+//                                     (run, key, evaluatorVersion, subject)
+//   analysis.run_eligibility_proof  — the persisted eligibility/coverage
+//                                     proof per (run, key, evaluatorVersion)
+//
+// All three are COORDINATION METADATA (like EvidenceIntegrityHead), never
+// a second invariant-truth engine: verdicts live ONLY in
+// InvariantEvaluation rows, and the pointer merely NAMES one of them.
+// Existing rows (EvidenceIntegrityHead, EvaluationBatch,
+// InvariantEvaluation, RawObservation, RunSnapshot, ReproductionDefinition)
+// are byte-unchanged.
+
+/// The run's composite truth-input watermark head (ADR-0026 §13). A
+/// mutable coordination row by design (the accepted EvidenceIntegrityHead
+/// precedent), NOT business truth: `provenanceRevision` (P) advances
+/// under the writer protocol with every truth-bearing non-chain write;
+/// `derivationGeneration` (D) advances with every committed derived
+/// projection. Missing row ⇒ `(0, 0)`. `+1`-monotone inside the writer
+/// transaction under the shared per-run advisory lock.
+model RunTruthInputHead {
+  runId                String   @id @db.Uuid
+  /// P — the provenance revision (bigint, monotone, initial 0).
+  provenanceRevision   BigInt   @default(0)
+  /// D — the derivation generation (bigint, monotone, initial 0).
+  derivationGeneration BigInt   @default(0)
+  updatedAt            DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  run ExperimentRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  @@map("run_truth_input_head")
+  @@schema("control")
+}
+
+/// The persisted, analysis-owned current-evaluation reference (ADR-0026
+/// §13 model B): exactly one pointer per eligible
+/// (run, invariantKey, evaluatorVersion, subjectKey) naming the current
+/// InvariantEvaluation row. Report and classifier READ pointers; they
+/// never choose rows by timestamp/UUID/row order. Mutable coordination
+/// metadata updated atomically under the per-run advisory lock with the
+/// eligibility proof row and one shared `analysisGeneration`.
+model CurrentEvaluationPointer {
+  id                        String   @id @default(uuid()) @db.Uuid
+  runId                     String   @db.Uuid
+  invariantKey              String   @db.VarChar(80)
+  evaluatorVersion          String   @db.VarChar(32)
+  subjectKey                String   @db.VarChar(200)
+  /// FK → the current InvariantEvaluation row (the verdict lives THERE).
+  currentEvaluationId       String   @db.Uuid
+  /// SHA-256 of the canonical current evidence-set identity (ADR-0026 §13).
+  evidenceHeadHash          String   @db.VarChar(64)
+  eligibilityVersion        String   @db.VarChar(32)
+  /// Shared per-publication analysis generation (bigint, monotone).
+  analysisGeneration        BigInt
+  /// The certified chain component `(C)` the pointer was published at.
+  integrityHeadHash         String?  @db.VarChar(64)
+  integrityObservationCount Int
+  /// The provenance component `(P)` the pointer was published at.
+  provenanceRevision        BigInt
+  /// The derivation component `(D)` the pointer was published at.
+  derivationGeneration      BigInt
+  updatedAt                 DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  run               ExperimentRun       @relation(fields: [runId], references: [id], onDelete: Restrict)
+  currentEvaluation InvariantEvaluation @relation(fields: [currentEvaluationId], references: [id], onDelete: Restrict)
+
+  @@unique([runId, invariantKey, evaluatorVersion, subjectKey])
+  @@index([runId])
+  @@map("current_evaluation_pointer")
+  @@schema("analysis")
+}
+
+/// The persisted eligibility/coverage proof (ADR-0026 §13): one row per
+/// (run, invariantKey, evaluatorVersion) carrying the anchor tuple, the
+/// declared/eligible/missing subject sets, the class-B unexpected
+/// identities, the foreign-scope inventory (counts only), the evidence
+/// gaps, and the publication watermark `(C, P, D)` + `analysisGeneration`.
+/// The report's `eligibilitySummary` + `coverage` blocks serialize THIS
+/// row — persisted analysis results, never rederived business truth.
+/// `mode` is `strict-coverage/v1` for gated runs and `legacy-compat` for
+/// snapshots without a `runScopeBinding`; for `legacy-compat` rows the
+/// anchor/declared/coverage fields are absent (nullable) and the row
+/// carries the as-observed subject domain instead.
+model RunEligibilityProof {
+  id                        String   @id @default(uuid()) @db.Uuid
+  runId                     String   @db.Uuid
+  invariantKey              String   @db.VarChar(80)
+  evaluatorVersion          String   @db.VarChar(32)
+  eligibilityVersion        String   @db.VarChar(32)
+  /// `strict-coverage/v1` | `legacy-compat`.
+  mode                      String   @db.VarChar(24)
+  /// The frozen coverage mode string (`strict-coverage/v1`).
+  coverageMode              String   @db.VarChar(32)
+  /// Shared per-publication analysis generation (agrees with every
+  /// governed pointer — a report-time consistency check, ADR-0026 §14.5).
+  analysisGeneration        BigInt
+  /// The certified chain component `(C)` of `W`.
+  integrityHeadHash         String?  @db.VarChar(64)
+  integrityObservationCount Int
+  /// The provenance component `(P)` of `W`.
+  provenanceRevision        BigInt
+  /// The derivation component `(D)` of `W`.
+  derivationGeneration      BigInt
+  /// Gated runs only: the anchor tuple + setup observation hashes +
+  /// fencing facts. Null for `legacy-compat` rows.
+  anchor                    Json?
+  declaredSubjectsJson      Json?
+  eligibleSubjectsJson      Json?
+  missingSubjectsJson       Json?
+  /// Class-B unexpected same-scope identities + counts (named).
+  unexpectedSubjects        Json?
+  /// Class-C foreign-scope inventory: per (scope, generation) counts only.
+  foreignInventory          Json?
+  /// Named evidence-gap kinds (anchor/capture/attribution/completeness).
+  evidenceGaps              Json?
+  /// The frozen coverage limitation statement.
+  coverageStatement         String   @db.VarChar(1000)
+  createdAt                 DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt                 DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  run ExperimentRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  @@unique([runId, invariantKey, evaluatorVersion])
+  @@index([runId])
+  @@map("run_eligibility_proof")
   @@schema("analysis")
 }

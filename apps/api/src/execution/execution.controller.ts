@@ -36,6 +36,10 @@ import {
   RunCreationError,
   ManifestValidationError,
   CredentialAuthorizationError,
+  acquireRunLock,
+  advanceProvenanceRevision,
+  PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  PROVENANCE_TRANSACTION_MAX_WAIT_MS,
 } from '@rupturegrid/engine';
 import type {
   TargetRegistrationResult,
@@ -44,6 +48,12 @@ import type {
 } from '@rupturegrid/engine';
 // createExecutionQueue is used via a lazy import inside dispatch to
 // keep the controller's module-load surface honest.
+
+/** Bounded provenance-writer transaction (ADR-0026 §13 writer protocol). */
+const PROVENANCE_TX = {
+  timeout: PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  maxWait: PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+} as const;
 
 export const EXECUTION_OPTIONS = Symbol('execution-options');
 
@@ -154,17 +164,30 @@ export class ExecutionController {
       for (const step of steps) {
         try {
           await queue.enqueueStep({ runId, stepRunId: step.id, sequence: step.sequence });
-          await this.controlDb.prisma.experimentStepRun.updateMany({
-            where: { id: step.id, dispatchState: 'PENDING' },
-            data: { dispatchState: 'DISPATCHED', dispatchedAt: new Date() },
-          });
+          // Dispatch marker = truth-bearing provenance (ADR-0026 §13).
+          await this.controlDb.prisma.$transaction(async (tx) => {
+            await acquireRunLock(tx, runId);
+            const marker = await tx.experimentStepRun.updateMany({
+              where: { id: step.id, dispatchState: 'PENDING' },
+              data: { dispatchState: 'DISPATCHED', dispatchedAt: new Date() },
+            });
+            if (marker.count > 0) {
+              await advanceProvenanceRevision(tx, runId);
+            }
+          }, PROVENANCE_TX);
           enqueued += 1;
         } catch {
           failed += 1;
-          await this.controlDb.prisma.experimentStepRun.updateMany({
-            where: { id: step.id },
-            data: { lastDispatchError: 'enqueue failed (Redis unavailable)' },
-          });
+          await this.controlDb.prisma.$transaction(async (tx) => {
+            await acquireRunLock(tx, runId);
+            const marker = await tx.experimentStepRun.updateMany({
+              where: { id: step.id },
+              data: { lastDispatchError: 'enqueue failed (Redis unavailable)' },
+            });
+            if (marker.count > 0) {
+              await advanceProvenanceRevision(tx, runId);
+            }
+          }, PROVENANCE_TX);
         }
       }
       // When NOTHING could be enqueued but the run has steps, leave a
@@ -176,13 +199,19 @@ export class ExecutionController {
           select: { id: true },
         });
         if (pendingSteps.length > 0) {
-          await this.controlDb.prisma.experimentStepRun.updateMany({
-            where: { id: { in: pendingSteps.map((step) => step.id) } },
-            data: {
-              dispatchState: 'RECONCILE',
-              lastDispatchError: 'initial dispatch enqueued nothing',
-            },
-          });
+          await this.controlDb.prisma.$transaction(async (tx) => {
+            await acquireRunLock(tx, runId);
+            const marker = await tx.experimentStepRun.updateMany({
+              where: { id: { in: pendingSteps.map((step) => step.id) } },
+              data: {
+                dispatchState: 'RECONCILE',
+                lastDispatchError: 'initial dispatch enqueued nothing',
+              },
+            });
+            if (marker.count > 0) {
+              await advanceProvenanceRevision(tx, runId);
+            }
+          }, PROVENANCE_TX);
         }
       }
     } finally {
@@ -520,10 +549,16 @@ export class ExecutionController {
       await settleCancelledRun(this.controlDb.prisma, runId);
       return { runId, state: 'CANCELLED', note: 'run cancelled before execution' };
     }
-    await this.controlDb.prisma.experimentRun.update({
-      where: { id: runId },
-      data: { cancelRequestedAt: new Date() },
-    });
+    await this.controlDb.prisma.$transaction(async (tx) => {
+      await acquireRunLock(tx, runId);
+      const updated = await tx.experimentRun.updateMany({
+        where: { id: runId },
+        data: { cancelRequestedAt: new Date() },
+      });
+      if (updated.count > 0) {
+        await advanceProvenanceRevision(tx, runId);
+      }
+    }, PROVENANCE_TX);
     return {
       runId,
       state: 'RUNNING',

@@ -128,3 +128,47 @@ describe('redaction policy', () => {
     expect(ha.hash).not.toBe(hb.hash);
   });
 });
+
+// ---------------------------------------------------------------------
+// Checkpoint C conformance — the run-scope anchor-field predicate and the
+// ACTUAL redaction behaviour are kept in lock-step.
+// ---------------------------------------------------------------------
+// `run-anchor.ts` refuses an anchor bound to a field the platform masks by
+// construction (ADR-0026 §3 rule 4 / §16). That predicate lives in
+// `@rupturegrid/engine` (it is a definition-time rule, and the engine must
+// not depend on this package), so this test — which can import BOTH —
+// proves the two are the same rule rather than two regexes that happen to
+// look alike. Verified against real durable evidence in the Checkpoint C
+// session: a `scopeToken`-anchored run could never be anchored at all.
+describe('redaction policy — run-scope anchor-field conformance', () => {
+  const SAMPLES = [
+    'scopeToken',
+    'verificationScopeId',
+    'generationId',
+    'generationToken',
+    'customerEmail',
+    'apiKey',
+    'api_key',
+    'accessKey',
+    'privateKey',
+    'signature',
+    'authorization',
+    'cookie',
+    'credentialId',
+    'password',
+    'passwd',
+    'secretName',
+    'orderId',
+    'checkoutIntentId',
+    'totalMinor',
+  ];
+
+  it('isRedactedAnchorFieldName agrees with the actual masking of a same-named field', async () => {
+    const { isRedactedAnchorFieldName } = await import('@rupturegrid/engine');
+    for (const name of SAMPLES) {
+      const masked = redactJson({ [name]: 'value-1' }) as Record<string, unknown>;
+      const actuallyMasked = masked[name] === REDACTED_MARKER;
+      expect([name, isRedactedAnchorFieldName(name)]).toEqual([name, actuallyMasked]);
+    }
+  });
+});

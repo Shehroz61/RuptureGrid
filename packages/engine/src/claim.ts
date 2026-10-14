@@ -17,6 +17,19 @@
 // DATABASE time, not worker clocks (Phase 3 §33).
 
 import type { PrismaClient, StepState } from '@rupturegrid/control-db';
+import {
+  acquireRunLock,
+  advanceProvenanceRevision,
+  resolveRunIdOfStep,
+  PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+  PROVENANCE_TRANSACTION_TIMEOUT_MS,
+} from './truth-input-head.js';
+
+/** Bounded provenance-writer transaction (writer protocol, ADR-0026 §13). */
+const PROVENANCE_TX = {
+  timeout: PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  maxWait: PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+} as const;
 
 export interface ClaimOptions {
   readonly ownerId: string;
@@ -48,7 +61,20 @@ export async function claimStep(
   // The claim and the run's DISPATCHING → RUNNING transition are ONE
   // atomic UPDATE so a run can never be observed RUNNING without any
   // claimed step (and never stay DISPATCHING while a step executes).
-  const rows = (await prisma.$queryRaw`
+  //
+  // The whole claim runs in ONE transaction that FIRST takes the shared
+  // per-run advisory lock and, when a claim actually landed, advances the
+  // provenance revision `P` — the claim mutates step state, lease fields,
+  // the fencing token, the dispatch marker, and possibly the run state
+  // (ADR-0026 §13). A failed/non-claiming attempt writes nothing and
+  // advances nothing.
+  const runId = await resolveRunIdOfStep(prisma, stepRunId);
+  if (runId === null) {
+    return null; // No such step: nothing to claim, nothing to write.
+  }
+  const row = await prisma.$transaction(async (tx) => {
+    await acquireRunLock(tx, runId);
+    const rows = (await tx.$queryRaw`
     WITH claimed AS (
       UPDATE "control"."experiment_step_run" AS s
          SET "state"           = 'CLAIMED',
@@ -104,17 +130,23 @@ export async function claimStep(
     SELECT c."id", c."runId" AS run_id, c."sequence", c."name",
            c.fencing_token, c."leaseExpiresAt" AS lease_expires_at, c."state"
       FROM claimed c
-  `) as Array<{
-    id: string;
-    run_id: string;
-    sequence: number;
-    name: string;
-    fencing_token: string;
-    lease_expires_at: Date;
-    state: StepState;
-  }>;
-  const row = rows[0];
-  if (row === undefined) {
+    `) as Array<{
+      id: string;
+      run_id: string;
+      sequence: number;
+      name: string;
+      fencing_token: string;
+      lease_expires_at: Date;
+      state: StepState;
+    }>;
+    const claimed = rows[0];
+    if (claimed === undefined) {
+      return null; // Not claimable: no write happened, no `P` advance.
+    }
+    await advanceProvenanceRevision(tx, runId);
+    return claimed;
+  }, PROVENANCE_TX);
+  if (row === null) {
     return null;
   }
   return {
@@ -149,19 +181,34 @@ export async function heartbeatStep(
   stepRunId: string,
   options: ClaimOptions & { readonly fencingToken: string },
 ): Promise<Date> {
-  const rows = (await prisma.$queryRaw`
-    UPDATE "control"."experiment_step_run"
-       SET "leaseExpiresAt" = "statement_timestamp"() + (${options.leaseDurationMs} * interval '1 millisecond'),
-           "updatedAt"      = "statement_timestamp"()
-     WHERE "id" = ${stepRunId}::uuid
-       AND "leaseOwnerId" = ${options.ownerId}
-       AND "fencingToken" = ${options.fencingToken}::bigint
-       AND "state" IN ('CLAIMED', 'EXECUTING')
-     RETURNING "leaseExpiresAt" AS "lease_expires_at"
-  `) as Array<{ lease_expires_at: Date }>;
-  const row = rows[0];
-  if (row === undefined) {
+  const runId = await resolveRunIdOfStep(prisma, stepRunId);
+  const leaseExpiresAt = await prisma.$transaction(async (tx) => {
+    if (runId !== null) {
+      // The lease field is a truth-bearing provenance field (ADR-0026
+      // §13): the renewal and its `P` advance commit together.
+      await acquireRunLock(tx, runId);
+    }
+    const rows = (await tx.$queryRaw`
+      UPDATE "control"."experiment_step_run"
+         SET "leaseExpiresAt" = "statement_timestamp"() + (${options.leaseDurationMs} * interval '1 millisecond'),
+             "updatedAt"      = "statement_timestamp"()
+       WHERE "id" = ${stepRunId}::uuid
+         AND "leaseOwnerId" = ${options.ownerId}
+         AND "fencingToken" = ${options.fencingToken}::bigint
+         AND "state" IN ('CLAIMED', 'EXECUTING')
+       RETURNING "leaseExpiresAt" AS "lease_expires_at"
+    `) as Array<{ lease_expires_at: Date }>;
+    const row = rows[0];
+    if (row === undefined) {
+      return null; // No renewal: nothing changed, nothing advanced.
+    }
+    if (runId !== null) {
+      await advanceProvenanceRevision(tx, runId);
+    }
+    return row.lease_expires_at;
+  }, PROVENANCE_TX);
+  if (leaseExpiresAt === null) {
     throw new LeaseLostError(stepRunId, options.ownerId);
   }
-  return row.lease_expires_at;
+  return leaseExpiresAt;
 }

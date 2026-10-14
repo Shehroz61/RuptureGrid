@@ -41,7 +41,8 @@
       "@rupturegrid/engine": ["packages/engine/src/index.ts"],
       "@rupturegrid/evidence": ["packages/evidence/src/index.ts"],
       "@rupturegrid/forensics": ["packages/forensics/src/index.ts"],
-      "@rupturegrid/incident-zero": ["packages/incident-zero/src/index.ts"]
+      "@rupturegrid/incident-zero": ["packages/incident-zero/src/index.ts"],
+      "@rupturegrid/cli": ["packages/cli/src/index.ts"]
     }
   },
   "include": ["tests/**/*.ts", "packages/*/src/**/*.test.ts", "packages/*/src/**/*.d.ts"],

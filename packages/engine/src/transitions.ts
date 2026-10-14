@@ -11,36 +11,73 @@
 
 import type { PrismaClient, SideEffectKnowledge, IntentOutcome } from '@rupturegrid/control-db';
 import { LeaseLostError } from './claim.js';
+import {
+  acquireRunLock,
+  advanceProvenanceRevision,
+  resolveRunIdOfStep,
+  PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+  PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  type RunLockedTx,
+} from './truth-input-head.js';
 
 export interface FencingContext {
   readonly ownerId: string;
   readonly fencingToken: string;
 }
 
-/** Marks the step EXECUTING (from CLAIMED), fenced. */
+/** The provenance-writer transaction bounds (bounded lock/statement hold). */
+const PROVENANCE_TX = {
+  timeout: PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  maxWait: PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+} as const;
+
+/**
+ * Marks the step EXECUTING (from CLAIMED), fenced. The guarded state
+ * write and the `P` revision advance commit in ONE transaction under the
+ * shared per-run advisory lock (ADR-0026 §13 writer protocol). A rejected
+ * transition (0 rows) changes no step state; its durably-recorded
+ * `stale_writer_event` is itself a truth-bearing row, so `P` still
+ * advances exactly once — never as if the state write had succeeded.
+ */
 export async function markExecuting(
   prisma: PrismaClient,
   stepRunId: string,
   ctx: FencingContext,
 ): Promise<void> {
-  const count = await prisma.experimentStepRun.updateMany({
-    where: {
-      id: stepRunId,
-      leaseOwnerId: ctx.ownerId,
-      fencingToken: BigInt(ctx.fencingToken),
-      state: 'CLAIMED',
-    },
-    data: { state: 'EXECUTING', executingAt: new Date() },
-  });
-  if (count.count === 0) {
-    // A rejected transition is recorded reality (architecture §10):
-    // the attempt happened; the authoritative state was NOT changed.
-    await recordStaleWriter(
-      prisma,
-      stepRunId,
-      ctx,
-      'mark-executing (not owner/token, or step not CLAIMED)',
-    );
+  const runId = await resolveRunIdOfStep(prisma, stepRunId);
+  const rejected = await prisma.$transaction(async (tx) => {
+    if (runId !== null) {
+      await acquireRunLock(tx, runId);
+    }
+    const count = await tx.experimentStepRun.updateMany({
+      where: {
+        id: stepRunId,
+        leaseOwnerId: ctx.ownerId,
+        fencingToken: BigInt(ctx.fencingToken),
+        state: 'CLAIMED',
+      },
+      data: { state: 'EXECUTING', executingAt: new Date() },
+    });
+    if (count.count === 0) {
+      // A rejected transition is recorded reality (architecture §10):
+      // the attempt happened; the authoritative state was NOT changed.
+      await recordStaleWriterInTx(
+        tx,
+        stepRunId,
+        ctx,
+        'mark-executing (not owner/token, or step not CLAIMED)',
+      );
+      if (runId !== null) {
+        await advanceProvenanceRevision(tx, runId);
+      }
+      return true;
+    }
+    if (runId !== null) {
+      await advanceProvenanceRevision(tx, runId);
+    }
+    return false;
+  }, PROVENANCE_TX);
+  if (rejected) {
     throw new LeaseLostError(stepRunId, ctx.ownerId);
   }
 }
@@ -89,11 +126,37 @@ export async function recordInvocation(
   record: InvocationRecord,
   ctx: FencingContext,
 ): Promise<RecordedInvocation> {
+  const runId = await resolveRunIdOfStep(prisma, stepRunId);
   const maxAttempts = 64;
-  let sequence = record.sequence;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    try {
-      const created = await prisma.stepInvocation.create({
+  // ONE transaction: the per-run advisory lock (so concurrent invocation
+  // writers and evidence appenders serialize), the attributed row, and
+  // the `P` advance — or nothing at all (ADR-0026 §13). The post-send
+  // send itself already happened outside this transaction; the lock is
+  // never held across network I/O.
+  return prisma.$transaction(async (tx) => {
+    if (runId !== null) {
+      await acquireRunLock(tx, runId);
+    }
+    let sequence = record.sequence;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      // Pre-check the (stepRunId, sequence) slot rather than relying on a
+      // raised unique violation: under PostgreSQL a failed statement
+      // aborts the whole transaction, so the retry must be a lookup. The
+      // per-run lock makes this check reliable (no concurrent writer for
+      // this run can be allocating slots at the same time).
+      const occupied = await tx.stepInvocation.findUnique({
+        where: { stepRunId_sequence: { stepRunId, sequence } },
+        select: { id: true },
+      });
+      if (occupied !== null) {
+        const current = await tx.stepInvocation.aggregate({
+          where: { stepRunId },
+          _max: { sequence: true },
+        });
+        sequence = (current._max.sequence ?? 0) + 1;
+        continue;
+      }
+      const created = await tx.stepInvocation.create({
         data: {
           stepRunId,
           sequence,
@@ -113,24 +176,15 @@ export async function recordInvocation(
         },
         select: { id: true, sequence: true },
       });
-      return { invocationId: created.id, sequence: created.sequence };
-    } catch (error) {
-      const code = (error as { code?: string }).code;
-      const lastAttempt = attempt === maxAttempts - 1;
-      if (code !== 'P2002' || lastAttempt) {
-        throw error;
+      if (runId !== null) {
+        await advanceProvenanceRevision(tx, runId);
       }
-      const current = await prisma.stepInvocation.aggregate({
-        where: { stepRunId },
-        _max: { sequence: true },
-      });
-      sequence = (current._max.sequence ?? 0) + 1;
+      return { invocationId: created.id, sequence: created.sequence };
     }
-  }
-  // Unreachable: the bounded loop above returns or throws. Satisfies
-  // the compiler for the no-implicit-return rule without fabricating a
-  // record.
-  throw new Error('recordInvocation: exhausted bounded sequence-allocation retries');
+    // Unreachable under the bound: the loop above returns or the bounded
+    // allocation keep hitting occupied slots. Never fabricate a record.
+    throw new Error('recordInvocation: exhausted bounded sequence-allocation retries');
+  }, PROVENANCE_TX);
 }
 
 export interface TerminalWrite {
@@ -154,37 +208,81 @@ export async function writeTerminalState(
   write: TerminalWrite,
   ctx: FencingContext,
 ): Promise<'written' | 'stale-writer'> {
-  const count = await prisma.experimentStepRun.updateMany({
-    where: {
-      id: stepRunId,
-      leaseOwnerId: ctx.ownerId,
-      fencingToken: BigInt(ctx.fencingToken),
-      state: { in: ['CLAIMED', 'EXECUTING'] },
-    },
-    data: {
-      state: write.state,
-      intentOutcome: write.intentOutcome,
-      sideEffectKnowledge: write.sideEffectKnowledge,
-      attemptCount: write.attemptCount,
-      error: write.error === null ? null : write.error.slice(0, 500),
-      terminalAt: new Date(),
-    },
-  });
-  if (count.count === 0) {
-    await recordStaleWriter(prisma, stepRunId, ctx, `terminal ${write.state}`);
+  const runId = await resolveRunIdOfStep(prisma, stepRunId);
+  const rejected = await prisma.$transaction(async (tx) => {
+    if (runId !== null) {
+      await acquireRunLock(tx, runId);
+    }
+    const count = await tx.experimentStepRun.updateMany({
+      where: {
+        id: stepRunId,
+        leaseOwnerId: ctx.ownerId,
+        fencingToken: BigInt(ctx.fencingToken),
+        state: { in: ['CLAIMED', 'EXECUTING'] },
+      },
+      data: {
+        state: write.state,
+        intentOutcome: write.intentOutcome,
+        sideEffectKnowledge: write.sideEffectKnowledge,
+        attemptCount: write.attemptCount,
+        error: write.error === null ? null : write.error.slice(0, 500),
+        terminalAt: new Date(),
+      },
+    });
+    if (count.count === 0) {
+      // Rejected: no terminal truth changed. The durably-recorded stale
+      // attempt is the only truth-bearing row, so `P` advances exactly
+      // once (never as if the terminal write had succeeded).
+      await recordStaleWriterInTx(tx, stepRunId, ctx, `terminal ${write.state}`);
+      if (runId !== null) {
+        await advanceProvenanceRevision(tx, runId);
+      }
+      return true;
+    }
+    if (runId !== null) {
+      await advanceProvenanceRevision(tx, runId);
+    }
+    return false;
+  }, PROVENANCE_TX);
+  if (rejected) {
     throw new LeaseLostError(stepRunId, ctx.ownerId);
   }
   return 'written';
 }
 
-/** Records a stale-writer attempt durably (append-only). */
+/** Records a stale-writer attempt durably (append-only), advancing `P`. */
 export async function recordStaleWriter(
   prisma: PrismaClient,
   stepRunId: string,
   ctx: FencingContext,
   detail: string,
 ): Promise<void> {
-  await prisma.staleWriterEvent.create({
+  const runId = await resolveRunIdOfStep(prisma, stepRunId);
+  await prisma.$transaction(async (tx) => {
+    if (runId !== null) {
+      await acquireRunLock(tx, runId);
+    }
+    await recordStaleWriterInTx(tx, stepRunId, ctx, detail);
+    if (runId !== null) {
+      await advanceProvenanceRevision(tx, runId);
+    }
+  }, PROVENANCE_TX);
+}
+
+/**
+ * The in-transaction stale-writer record (append-only). Callers that
+ * already hold the per-run lock reuse their transaction rather than
+ * nesting a second Prisma transaction.
+ */
+async function recordStaleWriterInTx(
+  tx: RunLockedTx & {
+    staleWriterEvent: { create(args: unknown): Promise<unknown> };
+  },
+  stepRunId: string,
+  ctx: FencingContext,
+  detail: string,
+): Promise<void> {
+  await tx.staleWriterEvent.create({
     data: {
       stepRunId,
       attemptedBy: ctx.ownerId,

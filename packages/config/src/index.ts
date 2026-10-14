@@ -1,15 +1,17 @@
 import { loadConfig, loadEnvironment } from './load.js';
 import {
   apiConfigSchema,
+  cliConfigSchema,
   commerceConfigSchema,
   demoConfigSchema,
   workerConfigSchema,
 } from './schemas.js';
-import type { ApiConfig, CommerceConfig, DemoConfig, WorkerConfig } from './schemas.js';
+import type { ApiConfig, CliConfig, CommerceConfig, DemoConfig, WorkerConfig } from './schemas.js';
 
 export { ConfigValidationError, loadConfig, loadEnvironment, pickRuptureGridEnv } from './load.js';
 export {
   apiConfigSchema,
+  cliConfigSchema,
   commerceConfigSchema,
   demoConfigSchema,
   workerConfigSchema,
@@ -20,6 +22,7 @@ export {
 } from './schemas.js';
 export type {
   ApiConfig,
+  CliConfig,
   CommerceConfig,
   DemoConfig,
   WorkerConfig,
@@ -50,4 +53,10 @@ export function loadDemoConfig(): DemoConfig {
 export function loadCommerceConfig(): CommerceConfig {
   loadEnvironment();
   return loadConfig(commerceConfigSchema);
+}
+
+/** Loads the repo-root `.env` and validates the headless CLI environment. */
+export function loadCliConfig(): CliConfig {
+  loadEnvironment();
+  return loadConfig(cliConfigSchema);
 }

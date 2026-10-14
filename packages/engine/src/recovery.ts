@@ -15,6 +15,19 @@
 // requeued once, their state only moved by a fresh claim.
 
 import type { PrismaClient } from '@rupturegrid/control-db';
+import {
+  acquireRunLock,
+  advanceProvenanceRevision,
+  resolveRunIdOfStep,
+  PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+  PROVENANCE_TRANSACTION_TIMEOUT_MS,
+} from './truth-input-head.js';
+
+/** Bounded provenance-writer transaction (writer protocol, ADR-0026 §13). */
+const PROVENANCE_TX = {
+  timeout: PROVENANCE_TRANSACTION_TIMEOUT_MS,
+  maxWait: PROVENANCE_TRANSACTION_MAX_WAIT_MS,
+} as const;
 
 export interface ReconcileSweepResult {
   /** Steps whose dispatch was re-attempted (caller enqueues these). */
@@ -78,7 +91,11 @@ export async function resolveExpiredLease(
   mutationClassification: 'READ_ONLY' | 'MUTATING',
   maybeSent: boolean,
 ): Promise<'indeterminate' | 'requeue' | null> {
+  const runId = await resolveRunIdOfStep(prisma, stepRunId);
   return prisma.$transaction(async (tx) => {
+    if (runId !== null) {
+      await acquireRunLock(tx, runId);
+    }
     const step = await tx.experimentStepRun.findFirst({
       where: {
         id: stepRunId,
@@ -110,6 +127,9 @@ export async function resolveExpiredLease(
           terminalAt: new Date(),
         },
       });
+      if (runId !== null) {
+        await advanceProvenanceRevision(tx, runId);
+      }
       return 'indeterminate';
     }
     // Read-only, or provably pre-send: safe to hand to another owner.
@@ -122,8 +142,11 @@ export async function resolveExpiredLease(
         dispatchState: 'RECONCILE',
       },
     });
+    if (runId !== null) {
+      await advanceProvenanceRevision(tx, runId);
+    }
     return 'requeue';
-  });
+  }, PROVENANCE_TX);
 }
 
 /**
@@ -170,40 +193,51 @@ export async function settleRuns(prisma: PrismaClient, limit: number): Promise<n
      LIMIT ${limit}
   `) as Array<{ id: string; has_failure: boolean; has_open: boolean }>;
   let settled = 0;
+  // MULTI-RUN SWEEP DISCIPLINE (ADR-0026 §13): one run's lock at a time,
+  // committed per run. A transaction never holds two run locks at once.
   for (const run of runs) {
-    if (run.has_failure && run.has_open) {
-      // Steps blocked behind a failure can never execute: close them
-      // honestly as CANCELLED with KNOWN_ABSENT (never sent).
-      await prisma.experimentStepRun.updateMany({
-        where: { runId: run.id, state: { in: ['PENDING', 'DISPATCHED'] } },
+    await prisma.$transaction(async (tx) => {
+      await acquireRunLock(tx, run.id);
+      let changed = false;
+      if (run.has_failure && run.has_open) {
+        // Steps blocked behind a failure can never execute: close them
+        // honestly as CANCELLED with KNOWN_ABSENT (never sent).
+        const cancelled = await tx.experimentStepRun.updateMany({
+          where: { runId: run.id, state: { in: ['PENDING', 'DISPATCHED'] } },
+          data: {
+            state: 'CANCELLED',
+            intentOutcome: 'CANCELLED',
+            sideEffectKnowledge: 'KNOWN_ABSENT',
+            terminalAt: new Date(),
+            error: 'dependency step failed; ordered execution stopped before this step',
+          },
+        });
+        changed = changed || cancelled.count > 0;
+      }
+      const failed = await tx.experimentStepRun.count({
+        where: { runId: run.id, state: { in: ['FAILED', 'CANCELLED'] } },
+      });
+      const indeterminate = await tx.stepInvocation.count({
+        where: { stepRun: { runId: run.id }, sideEffectKnowledge: 'INDETERMINATE' },
+      });
+      const reason =
+        failed > 0
+          ? `${failed} step(s) did not succeed${indeterminate > 0 ? `; ${indeterminate} invocation(s) INDETERMINATE` : ''}`
+          : null;
+      const updated = await tx.experimentRun.updateMany({
+        where: { id: run.id, state: 'RUNNING' },
         data: {
-          state: 'CANCELLED',
-          intentOutcome: 'CANCELLED',
-          sideEffectKnowledge: 'KNOWN_ABSENT',
+          state: failed > 0 ? 'FAILED' : 'COMPLETED',
           terminalAt: new Date(),
-          error: 'dependency step failed; ordered execution stopped before this step',
+          ...(reason === null ? {} : { failureReason: reason }),
         },
       });
-    }
-    const failed = await prisma.experimentStepRun.count({
-      where: { runId: run.id, state: { in: ['FAILED', 'CANCELLED'] } },
-    });
-    const indeterminate = await prisma.stepInvocation.count({
-      where: { stepRun: { runId: run.id }, sideEffectKnowledge: 'INDETERMINATE' },
-    });
-    const reason =
-      failed > 0
-        ? `${failed} step(s) did not succeed${indeterminate > 0 ? `; ${indeterminate} invocation(s) INDETERMINATE` : ''}`
-        : null;
-    const updated = await prisma.experimentRun.updateMany({
-      where: { id: run.id, state: 'RUNNING' },
-      data: {
-        state: failed > 0 ? 'FAILED' : 'COMPLETED',
-        terminalAt: new Date(),
-        ...(reason === null ? {} : { failureReason: reason }),
-      },
-    });
-    settled += updated.count;
+      changed = changed || updated.count > 0;
+      if (changed) {
+        await advanceProvenanceRevision(tx, run.id);
+      }
+      settled += updated.count;
+    }, PROVENANCE_TX);
   }
   return settled;
 }
@@ -215,7 +249,8 @@ export async function settleRuns(prisma: PrismaClient, limit: number): Promise<n
  */
 export async function settleCancelledRun(prisma: PrismaClient, runId: string): Promise<void> {
   await prisma.$transaction(async (tx) => {
-    await tx.experimentStepRun.updateMany({
+    await acquireRunLock(tx, runId);
+    const steps = await tx.experimentStepRun.updateMany({
       where: {
         runId,
         state: { in: ['PENDING', 'DISPATCHED', 'CLAIMED', 'EXECUTING'] },
@@ -228,9 +263,13 @@ export async function settleCancelledRun(prisma: PrismaClient, runId: string): P
         error: 'run cancelled before execution reached this step',
       },
     });
-    await tx.experimentRun.updateMany({
+    const run = await tx.experimentRun.updateMany({
       where: { id: runId, state: { in: ['CREATED', 'SNAPSHOT_PINNED', 'DISPATCHING', 'RUNNING'] } },
       data: { state: 'CANCELLED', terminalAt: new Date() },
     });
-  });
+    // Idempotent cancellation is a no-op: nothing changed ⇒ nothing advanced.
+    if (steps.count > 0 || run.count > 0) {
+      await advanceProvenanceRevision(tx, runId);
+    }
+  }, PROVENANCE_TX);
 }

@@ -18,9 +18,16 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createControlDb } from '@rupturegrid/control-db';
 import type { ControlDb } from '@rupturegrid/control-db';
-import { createExperiment, createRun, registerTarget } from '@rupturegrid/engine';
+import {
+  StepProcessor,
+  createCredentialResolver,
+  createExperiment,
+  createRun,
+  registerTarget,
+} from '@rupturegrid/engine';
 import {
   captureGenericInspectionSet,
+  createEngineEvidenceSink,
   deriveRunEvidence,
   loadFrozenEvidencePolicy,
   runRunAnalysis,
@@ -61,7 +68,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
         currency: 'string',
         status: 'string',
         verificationScopeId: 'string',
-        generationId: 'string',
+        generationId: 'integer-minor-units',
       },
       identityFields: ['checkoutIntentId'],
     },
@@ -79,7 +86,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
         currency: 'string',
         status: 'string',
         verificationScopeId: 'string',
-        generationId: 'string',
+        generationId: 'integer-minor-units',
       },
       identityFields: ['orderId'],
     },
@@ -97,7 +104,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
         currency: 'string',
         status: 'string',
         verificationScopeId: 'string',
-        generationId: 'string',
+        generationId: 'integer-minor-units',
       },
       identityFields: ['orderId'],
     },
@@ -110,7 +117,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
         checkoutIntentId: 'string',
         acceptedOrderTotal: 'integer-minor-units',
         verificationScopeId: 'string',
-        generationId: 'string',
+        generationId: 'integer-minor-units',
       },
       identityFields: ['checkoutIntentId'],
     },
@@ -123,7 +130,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
         sku: 'string',
         title: 'string',
         verificationScopeId: 'string',
-        generationId: 'string',
+        generationId: 'integer-minor-units',
       },
       identityFields: ['sku'],
     },
@@ -136,7 +143,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
         sku: 'string',
         initialAvailableUnits: 'integer-minor-units',
         verificationScopeId: 'string',
-        generationId: 'string',
+        generationId: 'integer-minor-units',
       },
       identityFields: ['sku'],
     },
@@ -149,7 +156,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
         sku: 'string',
         remainingAvailableUnits: 'integer-minor-units',
         verificationScopeId: 'string',
-        generationId: 'string',
+        generationId: 'integer-minor-units',
       },
       identityFields: ['sku'],
     },
@@ -164,7 +171,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
         reservedUnits: 'integer-minor-units',
         status: 'string',
         verificationScopeId: 'string',
-        generationId: 'string',
+        generationId: 'integer-minor-units',
       },
       identityFields: ['reservationId'],
     },
@@ -177,7 +184,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
         sku: 'string',
         acceptedReservationTotal: 'integer-minor-units',
         verificationScopeId: 'string',
-        generationId: 'string',
+        generationId: 'integer-minor-units',
       },
       identityFields: ['sku'],
     },
@@ -195,7 +202,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
           currency: 'string',
           status: 'string',
           verificationScopeId: 'string',
-          generationId: 'string',
+          generationId: 'integer-minor-units',
         },
       },
       {
@@ -210,7 +217,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
           currency: 'string',
           status: 'string',
           verificationScopeId: 'string',
-          generationId: 'string',
+          generationId: 'integer-minor-units',
         },
       },
       {
@@ -220,7 +227,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
           checkoutIntentId: 'string',
           acceptedOrderTotal: 'integer-minor-units',
           verificationScopeId: 'string',
-          generationId: 'string',
+          generationId: 'integer-minor-units',
         },
       },
       {
@@ -230,7 +237,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
           sku: 'string',
           title: 'string',
           verificationScopeId: 'string',
-          generationId: 'string',
+          generationId: 'integer-minor-units',
         },
       },
       {
@@ -240,7 +247,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
           sku: 'string',
           initialAvailableUnits: 'integer-minor-units',
           verificationScopeId: 'string',
-          generationId: 'string',
+          generationId: 'integer-minor-units',
         },
       },
       {
@@ -250,7 +257,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
           sku: 'string',
           remainingAvailableUnits: 'integer-minor-units',
           verificationScopeId: 'string',
-          generationId: 'string',
+          generationId: 'integer-minor-units',
         },
       },
       {
@@ -262,7 +269,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
           reservedUnits: 'integer-minor-units',
           status: 'string',
           verificationScopeId: 'string',
-          generationId: 'string',
+          generationId: 'integer-minor-units',
         },
       },
       {
@@ -272,7 +279,7 @@ const phase15Manifest = (origin: string, displayName: string) => ({
           sku: 'string',
           acceptedReservationTotal: 'integer-minor-units',
           verificationScopeId: 'string',
-          generationId: 'string',
+          generationId: 'integer-minor-units',
         },
       },
     ],
@@ -354,11 +361,19 @@ interface OrderRow {
   currency: string;
   status: string;
   verificationScopeId: string;
-  generationId: string;
+  generationId: number;
 }
 
+// Phase 17 Checkpoint C: the observed generation is a SAFE INTEGER (the
+// frozen runScope generation field is declared `integer-minor-units` on
+// every bound surface, and the anchor compares with `===` semantics — a
+// string generation can never match). No coercion exists in either
+// direction.
 const SCOPE = 'scope-phase15';
-const GEN = 'gen-1';
+const GEN = 1;
+/** The setup step whose fenced 2xx response anchors the run. */
+const SETUP_STEP = 'establish-scope';
+const ANCHOR_PATH = '/admin/establish-scope';
 
 const fixtureState = {
   checkoutIntents: [
@@ -543,17 +558,54 @@ const fixture = createServer((req, res) => {
   if (path === '/inspection/stock-remaining') return json(fixtureState.stockRemaining);
   if (path === '/inspection/reservations') return json(fixtureState.reservations);
   if (path === '/inspection/reservations-summary') return json(fixtureState.reservationsSummary);
+  // The frozen SETUP surface: the run-owned anchor is the fenced 2xx
+  // response to this request and nothing else (ADR-0026 §5).
+  if (path === ANCHOR_PATH) {
+    // The anchor scope field is declared `verificationScopeId`: this
+    // fixture declares that name as its inspection scope field too, and
+    // the name is NOT matched by the platform's persistent-redaction
+    // name pattern (a `*token*` name would be redacted in every stored
+    // observation and could never anchor a run — ADR-0026 §3 rule 4).
+    return json({ verificationScopeId: SCOPE, generationId: GEN, mode: 'SECURE' });
+  }
   res.writeHead(404);
   res.end('not found');
 });
 
 beforeAll(async () => {
-  await new Promise<void>((resolve) => {
-    fixture.listen(0, '127.0.0.1', () => resolve());
-  });
-  const address = fixture.address() as AddressInfo;
-  baseUrl = `http://127.0.0.1:${address.port}`;
   controlDb = createControlDb(loadTestEnv().controlDatabaseUrl);
+  // BIND-THEN-VERIFY (Phase 17 B1 fixture repair). The port is chosen by
+  // the OS, and every previous suite run leaves its registrations in the
+  // persistent dev database. Binding first and checking the origin
+  // second — with a bounded rebind on a hit — is the only collision-safe
+  // order here, and it is what keeps this suite from silently inheriting
+  // another run's registration: the origin authority is global, so a
+  // reused port would resolve to a target that declares NO manifest and
+  // every `invariantBindings` document below would be rejected (observed:
+  // “invariantBindings requires a manifest-declaring target”).
+  for (let attempt = 0; ; attempt += 1) {
+    await new Promise<void>((resolve) => {
+      fixture.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = fixture.address() as AddressInfo;
+    const candidate = `http://127.0.0.1:${String(address.port)}`;
+    const taken = await prisma().targetOrigin.findUnique({
+      where: { origin: candidate },
+      select: { id: true },
+    });
+    if (taken === null) {
+      baseUrl = candidate;
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      fixture.close(() => resolve());
+    });
+    if (attempt >= 15) {
+      throw new Error(
+        `no unregistered loopback origin found for the Phase 15 fixture in 16 binds (last tried ${candidate})`,
+      );
+    }
+  }
 });
 
 afterAll(async () => {
@@ -565,8 +617,11 @@ afterAll(async () => {
 
 /**
  * Registers the manifest target once (origin authority is global).
- * Idempotent across suite runs: a reused OS port whose origin is still
- * registered in the persistent DB resolves to the EXISTING target.
+ * The beforeAll above has already verified this origin was UNREGISTERED,
+ * so the defensive branch below can never silently adopt a foreign target:
+ * if a registration exists it MUST declare a manifest, and a target that
+ * does not is a loud failure rather than a phantom manifest-less target
+ * (Phase 17 B1 fixture repair — never inherit silently).
  */
 async function ensureManifestTarget(): Promise<string> {
   if (manifestTargetId !== null) {
@@ -577,6 +632,17 @@ async function ensureManifestTarget(): Promise<string> {
     select: { targetId: true },
   });
   if (existingOrigin !== null) {
+    const existing = await prisma().targetRegistration.findUniqueOrThrow({
+      where: { id: existingOrigin.targetId },
+      select: { manifestJson: true },
+    });
+    if (existing.manifestJson === null) {
+      throw new Error(
+        `Phase 15 fixture origin ${baseUrl} is registered to a target that declares NO manifest; ` +
+          'the bind-then-verify step must hand this suite an unregistered origin (refusing to ' +
+          'silently inherit a foreign target)',
+      );
+    }
     manifestTargetId = existingOrigin.targetId;
     return manifestTargetId;
   }
@@ -593,7 +659,13 @@ async function ensureManifestTarget(): Promise<string> {
   return registered.targetId;
 }
 
-/** Creates an experiment WITH frozen generic invariant bindings + a run. */
+/**
+ * Creates an experiment WITH frozen generic invariant bindings, a frozen
+ * `runScope/v1` declaration, and a run — the ADR-0026 §3 biconditional
+ * (`runScope` ⟺ generic `invariantBindings`) means a NEW generic
+ * definition always declares its run-owned anchor intent and subject
+ * domain, so this fixture freezes both.
+ */
 async function createRunWithBindings(): Promise<{ runId: string; revisionId: string }> {
   const targetId = await ensureManifestTarget();
   const created = await createExperiment(prisma(), {
@@ -601,6 +673,15 @@ async function createRunWithBindings(): Promise<{ runId: string; revisionId: str
     targetId,
     document: {
       steps: [
+        {
+          name: SETUP_STEP,
+          action: {
+            method: 'GET',
+            relativePath: ANCHOR_PATH,
+            mutation: 'READ_ONLY',
+            contract: 'GENERIC_HTTP',
+          },
+        },
         {
           name: 'probe',
           action: {
@@ -611,11 +692,53 @@ async function createRunWithBindings(): Promise<{ runId: string; revisionId: str
           },
         },
       ],
+      runScope: {
+        version: 'run-scope/v1',
+        setupStep: SETUP_STEP,
+        declaredScope: SCOPE,
+        scopeField: 'verificationScopeId',
+        generationField: 'generationId',
+        subjects: {
+          'INV-CHK-1': ['CHK-DUP', 'CHK-ONE', 'CHK-TWO', 'CHK-ZERO'],
+          'INV-INV-1': ['SKU-A', 'SKU-B', 'SKU-C'],
+        },
+      },
       invariantBindings: [INV_CHK_1, INV_INV_1],
     },
   });
   const run = await createRun(prisma(), created.revisionId);
+  await executeSetupStep(run.runId);
   return { runId: run.runId, revisionId: created.revisionId };
+}
+
+/**
+ * Executes the run's frozen SETUP step in-process through the REAL
+ * StepProcessor against the REAL fixture server. The fenced terminal
+ * `SUCCEEDED` write and its captured `http_response_observed` row are the
+ * ONLY anchor authority (ADR-0026 §5/§11): this fixture never hand-writes
+ * an observation and never fabricates a fenced owner generation.
+ */
+async function executeSetupStep(runId: string): Promise<void> {
+  const stepRun = await prisma().experimentStepRun.findFirstOrThrow({
+    where: { runId, name: SETUP_STEP },
+    select: { id: true },
+  });
+  const processor = new StepProcessor({
+    prisma: prisma(),
+    config: { WORKER_LEASE_DURATION_MS: 10_000, WORKER_HEARTBEAT_INTERVAL_MS: 2_000 },
+    // The fixture target declares NO credential references: a request for
+    // one is a fixture bug, not a silent empty value.
+    credentials: createCredentialResolver({}),
+    evidenceSink: createEngineEvidenceSink(prisma()),
+  });
+  await processor.processStep(stepRun.id);
+  const terminal = await prisma().experimentStepRun.findUniqueOrThrow({
+    where: { id: stepRun.id },
+    select: { state: true },
+  });
+  if (terminal.state !== 'SUCCEEDED') {
+    throw new Error(`phase15 setup step terminal state is ${terminal.state}, not SUCCEEDED`);
+  }
 }
 
 /** Captures every declared inspection query and derives the evidence. */

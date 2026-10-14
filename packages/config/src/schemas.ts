@@ -141,6 +141,15 @@ export const workerConfigSchema = z
      * (CredentialResolutionError — no fallback, no environment reveal).
      */
     DEMO_COMMERCE_SIGNING_SECRET: demoSecretOptional,
+    /**
+     * Phase 17 (ADR-0025): the Demo Commerce admin token value,
+     * resolvable by REF NAME for commerce manifest-target steps whose
+     * frozen policy declares `${credential.COMMERCE_ADMIN_TOKEN}`.
+     * Optional: only runs whose frozen declarations name the reference
+     * need the value present; a missing value fails that step pre-send
+     * (CredentialResolutionError — no fallback, no environment reveal).
+     */
+    COMMERCE_ADMIN_TOKEN: demoSecretOptional,
   })
   .refine((config) => config.WORKER_HEARTBEAT_INTERVAL_MS * 2 <= config.WORKER_LEASE_DURATION_MS, {
     message: 'WORKER_HEARTBEAT_INTERVAL_MS must be at most half of WORKER_LEASE_DURATION_MS',
@@ -189,6 +198,45 @@ const commerceSecret = z
   .refine((value) => value.trim().length >= 16, 'must not be whitespace-padded');
 
 /**
+ * RuptureGrid headless CLI (packages/cli) — Phase 17 (ADR-0019).
+ *
+ * The CLI is ORCHESTRATION + SERIALIZATION only: it owns no target
+ * credential values (the worker/executor resolves those at request
+ * time, ADR-0012) and no target database access. It needs the durable
+ * Control Plane handle, the coordination queue, and the SERVER-OWNED
+ * platform target-origin credential grant policy (name-only; the same
+ * policy the API owns — the CLI performs registration/definition-time
+ * policy consultation through the engine's accepted seam).
+ */
+export const cliConfigSchema = z.object({
+  NODE_ENV: nodeEnv,
+  LOG_LEVEL: logLevel,
+  CONTROL_DATABASE_URL: databaseUrl,
+  REDIS_URL: redisUrl,
+  QUEUE_PREFIX: queuePrefix,
+  /**
+   * Phase 17: the SAME server-owned target-origin grant policy the API
+   * owns (ADR-0024 §4), consumed through the engine's registration and
+   * definition-time validation seam. Reference NAMES and normalized
+   * origins only — no credential value can be expressed here.
+   */
+  TARGET_ORIGIN_CREDENTIAL_GRANTS: z
+    .string()
+    .default('')
+    .transform((raw, ctx) => {
+      try {
+        return parseTargetOriginCredentialGrants(raw);
+      } catch (error) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: error instanceof Error ? error.message : 'invalid grant policy',
+        });
+        return {} as TargetOriginCredentialGrants;
+      }
+    }),
+});
+
+/**
  * Demo Commerce target (apps/demo-commerce) — Phase 16 (ADR-0020).
  * A genuinely separate external application with its OWN PostgreSQL:
  * it must never receive CONTROL_/ REDIS_/ or DEMO_ family variables,
@@ -217,6 +265,7 @@ export type ApiConfig = z.infer<typeof apiConfigSchema>;
 export type WorkerConfig = z.infer<typeof workerConfigSchema>;
 export type DemoConfig = z.infer<typeof demoConfigSchema>;
 export type CommerceConfig = z.infer<typeof commerceConfigSchema>;
+export type CliConfig = z.infer<typeof cliConfigSchema>;
 
 /**
  * Credential reference names the Phase 3 executor can resolve from its
@@ -245,6 +294,16 @@ export const EXECUTOR_CREDENTIAL_REFS = [
   'DEMO_INSPECTION_TOKEN',
   'DEMO_PROVIDER_SIGNING_SECRET',
   'DEMO_COMMERCE_SIGNING_SECRET',
+  /**
+   * Phase 17 (ADR-0025): the Demo Commerce target's OWN admin trust
+   * boundary. The Commerce admin routes authenticate with
+   * COMMERCE_ADMIN_TOKEN — a distinct secret from the Demo Fintech
+   * admin token — so a commerce scenario step can never authenticate
+   * by naming the Fintech reference. The generic resolver's explicit
+   * extension point: adding a reference changes nothing for existing
+   * targets (declarations + platform grants still gate everything).
+   */
+  'COMMERCE_ADMIN_TOKEN',
 ] as const;
 export type ExecutorCredentialRef = (typeof EXECUTOR_CREDENTIAL_REFS)[number];
 

@@ -2944,3 +2944,161 @@ loaded 23/23 matrix above with genuine durable Commerce outcomes behind every
 vulnerable exit 1, full gates green, and legacy verifiers passing. Nothing
 was staged, committed, tagged, or pushed — the commit/tag decision belongs to
 the controlled release preparation.
+
+---
+
+# ADDENDUM XIV (post-commit CI repair): E3 barrier-less vulnerable miss + B3 leftover-registration dependence repaired (test-only)
+
+This addendum is appended; every earlier addendum (I–XIII) is preserved
+verbatim. It records ONLY what was actually executed and observed in this
+session (R-07). The Phase 17 commit `f88f87987cf5a22a6aa0dc8e81cbd7b54761c333`
+(98 files) was already pushed to `origin/main` by the controlled
+finalization; per the Git boundary it was NOT rewritten, amended, reset, or
+force-pushed. The change surface below is a separate follow-up repair:
+2 modified test files + 1 new test helper + this note. No production file,
+migration, canonical scenario, or ADR was modified. Nothing was staged,
+committed, tagged, or pushed in this session. `phase-17-accepted` was NOT
+created. Phase 18 was not started.
+
+## A. Preflight and CI failure evidence (observed, not assumed)
+
+- Local HEAD at session start: `f88f87987cf5a22a6aa0dc8e81cbd7b54761c333`
+  (= `origin/main`; verified via `git ls-remote` before any edit).
+- Failed CI run 38615681588 (head `f88f879…`, workflow `ci`): steps
+  install → Playwright → **format ✓ → lint ✓ → typecheck ✓ → unit ✓ →
+  build ✓ → migrations ✓**; **Integration suites FAILED** (18:33:53 →
+  18:44:16Z); Incident Zero / Controlled Faults skipped as a consequence.
+- Exact failing assertions (check-run annotations, quoted verbatim):
+  1. `tests/integration/phase17-e3-d20-precedence.test.ts:339` — CASE A:
+     `AssertionError: expected +0 to be 1` on `expect(exitCode).toBe(1)`
+     immediately after the Checkout Zero VULNERABLE run (the D-20
+     stale-pointer probe had NOT yet started).
+  2. `tests/integration/phase17-b3-validate-authoritative.test.ts:279` —
+     test B: `expected 'no registered target with displayName…' to contain
+     'credential authorization failed'`.
+
+## B. Failure 1 root cause — barrier-less vulnerable timing miss (fixture)
+
+E3's vulnerable legs called in-process `executeScenario` with NO
+deterministic oversell barrier (unlike `phase17-cli.test.ts`). The
+VULNERABLE target's naive check-then-act race is genuine: the two
+concurrent submissions oversell only when both READ the single remaining
+unit before either write commits. On CI's loaded/fresh runner the two
+submissions serialized — the second read stock 0 and itself answered
+`STOCK_UNAVAILABLE` — so exactly ONE accepted effect existed and the
+platform honestly classified PASS (exit 0) where the suite requires a
+genuine exit-1 baseline. This is the documented Addendum X §H residual
+(the `phase17-e3` vulnerable leg "keeps the documented genuine-race
+timing sensitivity") and the same signature Addendum XIII §I records
+for E3 (`exit 0` vs `1`, no barrier in that suite). No verdict defect,
+no evaluation defect, no production involvement: the platform persisted
+and classified exactly its own evidence.
+
+## C. Failure 2 root cause — leftover-registration dependence (fixture)
+
+Test B validated the UNTOUCHED golden file (displayName
+`checkout-zero-commerce`) and expected the
+`credential authorization failed` refusal. That expectation held on the
+persistent dev database only because a LEFTOVER `checkout-zero-commerce`
+registration from an earlier suite run existed there, whose origin the
+current server-owned grant policy does not own. On a fresh CI database
+no such registration exists, so target resolution fails first with `no
+registered target with displayName` (exit 4) — the correct behavior for
+that input, but not the authorization rejection the test claims to
+prove. Fixture dependence on developer-database history, not a product
+or validator defect: the unknown-target case (test K) proves the
+resolution error is the CORRECT response to an unregistered selector.
+
+## D. Exact repair (test-only; smallest sound change)
+
+New: `tests/integration/helpers/deterministic-oversell.ts` — E3 port of
+the accepted CLI barrier protocol (holder/waiter/dedicated-observer,
+sequential waiter queueing, phase-1 `blocked>=1` / phase-2 `blocked>=2`
+20ms polls with 90s dispatch margins, fixture-identity gate,
+phase-specific loud setup errors, ROLLBACK + close + await-dispatch on
+every path), generalized to a `dispatch: () => Promise<T>` callback for
+in-process `executeScenario` runs, plus `ensureSuiteSkuRow` (SKU seed
+through the target's OWN admin API) and
+`expectDeterministicOversellTruth` (submit SUCCEEDED / attemptCount 2 /
+2 invocations / 2 ACCEPTED orders / 2 ACCEPTED 1-unit reservations /
+remaining −1 / 2 request + 2 processing attempts / target-persisted
+overlap). The accepted `phase17-cli.test.ts` barrier is NOT refactored
+and stays byte-untouched.
+
+Modified: `tests/integration/phase17-e3-d20-precedence.test.ts` —
+rebound vulnerable scenarios carry the test-owned establish
+`timeoutMs: 60_000` (same patch the CLI barrier applies; validation
+still covers the dispatched document); CASE A, CASE B, and the
+report-classification test run through `runVulnerableScenario()`
+(barrier + genuine-oversell durable proof before any D-20 probe logic);
+the SECURE case-26 leg is untouched. Expected exits are unchanged
+(exit 1 stays exit 1 — never relaxed to accept exit 0).
+
+Modified: `tests/integration/phase17-b3-validate-authoritative.test.ts` —
+`runValidate` accepts a grants override; test B now validates a VALID
+rebound scenario binding the target THIS suite registered, under a
+deliberately grant-less server policy (`{}` — valid config, fail-closed
+default), asserting exit 4 AND the SPECIFIC `credential authorization
+failed` rejection AND unchanged durable counts around the invocation.
+The separate unknown-target case (K) is retained unweakened.
+
+## E. Verification (all observed this session, real infrastructure)
+
+- `phase17-b3-validate-authoritative.test.ts` — **14/14 PASS** (~75s),
+  including rewritten test B, positive case A, unknown-target case K,
+  and both zero-side-effect cases.
+- `phase17-e3-d20-precedence.test.ts` — **4/4 PASS** (~60s), re-run
+  **4/4 PASS** after the Prettier reformat: the D-20 stale-pointer
+  assertions (CASE A exit-2 probe + restore-to-1, CASE B precedence 2
+  then integrity-dominance 3, report schema-valid FAIL, case-26
+  exit-2 re-analysis) all EXECUTED and passed — not merely the baseline.
+- `phase17-cli.test.ts` (accepted barrier suite, untouched) — **23/23
+  PASS** (~660s) on the final tree: the shared-DB regression check.
+- `pnpm format:check` — PASS (after Prettier-formatting the two
+  touched/new test files; whitespace only).
+- `pnpm lint` — PASS (exit 0, all workspaces).
+- `pnpm typecheck` — PASS (exit 0, packages + apps + checks).
+- `pnpm test:unit` — **58 files / 730 tests PASS** (unchanged — no
+  production change exists to cover).
+- `git diff --check` — clean. Change surface: 2 modified test files +
+  1 new helper + this note; no src, migration, scenario, ADR, or
+  config change. New-helper secret scan: zero matches (reference names
+  only). No build needed for the suites (test-only change; dist
+  artifacts reused); CI rebuilds anyway.
+
+## F. Honest limitations and remaining risks (stated, not hidden)
+
+- The CI failure itself was NOT reproduced locally (quiet-DB runs pass
+  with or without the barrier); the CI annotation is the reproduction
+  evidence, and the repair makes overlap deterministic BY CONSTRUCTION
+  with durable-truth proof on every vulnerable leg — the same evidence
+  standard as Addendum XIII.
+- `phase17-cli` seeds 3/11/42 and the full integration suite were NOT
+  re-run here (hours of already-verified coverage; the CLI file is
+  byte-untouched and green above). The follow-up CI run is the
+  authoritative full-matrix verdict.
+- The `phase17-e3` case-26 SECURE leg and all non-vulnerable paths keep
+  their existing timing character (unchanged by this repair).
+- Incident Zero / Controlled Faults were skipped by the failed CI run,
+  not by this session; they pass on the final tree per Addendum XIII
+  and will re-run in the follow-up CI.
+
+## G. Proposed follow-up commit message
+
+```
+fix: determinize E3 vulnerable baseline and self-contain B3 grants case
+
+E3 vulnerable legs run under the deterministic oversell barrier
+(new test-only helper) with genuine-oversell durable proof; B3 test B
+binds the suite-registered target under deliberately denied grants.
+No production change.
+```
+
+## H. Verdict
+
+**READY FOR AUTHORIZED FOLLOW-UP COMMIT + CI RE-RUN.** Both CI
+failures are repaired at their real fixture causes with the smallest
+sound test-only change, proven by the targeted green runs above with
+genuine durable business truth behind every vulnerable exit 1. Nothing
+was staged, committed, tagged, or pushed — the follow-up commit, the CI
+re-run, and `phase-17-accepted` all await explicit authorization.

@@ -60,8 +60,17 @@ import {
   testTargetOriginCredentialPolicy,
   waitFor,
 } from './helpers/execution-harness.js';
-import { loadCommerceManifest, startCommerceProcess } from './helpers/commerce-harness.js';
-import type { RunningCommerce } from './helpers/commerce-harness.js';
+import {
+  createCommerceClient,
+  loadCommerceManifest,
+  startCommerceProcess,
+} from './helpers/commerce-harness.js';
+import type { CommerceClient, RunningCommerce } from './helpers/commerce-harness.js';
+import {
+  ensureSuiteSkuRow,
+  expectDeterministicOversellTruth,
+  runWithDeterministicOversell,
+} from './helpers/deterministic-oversell.js';
 import { provisionThrowawayCommerceDb } from './helpers/commerce-db-provision.js';
 import type { ProvisionedCommerceDb } from './helpers/commerce-db-provision.js';
 import type { TargetOriginCredentialPolicy } from '@rupturegrid/engine';
@@ -73,6 +82,7 @@ const GOLDEN_SCENARIOS = join('packages', 'cli', 'scenarios');
 
 let env: TestEnv;
 let running: RunningCommerce;
+let commerceClient: CommerceClient;
 let throwawayDb: ProvisionedCommerceDb | null = null;
 let worker: ChildProcess | null = null;
 let workerStdout = '';
@@ -134,19 +144,33 @@ async function reboundScenario(
       );
     }
   }
+  if (sourceName === 'checkout-zero-vulnerable.scenario.json') {
+    // Test-owned dispatch margin (never canonical): the deterministic
+    // barrier holds the establish step briefly while it observes the
+    // queue, so the rebound establish step carries the platform-maximum
+    // 60s executor timeout — the same patch the accepted phase17-cli
+    // barrier applies to its rebound files. Validation below still
+    // covers exactly the dispatched document.
+    const establishStep = (experiment['steps'] as Array<Record<string, unknown>>).find(
+      (step) => step['name'] === 'establish-scenario',
+    );
+    const establishAction = establishStep?.['action'] as Record<string, unknown> | undefined;
+    if (establishAction !== undefined && establishAction['timeoutMs'] === undefined) {
+      establishAction['timeoutMs'] = 60_000;
+    }
+  }
   document['name'] = `${String(document['name'])}-e3-${perFile}`;
   const path = join(workDir, `${sourceName}-${String(scenarioCounter)}`);
   await writeFile(path, JSON.stringify(document, null, 2), 'utf8');
   return { path, document: validateScenarioDocument(document) };
 }
 
-async function runScenario(sourceName: string): Promise<{
+async function dispatchScenario(document: ScenarioDocument): Promise<{
   runId: string;
   exitCode: number;
   outcome: Awaited<ReturnType<typeof executeScenario>>;
 }> {
-  const scenario = await reboundScenario(sourceName);
-  const outcome = await executeScenario(prisma, scenario.document, {
+  const outcome = await executeScenario(prisma, document, {
     redisUrl: env.redisUrl,
     queuePrefix: env.queuePrefix,
     credentialPolicy,
@@ -158,6 +182,73 @@ async function runScenario(sourceName: string): Promise<{
     throw new Error(`the run was not created: ${outcome.classification.reason}`);
   }
   return { runId: outcome.runId, exitCode: outcome.classification.exitCode, outcome };
+}
+
+async function runScenario(sourceName: string): Promise<{
+  runId: string;
+  exitCode: number;
+  outcome: Awaited<ReturnType<typeof executeScenario>>;
+}> {
+  const scenario = await reboundScenario(sourceName);
+  return dispatchScenario(scenario.document);
+}
+
+/**
+ * Runs the VULNERABLE golden with the deterministic oversell barrier
+ * armed (CI repair: without it the genuine check-then-act overlap is
+ * probabilistic and a clean single-accept run honestly exits 0). Then
+ * proves the genuine-oversell baseline from durable truth — two
+ * accepted orders, two reservations, remaining stock −1, persisted
+ * overlap — before any D-20 probe logic runs.
+ */
+async function runVulnerableScenario(): Promise<{
+  runId: string;
+  exitCode: number;
+  outcome: Awaited<ReturnType<typeof executeScenario>>;
+}> {
+  const databaseUrl = throwawayDb?.databaseUrl;
+  if (databaseUrl === undefined) {
+    throw new Error('the deterministic barrier requires the throwaway Commerce database');
+  }
+  await ensureSuiteSkuRow({
+    commerceDatabaseUrl: databaseUrl,
+    commerceClient,
+    suiteSku,
+    suiteScopeToken: suiteScopeToken,
+  });
+  const scenario = await reboundScenario('checkout-zero-vulnerable.scenario.json');
+  const dispatched = await runWithDeterministicOversell({
+    commerceDatabaseUrl: databaseUrl,
+    suiteSku,
+    suiteScopeToken,
+    scenarioPath: scenario.path,
+    dispatch: () => dispatchScenario(scenario.document),
+    appLogs: () => ({ stdout: running.stdout(), stderr: running.stderr() }),
+  });
+  // Read back the ACTUAL rebound submit intent (never assumed).
+  const documentRaw = scenario.document as unknown as Record<string, unknown>;
+  const submitStep = (
+    (documentRaw['experiment'] as Record<string, unknown>)['steps'] as Array<
+      Record<string, unknown>
+    >
+  ).find((step) => step['name'] === 'checkout-submit');
+  const submitBody = JSON.parse(
+    ((submitStep?.['action'] as Record<string, unknown> | undefined)?.['body'] as string) ?? '{}',
+  ) as Record<string, unknown>;
+  const ownIntent =
+    typeof submitBody['checkoutIntentId'] === 'string'
+      ? (submitBody['checkoutIntentId'] as string)
+      : (() => {
+          throw new Error('rebound vulnerable scenario has no submit checkoutIntentId');
+        })();
+  await expectDeterministicOversellTruth({
+    prisma,
+    commerceClient,
+    runId: dispatched.runId,
+    ownIntent,
+    ownSku: suiteSku,
+  });
+  return dispatched;
 }
 
 async function authorize(
@@ -298,6 +389,7 @@ beforeAll(async () => {
     }
   }
   targetId = (await resolveTargetByDisplayName(prisma, e2eTargetName)).targetId;
+  commerceClient = createCommerceClient(running);
   worker = spawn(process.execPath, [join('apps', 'worker', 'dist', 'main.js')], {
     cwd: process.cwd(),
     env: {
@@ -334,7 +426,7 @@ afterAll(async () => {
 
 describe('E3 · D-20 isolated proof-current / pointer-stale pair', () => {
   it('CASE A: a stale FAIL pointer is never trusted — proof current, required pointer stale ⇒ exit 2, never 0', async () => {
-    const { runId, exitCode } = await runScenario('checkout-zero-vulnerable.scenario.json');
+    const { runId, exitCode } = await runVulnerableScenario();
     // Actual CLI/orchestrator exit for the genuinely vulnerable run.
     expect(exitCode).toBe(1);
 
@@ -398,7 +490,7 @@ describe('E3 · D-20 isolated proof-current / pointer-stale pair', () => {
   }, 300_000);
 
   it('CASE B: an independently trusted FAIL dominates a separate stale pointer ⇒ exit 1; integrity still dominates ⇒ exit 3', async () => {
-    const { runId, exitCode } = await runScenario('checkout-zero-vulnerable.scenario.json');
+    const { runId, exitCode } = await runVulnerableScenario();
     expect(exitCode).toBe(1);
 
     const head = await readTruthInputWatermark(prisma, runId);
@@ -481,9 +573,7 @@ describe('E3 · D-20 isolated proof-current / pointer-stale pair', () => {
   }, 300_000);
 
   it('report classification: the vulnerable authorized state builds a schema-valid INVARIANT_FAIL report', async () => {
-    const { runId, exitCode, outcome } = await runScenario(
-      'checkout-zero-vulnerable.scenario.json',
-    );
+    const { runId, exitCode, outcome } = await runVulnerableScenario();
     expect(exitCode).toBe(1);
     expect(outcome.reportInput).not.toBeNull();
     const integrity = await verifyRunEvidenceChain(prisma, runId);

@@ -46,10 +46,10 @@ interface CliResult {
   readonly stderr: string;
 }
 
-async function runValidate(path: string): Promise<CliResult> {
+async function runValidate(path: string, grantsOverride?: string): Promise<CliResult> {
   const child = spawn(process.execPath, [CLI_ENTRY, 'scenarios', 'validate', path], {
     cwd: process.cwd(),
-    env: { ...process.env, TARGET_ORIGIN_CREDENTIAL_GRANTS: grantJson },
+    env: { ...process.env, TARGET_ORIGIN_CREDENTIAL_GRANTS: grantsOverride ?? grantJson },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -265,18 +265,35 @@ describe('B3: scenarios validate is authoritative (hostile matrix §20)', () => 
     expect(result.code).toBe(0);
   }, 60_000);
 
-  it('B: the committed SECURE file without matching grants is refused identically to `run`', async () => {
-    // The committed file binds displayName checkout-zero-commerce with
-    // a MANIFEST-DECLARED origin (http://127.0.0.1:3003) that this
-    // dev-stack registration does not own — the CURRENT SERVER-OWNED
-    // grant policy (from validated config, the same object `run`
-    // consults) authorizes no refs for the resolved origin authority,
-    // so the shared validator refuses exactly as the run path would
-    // (credential-authorization rejection → exit 4; one validation
-    // path, zero durable writes). The exit-0 valid case is test A.
-    const result = await runValidate(GOLDEN_SECURE);
+  it('B: the suite-registered target with deliberately denied grants is refused with the credential-authorization rejection', async () => {
+    // CI repair: the old case validated the untouched golden file (displayName
+    // checkout-zero-commerce) and relied on a LEFTOVER registration of that
+    // name from an earlier suite run on the persistent dev database — whose
+    // origin the current grant policy does not own. On a fresh CI database
+    // no such registration exists, so the refusal was the resolution error
+    // (`no registered target with displayName`) instead of the claimed
+    // authorization error. This case is now self-contained: a VALID rebound
+    // scenario binding the target THIS suite registered, validated under a
+    // deliberately grant-less server policy (`{}` — the fail-closed
+    // default, valid config), so the shared validator reaches the engine's
+    // authoritative credential-authorization gate and refuses exactly as
+    // the run path would (exit 4; the SPECIFIC rejection, not any exit-4
+    // error). Durable counts are pinned unchanged around the invocation.
+    const rawText = await readFile(GOLDEN_SECURE, 'utf8');
+    const rebound = rawText.replace(
+      /"displayName":\s*"checkout-zero-commerce"/,
+      `"displayName":"${displayName}"`,
+    );
+    const path = join(workDir, 'denied-grants.json');
+    await writeFile(path, rebound, 'utf8');
+    const before = await durableCounts();
+    const result = await runValidate(path, '{}');
     expect(result.code).toBe(4);
     expect(result.stderr).toContain('credential authorization failed');
+    const after = await durableCounts();
+    for (const table of DURABLE_TABLES) {
+      expect(after[table], table).toBe(before[table]);
+    }
   }, 60_000);
 
   it('K: unknown target selector → exit 4 (TargetResolutionError)', async () => {

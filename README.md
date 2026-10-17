@@ -1,151 +1,179 @@
-# RuptureGrid v1.0
+# RuptureGrid
 
-**Status: PHASES 0–11 ACCEPTED AND FROZEN (tags `phase-0-accepted` … `phase-11-accepted`).** **v1.0.1 is published and CI-green**: licensed **Apache-2.0** (see [LICENSE](LICENSE)), released as **source only** — no npm, Docker-image, prebuilt-binary, or bundled-ffmpeg publication is part of the release, and that policy is unchanged. Public repository: [github.com/Shehroz61/RuptureGrid](https://github.com/Shehroz61/RuptureGrid) — vulnerability disclosure runs through GitHub Private Vulnerability Reporting there (see [SECURITY.md](SECURITY.md)).
+[![CI](https://github.com/Shehroz61/RuptureGrid/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Shehroz61/RuptureGrid/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-RuptureGrid is a developer-infrastructure platform for **discovering business-correctness failures in distributed systems** through controlled failure testing, business invariant verification, forensic analysis, and reproduction/regression replay.
+**Find the business failures hiding behind healthy services.**
 
-The question it answers:
+A payment endpoint can return HTTP 200 while crediting a wallet twice. A
+checkout service can stay online while selling stock it does not have.
+RuptureGrid tests business correctness under distributed-system failures,
+then explains the result through evidence from real execution.
 
-> **Did the system remain BUSINESS-CORRECT when realistic distributed-system failures occurred?**
+It runs bounded HTTP experiments against registered targets, evaluates
+business invariants, and preserves the failure → reproduction → target fix
+→ replay → regression-test lifecycle.
 
-Not: "Did the service stay online?" or "Did HTTP return 200?" — a distributed system can look operationally healthy while crediting a wallet twice for one payment, duplicating an order on retry, or overselling from stale state. RuptureGrid exposes exactly that gap, reproducibly and with evidence.
+## What you can investigate
 
-## Why it exists
+- **Controlled failures:** duplicate delivery, concurrent requests,
+  rejection and response loss, with real HTTP and Redis/BullMQ-backed work.
+- **Business outcomes:** deterministic invariant evaluation and findings
+  derived from captured business effects, with explicit insufficient-evidence
+  results.
+- **Evidence and forensics:** redacted observations, provenance, integrity
+  verification, identity-based relationships and an investigation timeline.
+- **Replay and comparison:** a new execution from the same hash-pinned
+  snapshot, preserving original evidence and comparing original/replay
+  outcomes without guessing why they differ.
+- **Automation:** a headless CLI, `rupturegrid-report/v1` JSON reports,
+  honest exit codes and permanent regression suites for two business domains.
 
-Conventional testing and observability stop at operational health. The most expensive distributed-system failures are business-correctness failures that hide behind healthy signals: a duplicate webhook that credits money twice, a timeout where the side effect actually happened, two workers processing one logical event. RuptureGrid makes these failures **deliberate, observable, attributable, and permanent regression tests**.
+PostgreSQL owns durable execution and evidence state. Redis coordinates
+work; reconciliation recovers durable intent after queue outages. Ambiguous
+side effects remain `INDETERMINATE`; insufficient evidence remains
+`NOT_EVALUABLE`.
 
-## What it is NOT
+## Two real business proofs
 
-- Not generic chaos engineering, APM, or a log viewer
-- Not an arbitrary HTTP proxy or attack tool — only registered, authorized targets; **production fault targeting is denied in v1**
-- Not a workflow platform, SIEM, or BI dashboard
-- Not an AI incident oracle — AI may interpret evidence, never decide truth
+| Scenario | Vulnerable processing | Secure processing |
+| --- | --- | --- |
+| **[Incident Zero — Fintech](docs/incident-zero.md)**: duplicate delivery of one legitimate PKR 5,000 payment confirmation | Two equivalent accepted credits; wallet credited PKR 10,000 | One accepted credit; wallet credited PKR 5,000 |
+| **[Checkout Zero — Commerce](docs/checkout-zero.md)**: two concurrent submissions of one checkout intent against one unit of stock | Two accepted orders and reservations; remaining stock −1 | One accepted order and reservation; remaining stock 0 |
 
-Full boundary list: [docs/product-spec.md](docs/product-spec.md) §8.
+These outcomes are asserted by the golden and lifecycle tests against real
+HTTP services and target-owned PostgreSQL state. Money uses integer minor
+units: PKR 5,000 is `500000` paisa.
 
-## Incident Zero (flagship scenario)
+The Commerce companion lifecycle discovers a genuine failure, applies the
+fix through the target's own administration API, then replays the original
+reproduction from the **same stored snapshot** to an independently evaluated
+PASS. The original failure stays intact. Existing mode-pinned golden
+scenarios retain their declared modes; see [replay semantics](docs/incident-replay.md).
 
-A provider confirms a legitimate payment of **PKR 5,000 = 500000 paisa** (integer minor units). The correct target credits the wallet with **exactly one credit**. A deliberately vulnerable processing mode credits it **twice under duplicate delivery** (PKR 10,000); a fixed, idempotent implementation stays at PKR 5,000 under the same experiment. RuptureGrid drives the duplicate delivery through the target's legitimate webhook interface, evaluates the invariant **"at most one accepted credit effect per confirmed logical payment"** deterministically from real evidence, and replays the scenario after the fix — permanently, as automated tests.
+## Quick start
 
-One command — `pnpm incident-zero:verify` — starts the real Demo Target and real worker (owned child processes, exact PIDs), executes the canonical workload in both modes end to end (1 payment, 2 logical events, 20 deliveries, concurrency 8, real HTTP, real queue), and verifies from durable Control-Plane truth: VULNERABLE ⇒ 2 accepted equivalent credits / wallet 1000000 paisa / INV-IZ-1 **FAIL** / 1 Finding; SECURE ⇒ 1 accepted credit / wallet 500000 paisa / INV-IZ-1 **PASS** / 0 Findings. Details: [docs/incident-zero.md](docs/incident-zero.md).
+Use **Node.js 22, at least 22.12**, Corepack, Git, and Docker with Compose v2.
+The repository pins **pnpm 11.9.0** in `package.json`. First installation
+requires network access. See [setup and troubleshooting](docs/getting-started.md)
+if Corepack is missing, outdated, or cannot create its shims.
 
-## Architecture at a high level
-
-Five logical bounded contexts — **Control Plane, Execution Plane, Evidence System, Analysis System, Demo Target** — deployed as API + worker + separate Demo Target application + web UI. PostgreSQL owns durable truth; Redis/BullMQ is coordination-only (a Redis outage must never lose a run — reconciliation recovers it). Execution ownership uses durable leases with fencing tokens so a stale worker cannot overwrite newer state, and ambiguous mutating outcomes are represented honestly as **INDETERMINATE** rather than guessed. Historical runs are pinned to append-only, hash-pinned snapshots for reproduction.
-
-Details: [docs/architecture.md](docs/architecture.md).
-
-## Truth philosophy
-
-```
-REAL EXECUTION → RAW OBSERVATIONS → NORMALIZED EVENTS → CAUSAL RELATIONSHIPS
-→ INVARIANT EVALUATION → DETERMINISTIC FINDING → OPTIONAL AI INTERPRETATION
-```
-
-Every layer derives only from the layer above; AI sits strictly at the end, labeled, never authoritative. If RuptureGrid says "20 requests executed", 20 real requests executed. If it cannot determine something, it says **INDETERMINATE / NOT_EVALUABLE** — visibly. Details: [docs/evidence-model.md](docs/evidence-model.md).
-
-## Security boundary
-
-Narrow by design: registered targets only, deny-by-default destination validation, DNS-aware SSRF protections with honest limitations (network egress isolation is the primary control), credentials redacted before persistence, server-side blast-radius caps, production environments denied. [docs/security-boundaries.md](docs/security-boundaries.md).
-
-## Running the stack locally
-
-Requirements: **Node.js ≥ 22.12** (Corepack-managed **pnpm ≥ 11**; the repo pins `pnpm@11.9.0` via `packageManager`), **Docker with Compose**, and network access to download dependencies on first install.
-
-```
-corepack enable        # once per machine — activates the pinned pnpm
-pnpm install           # install workspace dependencies (frozen lockfile)
-cp .env.example .env   # local, gitignored environment (non-production values)
-pnpm infra:up          # start control-postgres (5443), demo-postgres (5444), redis (6380)
-pnpm db:migrate        # generate Prisma clients + apply migrations to both databases
-pnpm dev               # run API (3001), worker, Demo Fintech (3002), web (3000)
-```
-
-Every host port is environment-configurable — see `.env.example`. All first-run steps are listed above; there are no hidden manual steps.
-
-## Verification commands
-
-| Command | What it proves |
-|---|---|
-| `pnpm verify` | format + lint (workspace **and** root tests) + typecheck (workspace **and** test programs) + unit tests + build |
-| `pnpm test:integration` | 24 real-infrastructure suites over real PostgreSQL ×2, Redis, HTTP, browser — requires `pnpm infra:up` and `pnpm db:migrate` |
-| `pnpm incident-zero:verify` | the golden Incident Zero scenario end to end, exit 0 only on verified truth |
-| `pnpm controlled-faults:verify` | pre-mutation rejection + post-mutation response-loss fault scenarios, including honest `INDETERMINATE` outcomes and zero unsafe retries |
-| `pnpm showcase:generate` | browser showcase over a fresh real golden run (`--video` composes the H.264 walkthrough); artifacts land in gitignored `.artifacts/showcase/` |
-| `pnpm format:check` / `pnpm lint` / `pnpm typecheck` / `pnpm build` | individual quality gates |
-
-## Demo Fintech target
-
-A genuinely separate application (`apps/demo-fintech`, default port 3002) owning its own PostgreSQL (`packages/demo-db`). Money is always an **integer minor-unit string** on HTTP (e.g. `"amountMinor": "500000"` for PKR 5,000 = 500000 paisa); fractional, signed, exponent, and unsafe-magnitude values are rejected, never coerced. RuptureGrid apps hold no Demo DB credentials and never import `@rupturegrid/demo-db` (lint-enforced).
-
-Routes (trust boundaries are distinct):
-
-| Route | Auth | Purpose |
-|---|---|---|
-| `GET /health/live`, `GET /health/ready` | none | liveness; readiness checks Demo PostgreSQL only |
-| `POST /demo/admin/reset` | `DEMO_ADMIN_TOKEN` | DEMO ONLY — reset business records, recreate canonical customer + zero-balance PKR wallet, mode → VULNERABLE |
-| `PUT /demo/admin/mode` | `DEMO_ADMIN_TOKEN` | DEMO ONLY — body `{"mode":"VULNERABLE"\|"SECURE"}`; durable DB-backed state |
-| `GET /demo/admin/status` | `DEMO_ADMIN_TOKEN` | current processing mode |
-| `PUT /demo/admin/faults/:faultKind` | `DEMO_ADMIN_TOKEN` | DEMO ONLY — arm a controlled fault plan (LOCAL_DEVELOPMENT targets only; server-side bounds enforced) |
-| `GET /demo/admin/faults` | `DEMO_ADMIN_TOKEN` | DEMO ONLY — current fault-plan state |
-| `POST /demo/provider/payments` | `DEMO_ADMIN_TOKEN` | DEMO ONLY — provider simulator: creates the canonical 500000-paisa CONFIRMED payment + its PAYMENT_CONFIRMED/PAYMENT_SETTLED events, returns per-event signed delivery envelopes (no `deliveryAttemptId` — callers assign one per physical delivery) |
-| `POST /webhooks/provider` | HMAC-SHA256 of the exact raw body in `x-rupturegrid-provider-signature` | webhook ingestion; requires `x-rupturegrid-delivery-attempt-id` header; returns `outcome: APPLIED \| IDEMPOTENT_DUPLICATE` (2xx) or a stable error (401/404/409/400/500) |
-| `GET /inspection/provider-payments/:providerPaymentId` | `DEMO_INSPECTION_TOKEN` | read-only full lineage: payment → events → deliveries → processing attempts → financial effects → ledger entries + wallet state (entities, not just counts) |
-| `GET /inspection/wallets/:walletId/reconciliation` | `DEMO_INSPECTION_TOKEN` | read-only exact balance-vs-ledger reconciliation |
-
-Environment variables owned by Demo Fintech only (documented non-production examples in `.env.example`): `DEMO_HOST`, `DEMO_PORT`, `DEMO_DATABASE_URL`, `DEMO_ADMIN_TOKEN`, `DEMO_INSPECTION_TOKEN`, `DEMO_PROVIDER_SIGNING_SECRET`.
-
-## Repository layout
-
-```
-README.md                        this file
-AGENTS.md                        engineering constitution for all contributors
-compose.yaml                     local infrastructure (control/demo postgres, redis)
-.env.example                     documented non-production environment template
-eslint.config.mjs / .prettierrc.json / vitest.config.ts   root quality tooling
-.lintstagedrc.json / .husky/pre-commit                   staged-file pre-commit hook (Husky + lint-staged)
-tsconfig.base.json / tsconfig.checks.json / tsconfig.checks.ui.json
-                                 shared compiler options + test-typecheck gate programs
-apps/
-  api/            Control Plane HTTP API (NestJS): targets, experiments, runs,
-                  evidence, analysis, forensics, timeline, comparison
-  worker/         execution worker (BullMQ consumer lifecycle, no HTTP)
-  web/            product UI (Next.js): runs, evidence, forensics, reproduction
-  demo-fintech/   independent Demo Target (Express): wallets/payments/events/
-                  deliveries/attempts/effects/ledger, webhook + admin + simulator
-                  + inspection + controlled-fault APIs
-packages/
-  shared/         service names, money types, redaction utilities
-  config/         per-app environment schemas, fail-fast validation, env ownership
-  logger/         pino-based structured logging with mandatory redaction
-  control-db/     RuptureGrid Control PostgreSQL client + migrations (Prisma)
-  demo-db/        Demo Fintech PostgreSQL client + migrations + domain primitives
-  queue/          Redis/BullMQ coordination boundary (coordination-only)
-  engine/         execution engine: validation, snapshots, leases/fencing,
-                  HTTP executor, classification, reconciliation (ADR-0009/0015)
-  evidence/       evidence truth: redacted capture, hash-chained observations,
-                  deterministic normalization, causal derivation, invariants
-  forensics/      Findings from persisted evaluations, forensic timeline,
-                  reproduction definitions, run comparison
-  incident-zero/  golden Incident Zero orchestrator + verifier CLI
-  controlled-faults/ controlled-faults verifier CLI (Phase 9 scenarios)
-  showcase/       browser showcase automation over real verifier output
-tests/
-  unit/           config validation, redaction, UI semantics (vitest)
-  integration/    real PostgreSQL / Redis / HTTP / process / browser suites,
-                  incl. Incident Zero and controlled-faults black-box suites
-docs/             architecture, product spec, security boundaries, decision records (ADRs),
-                  phase roadmap, incident/scenario docs, per-phase audit reports
+```bash
+git clone https://github.com/Shehroz61/RuptureGrid.git
+cd RuptureGrid
+corepack enable
+corepack install
+pnpm install --frozen-lockfile
+cp .env.example .env
+pnpm infra:up
+pnpm db:migrate
+pnpm test:unit
 ```
 
-## For contributors (human and AI)
+In Windows PowerShell, replace the `cp` line with:
 
-Read [AGENTS.md](AGENTS.md) before touching anything. It is the constitution: phase boundaries, truth rules, ownership rules, and verification rules are not negotiable per-task. `pnpm install` installs a Husky pre-commit hook that **validates** (never rewrites) **staged** files — `prettier --check` plus ESLint without `--fix` via `lint-staged`; it is a local guard only — CI remains the authoritative gate. Run `pnpm format` manually before staging. See [CONTRIBUTING.md](CONTRIBUTING.md).
+```powershell
+Copy-Item .env.example .env
+```
 
-## License
+Compose starts **three separate PostgreSQL instances**—Control (5443),
+Fintech (5444), Commerce (5445)—and Redis (6380). Migrations generate the
+Prisma clients and apply each database's own migration history. Configuration
+and non-production example credentials come from [`.env.example`](.env.example).
 
-RuptureGrid v1.0 is licensed under **Apache-2.0** — see [LICENSE](LICENSE).
-Third-party dependencies retain their own licenses (see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); `ffmpeg-static` is
-development/showcase tooling only and is not bundled or distributed as a
-RuptureGrid release artifact).
+Start all five applications in the foreground:
+
+```bash
+pnpm dev
+```
+
+Open the [web UI](http://localhost:3000). Defaults are API `3001`, Fintech
+`3002`, Commerce `3003`, plus the worker process. Ports are configurable;
+keep target origins and credential grants aligned when changing them.
+
+### Run your first verification
+
+After infrastructure and migrations are ready, run:
+
+```bash
+pnpm incident-zero:verify
+```
+
+This builds the project, starts its own Fintech target and worker processes,
+and checks vulnerable FAIL and secure PASS from durable evidence. It exits
+0 only when the verifier's assertions pass. Run verifiers serially in a
+disposable local demo environment: they reset demo business state.
+
+For the CLI entry point:
+
+```bash
+pnpm rupturegrid --help
+```
+
+The [CLI guide](docs/cli.md) covers target/worker prerequisites, Commerce
+[scenario files](packages/cli/scenarios), replay, comparison and report exit
+codes. There is no globally installed `rupturegrid` binary to assume.
+
+## Architecture
+
+```text
+Web UI ---> Control Plane API ---> Control PostgreSQL <--- Headless CLI
+                  |              durable runs and evidence     |
+                  +---> Redis / BullMQ <------------------------+
+                         coordination only
+                              |
+                        Execution workers
+                              +--- evidence / analysis ---> Control PostgreSQL
+                              +--- HTTP ---> Fintech ---- Fintech PostgreSQL
+                              +--- HTTP ---> Commerce --- Commerce PostgreSQL
+```
+
+Each target owns its business logic and database. RuptureGrid changes target
+behavior only through legitimate target interfaces and observes results
+through explicit read-only inspection contracts. It never writes directly
+to either target's business tables. [Architecture and ownership details](docs/architecture.md).
+
+## Documentation
+
+| Start here | Read |
+| --- | --- |
+| Install and run | [Getting started](docs/getting-started.md) |
+| Headless execution and reports | [CLI](docs/cli.md) |
+| Payment correctness proof | [Incident Zero](docs/incident-zero.md) |
+| Checkout and inventory proof | [Checkout Zero](docs/checkout-zero.md) |
+| Reproduction and comparison | [Replay](docs/incident-replay.md) |
+| Use from another repository | [External CI recipe](docs/external-ci-recipe.md) |
+| Components and data ownership | [Architecture](docs/architecture.md) |
+| Evidence guarantees | [Evidence model](docs/evidence-model.md) |
+| Authorized execution | [Security boundaries](docs/security-boundaries.md) |
+| Work on the project | [Contributing](CONTRIBUTING.md) |
+| Design decisions | [ADRs](docs/decisions/) |
+| Verification and next steps | [Project status](docs/project-status.md) · [Roadmap](docs/phase-roadmap.md) |
+
+## Safety and limits
+
+Execution requires registered, authorized **non-production** targets.
+Production execution is denied; controlled fault plans are restricted to
+`LOCAL_DEVELOPMENT`, including denial on staging. Use isolated infrastructure
+and appropriate network egress restrictions.
+
+Snapshots and evidence records are **logically append-only**, with
+modification detection—not protection from a privileged database writer.
+Replay preserves intent, not exact network timing or thread scheduling.
+Credential-reference authorization is checked; secret-value rotation behind
+an unchanged authorized reference is not fingerprint-verified.
+
+Distribution is **source-only**. There is no published CLI npm package,
+prebuilt binary, RuptureGrid Docker image, hosted demo or SaaS service.
+The two bundled targets demonstrate cross-domain correctness testing; they
+are not evidence of independent third-party adoption or production safety.
+
+## Contributing and security
+
+Bug reports, focused improvements and evidence-backed regression tests are
+welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[engineering constitution](AGENTS.md) before making changes.
+
+Report vulnerabilities privately through the route in [SECURITY.md](SECURITY.md),
+not public issues. RuptureGrid is licensed under [Apache-2.0](LICENSE).
+Dependencies retain their own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md).

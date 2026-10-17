@@ -1,138 +1,157 @@
 # Contributing to RuptureGrid
 
-Welcome. RuptureGrid is developed under a strict engineering
-constitution — read [AGENTS.md](AGENTS.md) first. It is binding for all
-contributors, human and AI: phase boundaries (R-01), no fabricated truth
-(R-02/R-03), verification before claims (R-07), data ownership (R-05),
-integer-minor-unit money (R-06), and security boundaries (R-14) are not
-negotiable per-task. RuptureGrid is licensed under **Apache-2.0** — see
-[LICENSE](LICENSE); by contributing you agree that your contributions are
-licensed under the same license. This document covers the mechanical
-how-to; AGENTS.md and [docs/engineering-rules.md](docs/engineering-rules.md)
-cover the why.
+Help make business-correctness failures easier to reproduce, understand and
+prevent. Useful contributions include reproducible bug reports, clearer
+documentation, focused fixes and regression tests that exercise real effects.
 
-## Prerequisites
+Read [AGENTS.md](AGENTS.md) and the [engineering rules](docs/engineering-rules.md).
+They apply to human and AI contributors. The central expectations are simple:
+report only observed truth, respect target ownership, preserve uncertainty,
+and keep work within its authorized phase. Contributions use the project's
+[Apache-2.0 license](LICENSE).
 
-- **Node.js ≥ 22.12** (the repo pins pnpm via `packageManager`)
-- **Docker with Compose** (PostgreSQL ×2 + Redis infrastructure)
-- Network access for the first dependency install
+## Set up a development checkout
 
-## Install
+You need Git, **Node.js 22 (at least 22.12)**, Corepack, and Docker with
+Compose v2. The workspace pins **pnpm 11.9.0**; keep that pin and the lockfile.
 
 ```bash
-corepack enable        # activates the pnpm pinned in package.json
+corepack enable
+corepack install
 pnpm install --frozen-lockfile
-cp .env.example .env   # local, gitignored environment (non-production values)
+cp .env.example .env
+pnpm infra:up
+pnpm db:migrate
 ```
 
-`pnpm install` runs the `prepare` script, which installs the Git hooks
-into `.husky/_` (Husky). No manual, machine-specific setup step is
-required, and no administrator privileges are needed.
+On Windows PowerShell, use `Copy-Item .env.example .env` instead of `cp`.
+Corepack shim installation may need write permission to the Node installation;
+[getting started](docs/getting-started.md) covers alternatives and troubleshooting.
 
-## Infrastructure & migrations
+Compose supplies three independent PostgreSQL instances (Control, Fintech,
+Commerce) and Redis. `pnpm db:migrate` generates clients and applies all three
+migration histories. `pnpm dev` builds and starts API, worker, web UI and both
+target applications. The gitignored `.env` contains local configuration;
+never commit it or paste its values into an issue.
 
-```bash
-pnpm infra:up    # control-postgres (5443), demo-postgres (5444), redis (6380)
-pnpm db:migrate  # generate Prisma clients + apply migrations to both databases
-```
+## Find the right change
 
-The Control Plane and the Demo Target own **physically separate
-PostgreSQL instances** (ADR-0002). Every schema change ships as a
-reviewable Prisma migration (R-12) — never `prisma db push`, never a
-schema push outside the migration history. Shadow databases are used for
-migration verification.
+Search [existing issues](https://github.com/Shehroz61/RuptureGrid/issues) before
+opening a report or proposal. For a substantial design change, describe the
+problem, constraints and intended evidence in an issue before investing in
+implementation so contributors can establish scope together.
 
-## Running the stack
+Use a descriptive branch and open a focused pull request against `main`.
+Explain the observable problem and resulting behavior. Keep unrelated cleanup
+and dependency upgrades separate. Check the [roadmap](docs/phase-roadmap.md):
+future-phase implementation cannot be bundled into a current-phase fix.
+Changing a documented architectural decision requires a new or amended ADR
+in the same change; don't silently substitute an architecture.
 
-```bash
-pnpm dev   # API (3001), worker, Demo Fintech (3002), web (3000)
-```
+## Where things live
 
-## Tests
+| Location | Responsibility |
+| --- | --- |
+| `apps/api`, `apps/worker`, `apps/web` | Control Plane, execution and investigation UI |
+| `apps/demo-fintech`, `apps/demo-commerce` | Independent business targets and their HTTP interfaces |
+| `packages/control-db`, `packages/demo-db`, `packages/commerce-db` | Separately owned clients and migration histories |
+| `packages/engine`, `packages/evidence`, `packages/forensics` | Execution, evidence, invariants and deterministic findings |
+| `packages/cli` | Headless commands, scenario documents and JSON reports |
+| `tests/integration` | Real infrastructure, process, browser and adversarial regressions |
+| `docs`, `docs/decisions`, `docs/reports` | Living contracts, decisions and dated audit evidence |
 
-```bash
-pnpm test:unit          # fast gates (vitest)
-pnpm test:integration   # real PostgreSQL ×2, Redis, HTTP, browser — needs pnpm infra:up + pnpm db:migrate
-```
+## Coding and documentation conventions
 
-Integration tests exercise the real stack — no mock stands in for
-infrastructure semantics (R-08). A one-time manual run is never
-acceptance evidence: acceptance properties live as committed, rerunnable
-tests (R-07). If you changed behavior, add or extend a test that proves
-it against the real stack.
+Follow the existing TypeScript, ESLint and Prettier configuration. Keep
+configuration environment-driven, validate inputs server-side, and avoid
+machine-specific paths. Financial amounts use integer minor units everywhere,
+including fixtures; HTTP money fields use their declared integer-string shape.
 
-## Verification before you push
+Use `INDETERMINATE` for ambiguous side effects and `NOT_EVALUABLE` for
+insufficient evidence. Call database records **logically append-only**; don't
+promise privileged-write protection. Distinguish intentional `repeat` pressure
+from a `retry` after failure. AI interpretation never decides a verdict.
 
-```bash
-pnpm verify  # format + lint (workspace AND root tests) + typecheck (workspace AND test programs) + unit tests + build
-```
+Update living documentation with behavior changes. Preserve dated audit
+reports and evidence instead of editing their historical results. Link to
+source or rerunnable tests for claims; never invent output, requests or counts.
 
-Both gates cover the whole tree: package tests are typechecked via
-`tsconfig.checks.json` / `tsconfig.checks.ui.json` and linted by the root
-ESLint program. `pnpm release:verify` additionally runs the Incident Zero
-and Controlled Faults golden verifiers against real infrastructure.
+## Run the relevant checks
 
-## Formatting & pre-commit hooks
+| Command | Purpose |
+| --- | --- |
+| `pnpm test:unit` | Pure logic and unit regressions |
+| `pnpm verify` | Format, lint, typecheck, unit tests and build |
+| `pnpm test:integration` | Real PostgreSQL, Redis/BullMQ, HTTP, processes and browser suites |
+| `pnpm incident-zero:verify` | Both Fintech golden modes |
+| `pnpm controlled-faults:verify` | Rejection/response-loss and conservative ambiguity semantics |
+| `pnpm release:verify` | Full quality, infrastructure/integration and golden verification |
 
-The pre-commit hook is a **local convenience guard**, not a security
-boundary — CI remains the authoritative gate. On `git commit`, Husky runs
-`lint-staged` against only the **staged** files. The hook is
-**mutation-free**: it **validates** the staged content and never rewrites
-files, so it can never pull an unstaged edit into your commit.
+Before integration tests, run `pnpm infra:up`, `pnpm db:migrate`, and
+`pnpm exec playwright install chromium`. On Linux, browser system libraries
+may also be needed; see the [setup guide](docs/getting-started.md).
 
-- TypeScript / TSX: `prettier --check`, then ESLint (no `--fix`).
-- JavaScript, JSON, YAML, and CSS: `prettier --check`.
-- Markdown is intentionally excluded (hand-maintained docs), and
-  generated/frozen paths follow [`.prettierignore`](.prettierignore).
+Run integration files serially with the committed configuration. The outage
+suite intentionally stops the configured Redis container; don't run competing
+suites or use a shared service carrying someone else's work. Disposable
+Control fixtures require create/drop-database privileges on the test PostgreSQL
+service. Standard local Compose credentials provide these privileges.
 
-If a staged file is not formatted, `prettier --check` fails and the commit
-is **blocked**; if ESLint reports an error, the commit is **blocked**. The
-hook does **not** fix or re-stage anything for you, and it never touches
-files you have not staged: **unstaged and partially staged changes stay
-out of the commit and remain in your working tree**. The workflow is to
-format first, stage, and commit:
+Mocks can cover pure logic; they cannot be the sole evidence for PostgreSQL,
+queue, HTTP, browser or concurrency semantics. A race test must measure actual
+overlap or use a real synchronization barrier—`Promise.all` alone proves none.
+Report commands, outcomes and deliberate test filters accurately. If a check
+was not run, say so. See the [testing strategy](docs/testing-strategy.md).
 
-```bash
-pnpm format        # write formatting across the repository (MANUAL step)
-pnpm format:check  # verify formatting (what CI runs)
-pnpm lint          # ESLint across the workspace and root tests
-```
+### Add scenarios and regressions
 
-A malformed or poorly formatted staged file is a normal, expected outcome —
-run `pnpm format`, re-stage, and commit again. **Do not** use
-`git commit --no-verify` as a habit.
+Start with the [scenario files](packages/cli/scenarios), [CLI contract](docs/cli.md)
+and [target-manifest design](docs/decisions/ADR-0016-external-target-integration-target-manifest.md).
+Declare bounded requests, repeat/concurrency, credential references and
+versioned invariant bindings. Use the existing closed invariant registry;
+new execution surfaces or invariant kinds require the appropriate design scope.
 
-## Architecture & security boundaries
+A business-failure regression should demonstrate the vulnerable effect,
+independently evaluate its FAIL, and demonstrate the secure behavior with
+real target-owned state. Replay tests must preserve the original snapshot
+and evidence, create independent runs, and refuse incompatible comparisons.
+Detector fixtures must be explicitly identified; never present synthetic
+observations as business effects. Add hostile and insufficient-evidence cases
+where the guarantee depends on them.
 
-Before changing anything structural, read:
+### Database changes
 
-- [docs/architecture.md](docs/architecture.md) — layering, durable truth
-  (R-09), execution ownership and fencing (R-10)
-- [docs/security-boundaries.md](docs/security-boundaries.md) — registered
-  targets only, production faulting denied in v1, credential
-  reference-only handling (R-13)
-- [docs/decisions/](docs/decisions/) — the ADR record; changing a
-  documented decision requires a new or amended ADR in the same change
-  (R-17)
+Every schema change includes a reviewable migration in the owning database's
+migration directory. Test the committed SQL on real PostgreSQL. Do not edit
+an already committed migration, use schema push as history, or write across
+target ownership boundaries. RuptureGrid never repairs target business tables
+through a database connection. Migration development/shadow-database setup is
+covered in [getting started](docs/getting-started.md).
 
-Hard rules you will hit quickly: never write to a target's business
-state (R-05); money is integer minor units everywhere, including tests
-(R-06); credentials are environment references, never persisted values
-(R-13).
+## Formatting and commit hooks
 
-## Pull requests
+Use `pnpm format:check` and `pnpm lint` to validate. `pnpm format` rewrites
+non-ignored files across the repository; review its diff carefully. Markdown
+is hand-maintained and excluded by the current [Prettier ignore file](.prettierignore).
 
-- Keep changes phase-scoped; never implement a future phase "while
-  you're in there" (R-01).
-- Run `pnpm verify` (and `pnpm test:integration` for infrastructure
-  changes) and state real observed results in the description — never
-  claim verification you did not perform (R-07).
-- Update docs in the same change when behavior or documented decisions
-  change (R-17).
-- Never commit secrets, generated artifacts, or unrelated files
-  (R-16); `.env` is gitignored and placeholders in `.env.example` are
-  non-production values only.
-- Terminology is part of the contract (R-18): `INDETERMINATE` for
-  ambiguous side effects, `NOT_EVALUABLE` for insufficient evidence,
-  "logically append-only" for records — never "immutable" or
-  "tamper-proof".
+Installation enables Husky. The pre-commit hook runs Prettier checks and
+ESLint on staged source/configuration files, without `--fix`. It does not
+replace full CI, infrastructure tests or a review of the staged diff.
+Do not bypass a failed check to claim verification.
+
+## Security and pull-request evidence
+
+Use only registered, authorized non-production targets. Controlled fault
+plans remain local-development-only. Keep secrets environment-referenced and
+redact logs, reports, screenshots and reproductions before sharing.
+
+A pull request should include:
+
+- The problem, final behavior, scope and any related issue/ADR.
+- Tests or other evidence for changed guarantees, including actual outcomes.
+- Relevant ownership, destination, credential and uncertainty implications.
+- Documentation/migration changes and any meaningful limits or unrun checks.
+
+Report ordinary bugs through the [bug form](https://github.com/Shehroz61/RuptureGrid/issues/new/choose).
+Report vulnerabilities through **GitHub Private Vulnerability Reporting** as
+specified in [SECURITY.md](SECURITY.md), never a public issue or pull request.

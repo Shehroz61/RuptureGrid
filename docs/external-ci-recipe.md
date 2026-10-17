@@ -131,8 +131,10 @@ Section L.5 remains explicitly deferred, with no new legacy-replay ban.
 
 Before publication, the recipe requires `rupturegrid_revision`: the full
 40-character hexadecimal commit SHA of a Phase 18-capable revision whose
-CI checks the maintainer has verified. No such finalization commit has
-been created as of 17 October 2026. Do not substitute the Phase 17
+CI checks the maintainer has verified. The Phase 18 implementation commit
+`f3dccda3c2b8e6ac1d07512a4ed89a5de520fbd7` is CI-green; see
+[project status](project-status.md). The final presentation commit and
+acceptance tag remain pending. Do not substitute the Phase 17
 checkpoint, an unresolved placeholder, a moving branch, or an unpublished
 acceptance tag. The job below rejects missing/malformed input before
 checkout; checkout fails if the SHA cannot be resolved, and the next step
@@ -145,8 +147,8 @@ verified commit/CI record in the
 acceptance tag is subsequently authorized and published, resolve that
 annotated tag to its commit and verify the same CI record, then store the
 full commit SHA as the consumer's input. The checkout contract remains the
-SHA; this document does not claim that the commit, tag, or release already
-exists. Review a new revision before changing the consumer's pinned input.
+SHA; the pending acceptance tag and v1.1 release are not available pins.
+Review a new revision before changing the consumer's pinned input.
 
 ## CI workflow with an explicit revision input (illustrative)
 

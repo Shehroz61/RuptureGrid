@@ -1,6 +1,6 @@
-# RuptureGrid v1.0 — Evidence Model
+# RuptureGrid — Evidence Model
 
-Status: **Living contract — accepted through Phase 11 (released v1.0.1). Phases 0–11 accepted and frozen.**
+Status: **Living contract. Current implementation, verification and publication milestones are recorded in [project status](project-status.md); accepted decisions and explicit amendments remain authoritative.**
 Authoritative for: evidence terminology, observed-vs-derived-vs-AI semantics, integrity guarantees (stated honestly), causality rules, invariant evaluation contracts.
 
 Related: [architecture.md](architecture.md) §12, [product-spec.md](product-spec.md) §9, [security-boundaries.md](security-boundaries.md) §7 (redaction), ADR-0006, ADR-0007.

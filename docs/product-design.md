@@ -1,6 +1,6 @@
-# RuptureGrid v1.0 — Product Design (UI Philosophy & Contracts)
+# RuptureGrid — Product Design (UI Philosophy & Contracts)
 
-Status: **Living contract — implemented and accepted through Phase 6 (independent visual/product audit passed); maintained through Phase 11 (released v1.0.1). Phases 0–11 accepted and frozen.**
+Status: **Living contract. Current implementation, verification and publication milestones are recorded in [project status](project-status.md); accepted decisions and explicit amendments remain authoritative.**
 Authoritative for: design philosophy, explicit anti-patterns, information architecture, the signature investigation UX, accessibility/responsiveness contracts, and the UI quality gate.
 
 Related: [product-spec.md](product-spec.md), [evidence-model.md](evidence-model.md) §9 (timeline rules), [phase-roadmap.md](phase-roadmap.md) Phase 6/8.
@@ -63,7 +63,7 @@ If a proposed screen cannot state its question, it is a decoration — cut it.
 ### Comparison
 - Side-by-side run comparison for post-fix replay ([incident-replay.md](incident-replay.md) §6): same snapshot, verdicts and effect counts contrasted; evidence-level differences surfaced honestly.
 
-## 5. Visual language (direction, not yet a design system)
+## 5. Visual language
 
 - Dense, calm, high-contrast-neutral base; color used **semantically** (outcome/verdict) and never as the sole carrier of meaning.
 - Monospace-for-identifiers discipline: IDs, amounts (integer minor units with explicit formatting, e.g., `500000 paisa`), hashes, and timestamps rendered in technical type.

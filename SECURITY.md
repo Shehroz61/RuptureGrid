@@ -1,8 +1,8 @@
 # Security Policy
 
-## Supported surface (v1.0)
+## Supported surface
 
-RuptureGrid v1.0 is a **local-first, source-available developer tool**,
+RuptureGrid is a **local-first, open-source developer tool**,
 released as **source only** under **Apache-2.0** (see [LICENSE](LICENSE)).
 The security model assumes:
 
@@ -11,9 +11,11 @@ The security model assumes:
 - Targets are **registered, authorized systems only**. RuptureGrid is not
   a scanning or attack tool and refuses unregistered destinations by
   construction.
-- **Production and staging targets are denied for experiment execution in
-  v1** (server-side denial at run creation and again in the executor).
-  The Demo Fintech target is classified `LOCAL_DEVELOPMENT`.
+- **Production targets are denied for experiment execution in v1**, at
+  run creation and again in the executor. Explicitly authorized staging
+  targets may execute ordinary experiments; controlled fault plans remain
+  denied on staging. Both bundled demonstration targets are classified
+  `LOCAL_DEVELOPMENT` (ADR-0011 and the server-side validation contract).
 - **Controlled fault injection remains LOCAL_DEVELOPMENT only.** Fault
   plans are bounded server-side and production/staging fault targeting is
   denied — there is no configuration that turns this on for v1.
@@ -62,7 +64,10 @@ are the accepted way to prove behavior).
 ## What we will not accept as a vulnerability report
 
 - "It can execute against a system I registered" — that is the product.
-- The Demo Target's deliberate VULNERABLE mode credits a wallet twice —
-  that is the flagship scenario, switched through the target's own admin
-  API.
-- Secrets in your own uncommitted `.env` — they never leave your machine.
+- A bundled target's documented VULNERABLE behavior by itself—duplicate
+  wallet credits or oversold stock—is an intentional proof scenario.
+  An authorization escape or unintended exposure around that behavior
+  should still be reported privately.
+- Non-production example values in `.env.example` are not credentials for
+  a production service. Actual secret leakage remains reportable; do not
+  publish your `.env` or assume executor credentials never leave the host.

@@ -1,6 +1,6 @@
-# RuptureGrid v1.0 — Product Specification
+# RuptureGrid — Product Specification
 
-Status: **Living contract — accepted through Phase 11 (released v1.0.1). Phases 0–11 accepted and frozen.**
+Status: **Living contract. Current implementation, verification and publication milestones are recorded in [project status](project-status.md); accepted decisions and explicit amendments remain authoritative.**
 Authoritative for: what RuptureGrid is, what it is not, the identity model, the money model, and the truth hierarchy.
 
 Related documents: [architecture.md](architecture.md), [evidence-model.md](evidence-model.md), [incident-zero.md](incident-zero.md), [security-boundaries.md](security-boundaries.md), [phase-roadmap.md](phase-roadmap.md).

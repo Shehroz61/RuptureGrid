@@ -1,0 +1,32 @@
+name: Feature or design proposal
+description: Describe a developer problem and an evidence-backed improvement.
+title: '[Proposal] '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proposals do not authorize a new implementation phase. Check the roadmap and existing issues first.
+        Report vulnerabilities through the [private security channel](https://github.com/Shehroz61/RuptureGrid/security/policy).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and current workflow
+      description: Who encounters this problem, and what do they do today? Avoid private target details.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful change and its limits.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and tradeoffs
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Verification and architectural impact
+      description: How could the claim be tested? Note phase/ADR, target-ownership, credential, evidence or migration implications.

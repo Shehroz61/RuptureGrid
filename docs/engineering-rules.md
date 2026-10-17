@@ -1,6 +1,6 @@
-# RuptureGrid v1.0 — Engineering Rules
+# RuptureGrid — Engineering Rules
 
-Status: **Living contract — in force (accepted through Phase 11, released v1.0.1). Phases 0–11 accepted and frozen.**
+Status: **Living contract. Current implementation, verification and publication milestones are recorded in [project status](project-status.md); accepted decisions and explicit amendments remain authoritative.**
 Authoritative for: the development flow per phase, definitions of done, verification rules, Git discipline, migrations, observability, dependency governance.
 
 Related: [AGENTS.md](../AGENTS.md) (hard rules — this document expands, never contradicts), [testing-strategy.md](testing-strategy.md), [security-boundaries.md](security-boundaries.md) §10, ADR-0013.
@@ -64,7 +64,7 @@ No agent may implement the whole product in one uncontrolled jump. Phases are or
 - Structured logging with correlation IDs (run/step/invocation) from Phase 1 onward.
 - Logs are subject to the same redaction rules as evidence ([security-boundaries.md](security-boundaries.md) §7) — secrets never reach logs.
 - Log volume is deliberate: operational events, outcome transitions, stale-writer events, reconciliation actions — not per-request noise.
-- OpenTelemetry is deferred ([phase-roadmap.md](phase-roadmap.md) Phase 9) but correlation IDs and structured events are designed in from Phase 1 so instrumentation is additive, not invasive.
+- Execution telemetry and the optional OpenTelemetry bridge are implemented in [packages/engine/src/telemetry.ts](../packages/engine/src/telemetry.ts). Export configuration is deployment-specific; a log or span never substitutes for durable business evidence.
 
 ## 8. Dependency governance
 

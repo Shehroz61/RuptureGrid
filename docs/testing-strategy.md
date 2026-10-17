@@ -1,6 +1,6 @@
-# RuptureGrid v1.0 — Testing Strategy
+# RuptureGrid — Testing Strategy
 
-Status: **Living contract — in force; the test taxonomy below is implemented and CI-enforced (accepted through Phase 11, released v1.0.1: unit 32 files/313 tests, integration 24 files/158 tests over real PostgreSQL ×2, Redis, HTTP, browser). Phases 0–11 accepted and frozen.**
+Status: **Living contract. Current implementation, verification and publication milestones are recorded in [project status](project-status.md); accepted decisions and explicit amendments remain authoritative.**
 Authoritative for: test taxonomy, real-infrastructure mandates, adversarial testing, concurrency testing rules, permanent regression policy.
 
 Related: [architecture.md](architecture.md), [incident-zero.md](incident-zero.md) §9, [engineering-rules.md](engineering-rules.md) §1, ADR-0013.
@@ -17,7 +17,7 @@ Tests are not ceremony; they are the verifiable record that a property holds. A 
 |---|---|---|---|
 | **Unit tests** | Pure deterministic logic (classification tables, canonicalization, hashing, invariant math, redaction rules) | Everything external | — |
 | **Integration tests** | Real dependency semantics: PostgreSQL transactions/leases/fencing, Redis/BullMQ enqueue/claim/outage, real TCP HTTP | Process boundaries where irrelevant | PostgreSQL, Redis, HTTP semantics |
-| **End-to-end tests** | Real workflows across real processes: API + worker + Demo Target + (later) browser via Playwright | Nothing in the execution path | The system under test itself |
+| **End-to-end tests** | Real workflows across real processes: API + worker + independent targets + browser via Playwright | Nothing in the execution path | The system under test itself |
 | **Adversarial tests** | Deliberate attempts to break guarantees: races, crashes, duplicates, stale ownership, outages, ambiguous outcomes, security boundaries | — | The guarantee being tested |
 
 Mocks are legitimate for unit tests. Mocks must never be the **sole** acceptance evidence for infrastructure semantics ([architecture.md](architecture.md) §14).
@@ -27,10 +27,10 @@ Mocks are legitimate for unit tests. Mocks must never be the **sole** acceptance
 - Correctness depends on **PostgreSQL** → tests run against **real PostgreSQL** (leases, fencing, conditional updates, transaction isolation).
 - Correctness depends on **Redis/BullMQ** → tests run against **real Redis/BullMQ** (claim, retry, outage, recovery).
 - Correctness depends on **HTTP** → tests use **real TCP HTTP** (the Demo Target is a real HTTP server; the executor makes real requests).
-- Correctness depends on **browser behavior** → real browser via Playwright (later UI phases).
+- Correctness depends on **browser behavior** → real browser via Playwright.
 - Correctness depends on **concurrency** → real concurrent execution is measured (§6), not asserted.
 
-Test environments use ephemeral containerized infrastructure (Docker Compose in later phases) with migrations applied as part of setup — never hand-built schemas.
+Test environments use real containerized infrastructure and owned disposable databases (Docker Compose locally) with migrations applied as part of setup — never hand-built schemas.
 
 ## 4. Adversarial test catalog (minimum, per phase)
 
@@ -71,12 +71,14 @@ A flaky test is a defect — either in the test (nondeterministic construction) 
 Properties important enough to accept a phase are important enough to keep verifying. Therefore:
 
 - Incident Zero in **both modes** is a committed automated suite from Phase 7 ([incident-zero.md](incident-zero.md) §9).
-- The Redis-outage reconciliation scenario, the fencing scenario, and the redaction probes become committed suites in their introducing phases.
+- Redis-outage reconciliation, fencing and redaction probes are committed regression suites; both-domain replay regressions extend that coverage.
 - A one-time terminal demonstration by an AI agent is **never** acceptance evidence ([AGENTS.md](../AGENTS.md) R-07).
 
-## 9. CI contract (later phase)
+## 9. CI contract
 
-When CI is introduced (roadmap Phase 11 or earlier): the full adversarial catalog runs on real containerized infrastructure; PRs cannot merge with failing security or invariant suites; flake quarantine requires explicit tracking. Until then, every phase's acceptance includes local execution of the same suites.
+[The CI workflow](../.github/workflows/ci.yml) runs on pushes and pull requests: format, lint, typecheck, unit tests, build, migrations, real integration suites, Incident Zero and Controlled Faults. Infrastructure is three PostgreSQL instances plus Redis, with real Chromium for browser tests. File execution remains serial because the Redis-outage suite interrupts its configured service.
+
+Failing security or invariant gates block acceptance; quarantine requires explicit tracking. Workflow execution does not itself establish GitHub branch protection. See [project status](project-status.md) for dated results rather than freezing changing suite counts here.
 
 ## 10. Test data rules
 

@@ -1,6 +1,6 @@
-# RuptureGrid v1.0 — Architecture
+# RuptureGrid — Architecture
 
-Status: **Living contract — accepted through Phase 11 (released v1.0.1). Phases 0–11 accepted and frozen.**
+Status: **Living contract. Current implementation, verification and publication milestones are recorded in [project status](project-status.md); accepted decisions and explicit amendments remain authoritative.**
 Authoritative for: bounded contexts, physical topology, data ownership, execution semantics, durability, coordination, failure semantics, and snapshots.
 
 Related: [product-spec.md](product-spec.md), [evidence-model.md](evidence-model.md), [incident-replay.md](incident-replay.md), [security-boundaries.md](security-boundaries.md), ADRs in [decisions/](decisions/).
@@ -47,45 +47,32 @@ Five logical bounded contexts. Responsibilities and rationale:
 - Business invariant evaluation (deterministic engine; PASS / FAIL / NOT_EVALUABLE).
 - Findings with provenance. Timeline assembly.
 
-### E. Demo Target
-- A purpose-built, deliberately vulnerable-then-fixable distributed fintech application used to prove RuptureGrid works (incident-zero.md, roadmap Phase 2).
-- Runs as a **separate application with its own database**. From RuptureGrid's perspective it is an external system under test, indistinguishable in kind from any other authorized target.
+### E. Independent demonstration targets
+- Fintech proves duplicate-payment correctness; Commerce proves concurrent checkout and inventory correctness ([incident-zero.md](incident-zero.md), [checkout-zero.md](checkout-zero.md)).
+- Each runs as a **separate application with its own PostgreSQL instance**, business logic and HTTP interfaces. Both are external-in-kind systems under test, not evidence of independent third-party adoption. The generic manifest/inspection/invariant contracts are recorded in ADRs 0016–0020.
 
-**Why these boundaries.** Control/Evidence/Analysis are one product's data with a shared lifecycle and are separated as *logical* contexts (module boundaries, separate schema ownership, no cross-context table access) inside the API process. The Execution Plane is a separate *physical* process because its failure domain is fundamentally different (it must crash, be killed, lose leases, and recover without corrupting control truth — these properties must be testable, which requires an actual process boundary). The Demo Target is a separate *physical and logical* application because the product's core claim ("we treat the target as external") is only honest if the target really is external.
+**Why these boundaries.** Control/Evidence/Analysis are one product's data with a shared lifecycle, separated as *logical* modules with defined schema ownership. Their shared pipelines are invoked by the API, worker and headless CLI; the CLI drives durable work directly rather than depending on the API HTTP process. The Execution Plane is a separate *physical* process because its failure domain is fundamentally different (it must crash, be killed, lose leases, and recover without corrupting control truth — these properties must be testable, which requires an actual process boundary). The Demo Target is a separate *physical and logical* application because the product's core claim ("we treat the target as external") is only honest if the target really is external.
 
-## 3. Physical topology (v1)
+## 3. Physical topology
 
-```
-┌─────────────┐     ┌──────────────────────────────────────────────┐
-│  Web (UI)   │────▶│  API process (Control + Evidence + Analysis) │
-│  Next.js    │     │  NestJS modules per bounded context          │
-└─────────────┘     └───────┬───────────────────────┬──────────────┘
-                            │ dispatch / claim      │ ingest observations
-                            ▼                       │
-                    ┌───────────────┐               │
-                    │ Redis + BullMQ│               │
-                    │ (coordination │               │
-                    │  ONLY)        │               │
-                    └───────┬───────┘               │
-                            │ claim work (lease)    │
-                            ▼                       │
-                    ┌───────────────────────────────┴─┐
-                    │  Worker process(es)             │
-                    │  (Execution Plane)              │
-                    └───────┬─────────────────────────┘
-                            │ HTTP via registered adapter ONLY
-                            ▼
-                    ┌─────────────────────┐        ┌──────────────────────┐
-                    │  Demo Target app    │───────▶│ Target PostgreSQL    │
-                    │  (separate process, │        │ (target-owned schema)│
-                    │   separate DB)      │        └──────────────────────┘
-                    └─────────────────────┘
-
-     RuptureGrid PostgreSQL (control / evidence / analysis schemas)
-     — owned exclusively by the API + worker processes
+```text
+Web UI ---> Control Plane API ---> Control PostgreSQL <--- Headless CLI
+                  |              durable runs and evidence     |
+                  +---> Redis / BullMQ <------------------------+
+                         coordination only
+                              |
+                        Execution workers
+                              +--- evidence / analysis ---> Control PostgreSQL
+                              +--- HTTP ---> Fintech ---- Fintech PostgreSQL
+                              +--- HTTP ---> Commerce --- Commerce PostgreSQL
 ```
 
-Process count in v1: **API, Worker(s), Demo Target, Web** — four deployable applications plus three infrastructure stores (RuptureGrid PostgreSQL, Target PostgreSQL, Redis). This is the minimum set that makes the architectural claims testable. Additional processes (dedicated analysis worker, provider simulator service) are deferred until load or isolation demands them.
+The development stack has **five applications** (API, worker, web, Fintech,
+Commerce) and **four infrastructure services** (three PostgreSQL instances
+and Redis). The source-only CLI is another entry point to the Control Plane
+and shared execution/analysis flow, not a separately hosted service.
+[compose.yaml](../compose.yaml) defines infrastructure; the root `dev` script
+starts applications. Dedicated analysis services remain a future scaling decision.
 
 ## 4. Data ownership
 
@@ -94,12 +81,13 @@ Process count in v1: **API, Worker(s), Demo Target, Web** — four deployable ap
 | RuptureGrid PostgreSQL — schema `control` | Control Plane | targets, experiment definitions, snapshots, runs, steps, invariant definitions | read via Control Plane APIs only |
 | RuptureGrid PostgreSQL — schema `evidence` | Evidence System | raw observations, integrity chains, redaction records | read via Evidence APIs; append via ingestion API only |
 | RuptureGrid PostgreSQL — schema `analysis` | Analysis System | normalized events, causal relationships, invariant evaluations, findings, timelines | read via Analysis APIs |
-| Target PostgreSQL | Demo Target | customers, wallets, ledger entries, provider payments/events, deliveries, processing attempts, financial effects | **NOBODY. Not RuptureGrid. Ever.** (read exceptions in §5) |
+| Fintech PostgreSQL | Demo Fintech | customers, wallets, ledger, payments/events, deliveries, processing attempts, financial effects | read-only observation exceptions in §5; never RuptureGrid writes |
+| Commerce PostgreSQL | Demo Commerce | checkout intents/events, requests, processing attempts, orders, reservations, SKU stock and configuration provenance | read-only observation exceptions in §5; never RuptureGrid writes |
 
 Hard rules:
 
 - RuptureGrid never opens a write connection to Target PostgreSQL. There is no shared schema, no cross-database foreign key, no "helper" write path.
-- One RuptureGrid database instance hosts the three RuptureGrid schemas; schema-level ownership boundaries are enforced by separate Prisma schema ownership and module rules. The Target database is a separate instance. If a future scale phase splits RuptureGrid schemas into separate instances, no application code may assume co-location.
+- One RuptureGrid database instance hosts the three RuptureGrid schemas; schema-level ownership boundaries are enforced by separate Prisma schema ownership and module rules. Each target database is a separate instance. If a future scale phase splits RuptureGrid schemas into separate instances, no application code may assume co-location.
 - Redis holds **no authoritative state**: queue payloads reference durable row IDs; the row is the truth (§9).
 
 ## 5. Target ownership and observation
@@ -115,7 +103,7 @@ Hard rules:
 
 - **TargetSystem** — a registered, authorized target: identity, base origin(s), environment classification (`local-development` | `staging` | `production`), credentials *references* (never values), declared sensitive fields, permitted experiment classes.
 - **ExperimentDefinition (versioned)** — ordered **steps**; each step declares an action (HTTP request template against the registered origin), optional fault plan (duplicate delivery, post-send timeout, connection drop), repeat count, concurrency, timeout, expected outcome class, and **declared-retry policy**.
-- **RunSnapshot** — the append-only, canonicalized, hash-pinned materialization of everything a run needs: resolved target origin, steps with full request templates (credentials as *references* + fingerprints), fault plan, repeat/concurrency/timeout, invariant bindings, engine/normalizer/invariant versions, environment authorization record (ADR-0010).
+- **RunSnapshot** — the append-only, canonicalized, hash-pinned materialization of everything a run needs: resolved target origin, steps with full request templates (credentials as *references*; value fingerprints are deferred under ADR-0027), fault plan, repeat/concurrency/timeout, invariant bindings, engine/normalizer/invariant versions, environment authorization record (ADR-0010).
 - **ExperimentRun** — one execution of one snapshot: state machine (§8), ownership record, reconciliation state, evidence chain head.
 - **StepRun** — one step of one run: state, attempts, outcome, side-effect knowledge (§7), timing, observation references.
 - **Invocation** — one physical attempt of one step (including deliberate repeats); carries `deliveryAttemptId`-style identity for evidence correlation.
@@ -235,7 +223,7 @@ sequenceDiagram
 ## 11. Snapshots and reproducibility
 
 - At run creation, the Control Plane materializes a **RunSnapshot**: canonicalized JSON, content-hashed, stored append-only, referenced by every downstream artifact. Later edits to experiment definitions, target configuration, or limits never change a historical run (ADR-0010).
-- The snapshot stores credential **references + fingerprints**, never values; at execution time values are resolved from the live environment. If a secret has rotated, replay fails fast with an explicit mismatch, not silently.
+- Snapshots store credential **references**, never values. Replay rechecks registration and current origin grants; missing runtime values fail pre-send. Value changes behind an unchanged authorized reference are not fingerprint-verified. The fingerprint proposal remains deferred and unimplemented under ADR-0027; no historical snapshot is backfilled or denied for lacking a baseline.
 - Replay = create a **new run from the stored snapshot**. What replay reproduces: execution intent. What it cannot reproduce: external network conditions, wall-clock timing, concurrency interleavings, prior target state. See [incident-replay.md](incident-replay.md) for the exact guarantee table and honest limits.
 
 ## 12. Evidence flow
@@ -246,7 +234,7 @@ Workers capture observations at execution time (HTTP wire facts, timing, executo
 
 - No hard-coded paths, machine-specific database locations, or checked-in secrets. All runtime configuration is environment-driven with validated schemas; startup fails fast on missing/invalid configuration (engineering-rules.md §3).
 - The repository is a portable pnpm workspace: no hard-coded paths, machine-specific locations, or machine assumptions anywhere in implementation or configuration.
-- Local development targets (including the Demo Target) use containerized infrastructure via Docker Compose in later phases; ports, credentials, and URLs come from environment configuration, never from source constants.
+- Local development targets (including the Demo Target) use containerized infrastructure via Docker Compose; ports, credentials, and URLs come from environment configuration, never from source constants.
 
 ## 14. Technology direction
 
@@ -258,6 +246,6 @@ Evaluated stack (rationale and alternatives in ADR-0001; **no versions frozen in
 - **PostgreSQL** via **Prisma** (migrations as the authoritative schema history)
 - **Redis + BullMQ** for coordination
 - Runtime validation (schema-validated configuration and payloads), structured logging
-- **Docker Compose** for local infrastructure; **Playwright** for UI E2E later; **OpenTelemetry** later; **FFmpeg** later for the demo video phase
+- **Docker Compose** for local infrastructure; **Playwright** for real browser tests; execution telemetry with an optional OpenTelemetry bridge; **FFmpeg** for locally generated showcase video
 
 Every correctness-relevant dependency (PostgreSQL semantics, Redis/BullMQ behavior, HTTP stack) is tested against **real** infrastructure per [testing-strategy.md](testing-strategy.md) §3.

@@ -1,6 +1,6 @@
-# RuptureGrid v1.0 — Security Boundaries
+# RuptureGrid — Security Boundaries
 
-Status: **Living contract — accepted through Phase 11 (released v1.0.1). Phases 0–11 accepted and frozen.**
+Status: **Living contract. Current implementation, verification and publication milestones are recorded in [project status](project-status.md); accepted decisions and explicit amendments remain authoritative.**
 Authoritative for: target authorization, destination/SSRF/DNS/redirect contracts, credential handling and redaction, blast-radius limits.
 
 Related: [architecture.md](architecture.md) §5 (target ownership), [evidence-model.md](evidence-model.md) §5, ADR-0011, ADR-0012, [product-spec.md](product-spec.md) §8 (non-goals).

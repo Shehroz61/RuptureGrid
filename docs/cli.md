@@ -2,9 +2,33 @@
 
 The headless CLI runs a `rupturegrid-scenario/v1` document against the real
 stack (Control Plane, queue, worker, target) and exits with one of five
-codes. It is a thin, honest driver over the durable Control-Plane truth:
-it creates nothing, guesses nothing, and never reports a verdict it did
-not derive from evidence (R-02, R-03, R-07).
+codes. It drives durable run creation, dispatch and analysis, and reports
+only outcomes derived from persisted evidence. Expectations never decide
+truth (R-02, R-03, R-07).
+
+See [getting started](getting-started.md) for checkout setup and
+[project status](project-status.md) for current verification milestones.
+
+## Prerequisites and source entry point
+
+Build from the checkout and invoke the root script:
+
+```bash
+pnpm rupturegrid --help
+```
+
+Before `run` or `replay`, apply migrations, start Redis and the worker, and
+make the registered target reachable. The scenario selector must match the
+registration's display name. Commerce registration uses its
+[data-only manifest](../apps/demo-commerce/target-manifest.json), adapted
+to that registration's name/origin, with current server-owned credential
+grants for every declared reference. The bundled manifest's `Demo Commerce`
+name differs from the golden CLI selector `checkout-zero-commerce`; do not
+assume starting the application automatically registers it. Use the Control
+Plane target-registration API/UI and its existing validation.
+
+The command shapes below use `rupturegrid` as shorthand for
+`pnpm rupturegrid` from the source checkout; there is no published global CLI.
 
 - **Distribution:** source-only. The CLI runs from a RuptureGrid source
   checkout via `pnpm build:packages && node packages/cli/dist/cli.js`.

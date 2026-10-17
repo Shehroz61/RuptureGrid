@@ -26,7 +26,7 @@ Binding rules for **all contributors — human and AI**. Expanded process detail
 
 **R-12 Migrations are the schema history.** Every schema change ships as a reviewable, reproducible, testable migration. Schema-push mechanisms are never the authoritative history ([docs/engineering-rules.md](docs/engineering-rules.md) §5).
 
-**R-13 Secrets never persist.** Credentials are environment-referenced, redacted before durable persistence, and excluded from logs, evidence, snapshots, and AI inputs ([docs/security-boundaries.md](security-boundaries.md) §7).
+**R-13 Secrets never persist.** Credentials are environment-referenced, redacted before durable persistence, and excluded from logs, evidence, snapshots, and AI inputs ([docs/security-boundaries.md](docs/security-boundaries.md) §7).
 
 **R-14 Security boundaries are enforced server-side.** Registered targets only; destination validation per [docs/security-boundaries.md](docs/security-boundaries.md) §3–§6; production environments denied for fault execution in v1; blast-radius caps enforced in the Control Plane and executor. UI validation is never a security control.
 

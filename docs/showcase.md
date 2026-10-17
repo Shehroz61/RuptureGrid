@@ -1,4 +1,9 @@
-# Showcasing RuptureGrid — Phase 8
+# Showcasing RuptureGrid
+
+Scope: the existing automated showcase captures the Fintech Incident Zero
+workflow. It is not a hosted demo or a Commerce walkthrough. See
+[getting started](getting-started.md) for infrastructure prerequisites and
+[project status](project-status.md) for current verification milestones.
 
 The showcase **presents** the accepted Incident Zero system; it never
 manufactures truth. There is no showcase-specific business logic, no second
@@ -74,12 +79,12 @@ run-ID-based):
 | File                          | Route                                     | Shows                                                       |
 | ----------------------------- | ----------------------------------------- | ----------------------------------------------------------- |
 | `00-runs-index.png`           | `/runs`                                   | Both real runs listed                                        |
-| `01-vulnerable-overview.png`  | `/runs/<vulnerable>/`                     | COMPLETED execution, INV-IZ-1 **FAIL**, wallet PKR 1,000,000.00 |
+| `01-vulnerable-overview.png`  | `/runs/<vulnerable>/`                     | COMPLETED execution, INV-IZ-1 **FAIL**, wallet PKR 10,000.00 |
 | `02-vulnerable-finding.png`   | `/runs/<vulnerable>/findings/<findingId>` | The deterministic Finding, subject payment, both equivalent effects |
 | `03-vulnerable-timeline.png`  | `/runs/<vulnerable>/timeline`             | 20 deliveries / 20 attempts, honest ordering bases           |
 | `04-vulnerable-evidence.png`  | `/runs/<vulnerable>/evidence`             | Chain integrity ("intact"), REDACTED raw observations        |
 | `05-vulnerable-reproduction.png` | `/runs/<vulnerable>/reproduction`      | Snapshot-bound reproduction; credential names only           |
-| `06-secure-overview.png`      | `/runs/<secure>/`                         | COMPLETED execution, INV-IZ-1 **PASS**, wallet PKR 500,000.00 |
+| `06-secure-overview.png`      | `/runs/<secure>/`                         | COMPLETED execution, INV-IZ-1 **PASS**, wallet PKR 5,000.00 |
 | `07-secure-timeline.png`      | `/runs/<secure>/timeline`                 | Same 20-delivery pressure recorded honestly                  |
 | `08-secure-evidence.png`      | `/runs/<secure>/evidence`                 | Suppressed attempts remain recorded as observations          |
 | `09-secure-reproduction.png`  | `/runs/<secure>/reproduction`             | SECURE-mode reproduction definition                          |

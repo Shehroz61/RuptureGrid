@@ -1,11 +1,11 @@
-# RuptureGrid v1.0 — Phase Roadmap
+# RuptureGrid — Phase Roadmap
 
-Status: **v1.0 phases 0–11 accepted and frozen (released v1.0.1); v1.1 design frozen in Phase 12 — Phases 13–19 defined, not implemented.**
+Status: **Phases 0–17 accepted; Phase 18 implementation committed, independently audited PASS and CI-green, with its acceptance tag still pending. Phase 19 is not started. v1.0.1 remains the latest published release. See [project status](project-status.md).**
 This document is the ordered, gated plan from Phase 0 through the v1.0 release (Phases 0–11, accepted and frozen) and the v1.1 **Second-Domain Generalization Proof** (Phases 12–19). Later phases must not begin until the prior phase's exit criteria are met ([AGENTS.md](../AGENTS.md) R-01, ADR-0013).
 
 ---
 
-## Phase 0 — Product Definition + Architecture + Engineering Constitution (this phase)
+## Phase 0 — Product Definition + Architecture + Engineering Constitution
 
 - **Goal:** the architectural constitution for everything that follows.
 - **Scope:** documentation set, ADRs, requirements matrix, self-audit. No runtime code, no dependencies.
@@ -169,7 +169,7 @@ readiness from documentation** (the Phase 19 stranger test). It does NOT establi
 third-party adoption, production adoption, or external organization usage — the stranger test is
 an adoption-readiness test, not evidence that any third party adopted RuptureGrid.
 
-## Phase 12 — v1.1 Design Freeze + Living-Documentation Repair (this phase)
+## Phase 12 — v1.1 Design Freeze + Living-Documentation Repair
 
 - **Goal:** freeze the v1.1 design contract BEFORE any implementation; repair living-documentation staleness left by the v1.0.1 release.
 - **Scope (files/components likely touched):** ADRs 0016–0020 (target-manifest/v1; typed identity declarations + causal edges; business-invariant/v1 closed registry with corrected conservation semantics; headless CLI + rupturegrid-report/v1 + replay lifecycle + distribution honesty; Checkout Zero + repeat-not-retry safety model); new [checkout-zero.md](checkout-zero.md); status-banner and staleness repair across the living core docs (README publication status, root package.json description, Phase-0 banners, machine-specific path wording, this roadmap's v1.1 section).
@@ -262,13 +262,14 @@ an adoption-readiness test, not evidence that any third party adopted RuptureGri
 - **Deliverables:** replay command, regression suites, CI recipe.
 - **Exit criteria:** independent audit performs the lifecycle end-to-end.
 
-**Current status — 17 October 2026:** the approved architectural amendment
-is implemented and the final independent Phase 18 acceptance audit PASSED.
-The controlled Phase 18 commit has not been created; CI for that new commit
-has not run; the acceptance tag has not been created. Phase 18 is not yet
-declared accepted or published, and Phase 19 has not started. See the
-[final independent acceptance reference](reports/phase-18-final-independent-acceptance-reference.md)
-for the exact audit identity, preserved evidence and pending Git/CI/tag gates.
+**Current status — 17 October 2026:** the approved amendment is implemented
+and committed in `f3dccda3c2b8e6ac1d07512a4ed89a5de520fbd7`. The final
+independent acceptance audit PASSED and [official CI](https://github.com/Shehroz61/RuptureGrid/actions/runs/39031711047)
+succeeded on that commit. Documentation presentation changes still require
+their own review, commit/push authorization and new-commit CI before separate
+acceptance-tag authorization. Phase 18 is not yet declared accepted or
+published; Phase 19 has not started. See [project status](project-status.md)
+and the preserved [independent audit reference](reports/phase-18-final-independent-acceptance-reference.md).
 
 ## Phase 19 — Independent v1.1 Audit + Release
 

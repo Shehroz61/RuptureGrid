@@ -21,8 +21,9 @@
 //   cross-intent comparison refusal (incident-replay §6)
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createControlDb } from '@rupturegrid/control-db';
-import type { ControlDb } from '@rupturegrid/control-db';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { ControlDb, PrismaClient } from '@rupturegrid/control-db';
 import { createExecutionQueue } from '@rupturegrid/queue';
 import { runRunAnalysis } from '@rupturegrid/evidence';
 import {
@@ -37,7 +38,7 @@ import { createExperiment, createRun, markRunDispatching } from '@rupturegrid/en
 import { loadTestEnv } from './helpers/env.js';
 import { startDemoProcess, createDemoClient } from './helpers/demo-harness.js';
 import type { DemoClient, RunningDemo } from './helpers/demo-harness.js';
-import { getControlPrisma, requireId, uniqueName, waitFor } from './helpers/execution-harness.js';
+import { requireId, uniqueName, waitFor } from './helpers/execution-harness.js';
 import {
   createAndDispatchRun,
   incidentZeroSteps,
@@ -45,8 +46,9 @@ import {
   startPhase4Worker,
 } from './helpers/phase4-harness.js';
 
-const env = loadTestEnv();
-const prisma = getControlPrisma();
+let env = loadTestEnv();
+let prisma: PrismaClient;
+let ownedFixture: OwnedControlFixture;
 const DEMO_P5_PORT = Number(process.env.DEMO_P5_TEST_PORT ?? '3125');
 
 let demo: RunningDemo;
@@ -57,11 +59,14 @@ let targetId = '';
 let worker: Awaited<ReturnType<typeof startPhase4Worker>> | null = null;
 
 beforeAll(async () => {
-  controlDb = createControlDb(env.controlDatabaseUrl);
+  ownedFixture = await createOwnedControlFixture(env);
+  env = ownedFixture.env;
+  controlDb = ownedFixture.controlDb;
+  prisma = ownedFixture.prisma;
   queue = createExecutionQueue({ redisUrl: env.redisUrl, prefix: env.queuePrefix });
   demo = await startDemoProcess(env, DEMO_P5_PORT);
   client = createDemoClient(demo);
-  targetId = (await registerDemoTarget(prisma, demo)).targetId;
+  targetId = (await registerDemoTarget(ownedFixture, demo)).targetId;
 }, 60_000);
 
 afterAll(async () => {
@@ -69,7 +74,7 @@ afterAll(async () => {
     await worker.close();
   }
   await queue.close();
-  await controlDb.disconnect();
+  await ownedFixture.close();
   await demo.close();
 });
 

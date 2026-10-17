@@ -17,6 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createControlDb } from '@rupturegrid/control-db';
+import { provisionThrowawayControlDb } from './helpers/control-db-provision.js';
 import type { ControlDb } from '@rupturegrid/control-db';
 import { createExperiment, createRun, registerTarget } from '@rupturegrid/engine';
 import {
@@ -37,6 +38,7 @@ import { uniqueName } from './helpers/execution-harness.js';
 const prisma = () => controlDb!.prisma;
 
 let controlDb: ControlDb | null = null;
+let isolatedDb: Awaited<ReturnType<typeof provisionThrowawayControlDb>> | null = null;
 let baseUrl = '';
 let manifestTargetId: string | null = null;
 let runId: string | null = null;
@@ -219,7 +221,8 @@ beforeAll(async () => {
   });
   const address = fixture.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${address.port}`;
-  controlDb = createControlDb(loadTestEnv().controlDatabaseUrl);
+  isolatedDb = await provisionThrowawayControlDb(loadTestEnv().controlDatabaseUrl);
+  controlDb = createControlDb(isolatedDb.databaseUrl);
 
   const displayName = uniqueName('library-manifest-target');
   const registered = await registerTarget(prisma(), {
@@ -258,6 +261,7 @@ afterAll(async () => {
     fixture.close(() => resolve());
   });
   await controlDb?.disconnect();
+  await isolatedDb?.close();
 });
 
 /** Registers the library target once (origin authority is global). */

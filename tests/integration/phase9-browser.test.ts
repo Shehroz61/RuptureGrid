@@ -24,7 +24,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import type { Browser, Page } from 'playwright';
-import { createControlDb } from '@rupturegrid/control-db';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
 import type { ControlDb, PrismaClient } from '@rupturegrid/control-db';
 import { createExecutionQueue } from '@rupturegrid/queue';
 import type { ExecutionQueue } from '@rupturegrid/queue';
@@ -49,7 +50,7 @@ const SCENARIO_TIMEOUT = 240_000;
 let env2: TestEnv;
 let prisma: PrismaClient;
 let controlDb: ControlDb;
-let disconnect: () => Promise<void>;
+let ownedFixture: OwnedControlFixture;
 let demo: RunningDemo;
 let worker: RunningWorker;
 let queue: ExecutionQueue;
@@ -62,13 +63,14 @@ let webTempDirRef = '';
 
 beforeAll(async () => {
   env2 = loadTestEnv();
-  controlDb = createControlDb(env2.controlDatabaseUrl);
-  prisma = controlDb.prisma;
-  disconnect = controlDb.disconnect;
+  ownedFixture = await createOwnedControlFixture(env2);
+  env2 = ownedFixture.env;
+  controlDb = ownedFixture.controlDb;
+  prisma = ownedFixture.prisma;
   demo = await startDemoProcess(env2, DEMO_P9B_PORT);
   worker = await startPhase4Worker(env2);
   queue = createExecutionQueue({ redisUrl: env2.redisUrl, prefix: env2.queuePrefix });
-  targetId = (await registerDemoTarget(prisma, demo, 'phase9-browser-target')).targetId;
+  targetId = (await registerDemoTarget(ownedFixture, demo, 'phase9-browser-target')).targetId;
 
   // Real API (in-process Nest over REAL Control PostgreSQL/Redis) +
   // real web production server (owned child), as in the Phase 4/8
@@ -142,7 +144,7 @@ afterAll(async () => {
   await queue.close().catch(() => undefined);
   await worker.close().catch(() => undefined);
   await demo.close().catch(() => undefined);
-  await disconnect().catch(() => undefined);
+  await ownedFixture.close();
   if (webTempDirRef !== '') {
     await rm(webTempDirRef, { recursive: true, force: true }).catch(() => undefined);
   }

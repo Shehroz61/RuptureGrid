@@ -15,31 +15,34 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createControlDb } from '@rupturegrid/control-db';
-import type { ControlDb } from '@rupturegrid/control-db';
+import type { PrismaClient } from '@rupturegrid/control-db';
 import { createExecutionQueue } from '@rupturegrid/queue';
 import {
   createExperiment,
   createRun,
   markRunDispatching,
-  registerTarget,
   runReconcileSweep,
 } from '@rupturegrid/engine';
 import { loadTestEnv } from './helpers/env.js';
-import { getControlPrisma, uniqueName, waitFor } from './helpers/execution-harness.js';
+import { uniqueName, waitFor } from './helpers/execution-harness.js';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
 
-const env = loadTestEnv();
-const prisma = getControlPrisma();
+let env = loadTestEnv();
+let prisma: PrismaClient;
+let fixture: OwnedControlFixture;
 
 let server: Server | null = null;
 let baseUrl = '';
 let hitCount = 0;
 let hangRequested = false;
-let controlDb: ControlDb;
 let queue: ReturnType<typeof createExecutionQueue>;
 const workers: ChildProcess[] = [];
 
 beforeAll(async () => {
+  fixture = await createOwnedControlFixture(env);
+  env = fixture.env;
+  prisma = fixture.prisma;
   server = createServer((_req, res) => {
     hitCount += 1;
     if (hangRequested) {
@@ -53,21 +56,16 @@ beforeAll(async () => {
   });
   const address = server?.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${address.port}`;
-  controlDb = createControlDb(env.controlDatabaseUrl);
   queue = createExecutionQueue({ redisUrl: env.redisUrl, prefix: env.queuePrefix });
 });
 
 afterAll(async () => {
-  for (const worker of workers) {
-    if (worker.exitCode === null && worker.signalCode === null) {
-      worker.kill('SIGKILL');
-    }
-  }
+  await stopAllWorkerProcesses();
   await queue.close();
-  await controlDb.disconnect();
   await new Promise<void>((resolve) => {
     server?.close(() => resolve());
   });
+  await fixture.close();
 });
 
 /** Spawns a REAL worker process with a short lease for fast tests. */
@@ -105,13 +103,16 @@ async function startWorkerProcess(): Promise<void> {
 
 /** Stops every worker process this file spawned. */
 async function stopAllWorkerProcesses(): Promise<void> {
-  while (workers.length > 0) {
-    const worker = workers.pop();
-    if (worker !== undefined && worker.exitCode === null && worker.signalCode === null) {
-      worker.kill('SIGKILL');
-    }
-  }
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await Promise.all(workers.splice(0).map(killAndJoin));
+}
+
+async function killAndJoin(worker: ChildProcess): Promise<void> {
+  if (worker.exitCode !== null || worker.signalCode !== null) return;
+  await new Promise<void>((resolve, reject) => {
+    worker.once('exit', () => resolve());
+    worker.once('error', reject);
+    worker.kill('SIGKILL');
+  });
 }
 
 /** Waits until DATABASE time is past the given step's lease deadline. */
@@ -135,26 +136,18 @@ async function stopWorkerProcessAbruptly(): Promise<void> {
   if (victim === undefined) {
     return;
   }
-  victim.kill('SIGKILL'); // crash: no graceful shutdown, no state writes
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await killAndJoin(victim); // crash: no graceful shutdown, no state writes
 }
 
 async function makeRun(
   mutation: 'READ_ONLY' | 'MUTATING',
   path: string,
 ): Promise<{ runId: string; stepRunId: string }> {
-  const target = await registerTarget(prisma, {
-    displayName: uniqueName('mp-target'),
+  const target = await fixture.acquireTarget('workload', {
+    displayName: 'multi-worker-target',
     environment: 'LOCAL_DEVELOPMENT',
-    origins: [`${baseUrl}-${Math.floor(Math.random() * 10)}`.replace(/-\d+$/, '')],
+    origins: [baseUrl],
     contractKind: 'GENERIC_HTTP',
-  }).catch(async () => {
-    // Origin clash (same fixture origin across suites): fall back to
-    // the experiment referencing the existing registered target.
-    const existing = await prisma.targetRegistration.findFirstOrThrow({
-      where: { origins: { some: { origin: baseUrl } } },
-    });
-    return { targetId: existing.id };
   });
   const created = await createExperiment(prisma, {
     name: uniqueName('mp-experiment'),

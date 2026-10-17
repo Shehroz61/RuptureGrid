@@ -72,6 +72,9 @@ export {
 
 export {
   executeScenario,
+  executeReplay,
+  driveRunToReport,
+  dispatchRun,
   resolveTargetByDisplayName,
   waitForRunTerminal,
   waitForAnalysisComplete,
@@ -82,8 +85,21 @@ export {
   loadFrozenReportInputs,
   TargetResolutionError,
   AnalysisTimeoutError,
+  ReplayRequestError,
+  ReplayValidationError,
 } from './orchestrator.js';
 export type { RunOutcome, RunFlowOptions, FrozenReportInputs } from './orchestrator.js';
+
+export {
+  assertAcceptanceExpectations,
+  expectationsFromScenario,
+  expectationsFromReproduction,
+} from './expectations.js';
+export type {
+  AcceptanceExpectations,
+  ExpectationReportView,
+  ExpectationAssertion,
+} from './expectations.js';
 
 export {
   reportJsonSchema,
@@ -94,5 +110,12 @@ export {
 export { emitSchemas, serializeSchemaDocumentStable } from './schema-emit.js';
 export { validateReportAgainstSchema, ReportSchemaValidationError } from './schema-validate.js';
 
-export { cliMain, parseTimeoutDuration, parseRunArgs } from './cli.js';
+export {
+  cliMain,
+  parseTimeoutDuration,
+  parseRunArgs,
+  parseReplayArgs,
+  parseCompareArgs,
+  REPLAY_DEFAULT_TIMEOUT_MS,
+} from './cli.js';
 export type { CliDeps } from './cli.js';

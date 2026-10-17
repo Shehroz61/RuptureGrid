@@ -140,8 +140,8 @@ export function createApp(deps: AppDeps): express.Express {
   app.put('/demo/admin/mode', adminAuth, async (req, res, next) => {
     try {
       const mode = requireMode((req.body as { mode?: unknown }).mode);
-      const applied = await deps.admin.setProcessingMode(mode);
-      res.status(200).json({ mode: applied });
+      const applied = await deps.admin.setConfiguration(mode);
+      res.status(200).json(applied);
     } catch (error) {
       next(error);
     }
@@ -149,8 +149,44 @@ export function createApp(deps: AppDeps): express.Express {
 
   app.get('/demo/admin/status', adminAuth, async (_req, res, next) => {
     try {
-      const mode = await deps.admin.getProcessingMode();
-      res.status(200).json({ mode, environment: 'demo' });
+      const configuration = await deps.admin.getConfiguration();
+      res.status(200).json({ ...configuration, environment: 'demo' });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Separate mode-preserving setup; the old required-mode route above
+  // retains its contract. No override or implicit mode default exists.
+  app.post('/demo/admin/scenario-context', adminAuth, async (req, res, next) => {
+    try {
+      const body = req.body as Record<string, unknown> | null;
+      const allowed = ['scopeToken', 'sku', 'initialAvailableUnits'];
+      if (
+        typeof body !== 'object' ||
+        body === null ||
+        Array.isArray(body) ||
+        Object.keys(body).length !== allowed.length ||
+        Object.keys(body).some((key) => !allowed.includes(key)) ||
+        typeof body['scopeToken'] !== 'string' ||
+        !isWellFormedIdentity(body['scopeToken']) ||
+        typeof body['sku'] !== 'string' ||
+        !isWellFormedIdentity(body['sku']) ||
+        typeof body['initialAvailableUnits'] !== 'number' ||
+        !Number.isSafeInteger(body['initialAvailableUnits']) ||
+        body['initialAvailableUnits'] < 0 ||
+        body['initialAvailableUnits'] > 2_147_483_647
+      ) {
+        throw new TransportError(
+          'scenario-context requires exactly bounded scopeToken, sku and integer initialAvailableUnits in 0..2147483647; mode is not accepted',
+        );
+      }
+      const context = await deps.admin.resetContext({
+        scopeToken: body['scopeToken'],
+        sku: body['sku'],
+        initialAvailableUnits: body['initialAvailableUnits'],
+      });
+      res.status(200).json({ ...context, verificationScopeId: context.scopeToken });
     } catch (error) {
       next(error);
     }
@@ -213,6 +249,9 @@ export function createApp(deps: AppDeps): express.Express {
       });
 
       const responseBody = {
+        mode: result.mode,
+        processingRevision: result.processingRevision,
+        targetInstanceId: result.targetInstanceId,
         requestAttemptId: result.requestAttemptId,
         checkoutIntentId: result.checkoutIntentId,
         checkoutEventId: result.checkoutEventId,

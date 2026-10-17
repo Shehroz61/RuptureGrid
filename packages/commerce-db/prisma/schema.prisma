@@ -61,6 +61,9 @@ enum CommerceProcessingMode {
 model CommerceSettings {
   id             String                @id @default("default")
   processingMode CommerceProcessingMode @default(VULNERABLE)
+  /// Phase 18: configuration provenance, not a historical deployment count.
+  processingRevision BigInt @default(0)
+  targetInstanceId String @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   updatedAt      DateTime              @updatedAt @db.Timestamptz(3)
 
   @@map("commerce_settings")
@@ -236,6 +239,10 @@ model ProcessingAttempt {
   finishedAt          DateTime?         @db.Timestamptz(3)
   outcome             ProcessingOutcome?
   failureReason       String?
+  /// Actual configuration captured by this attempt; historical rows stay unknown.
+  processingModeUsed CommerceProcessingMode?
+  processingRevisionUsed BigInt?
+  targetInstanceIdUsed String? @db.Uuid
 
   order Order?
 

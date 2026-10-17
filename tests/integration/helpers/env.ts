@@ -2,8 +2,8 @@
 // Integration test helpers — environment
 // =====================================================================
 // Integration tests read the developer's own environment (repo-root
-// .env). They never create databases or credentials themselves; the
-// Docker services and their credentials come from compose.yaml/.env.
+// .env). Docker services and credentials come from compose.yaml/.env;
+// owned fixture helpers may provision databases using those services.
 
 import { loadEnvironment } from '@rupturegrid/config';
 

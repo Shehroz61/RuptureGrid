@@ -12,7 +12,8 @@
 // These tests drive the REAL StepProcessor against a REAL HTTP server
 // (R-08) and read the REAL durable step row + invocation rows.
 
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { PrismaClient } from '@rupturegrid/control-db';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
@@ -23,13 +24,18 @@ import {
   createRun,
   markRunDispatching,
 } from '@rupturegrid/engine';
-import {
-  getControlPrisma,
-  registerLocalFixtureTarget,
-  uniqueName,
-} from './helpers/execution-harness.js';
+import { uniqueName } from './helpers/execution-harness.js';
+import { loadTestEnv } from './helpers/env.js';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
 
-const prisma = getControlPrisma();
+let prisma: PrismaClient;
+let ownedFixture: OwnedControlFixture;
+
+beforeAll(async () => {
+  ownedFixture = await createOwnedControlFixture(loadTestEnv());
+  prisma = ownedFixture.prisma;
+});
 
 const servers: Server[] = [];
 
@@ -37,6 +43,7 @@ afterAll(async () => {
   for (const server of servers) {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+  await ownedFixture.close();
 });
 
 interface StepHarness {
@@ -45,23 +52,23 @@ interface StepHarness {
   readonly origin: string;
 }
 
+/** The fixture owns the Control namespace; the OS reserves each live port. */
+async function listenOnUnregisteredOrigin(server: Server): Promise<string> {
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+}
+
 async function makeHarness(options: {
   readonly repeat: number;
   readonly concurrency: number;
   readonly origin: string;
 }): Promise<StepHarness> {
-  // Collision-safe fixture registration (shared harness helper): this
-  // suite binds its HTTP fixture to an OS-EPHEMERAL port, and ephemeral
-  // ports recycle across suite runs while registrations survive on the
-  // persistent shared dev database. Plain `registerTarget` therefore
-  // fails as a stale-origin clash (observed in this session); the helper
-  // reuses this suite's EXISTING registration for that exact origin
-  // instead of weakening origin uniqueness in any way.
-  const targetId = await registerLocalFixtureTarget(
-    prisma,
-    uniqueName('aggregation-target'),
-    options.origin,
-  );
+  const { targetId } = await ownedFixture.acquireTarget(options.origin, {
+    displayName: uniqueName('aggregation-target'),
+    environment: 'LOCAL_DEVELOPMENT',
+    origins: [options.origin],
+    contractKind: 'GENERIC_HTTP',
+  });
   const created = await createExperiment(prisma, {
     name: uniqueName('aggregation-experiment'),
     targetId,
@@ -110,8 +117,7 @@ describe('Phase 17 §9: monotone step-knowledge aggregation (real StepProcessor 
       server.closeAllConnections();
     });
     servers.push(server);
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+    const origin = await listenOnUnregisteredOrigin(server);
 
     const harness = await makeHarness({ repeat: 2, concurrency: 1, origin });
     const processor = buildProcessor();
@@ -150,8 +156,7 @@ describe('Phase 17 §9: monotone step-knowledge aggregation (real StepProcessor 
       response.end('{"status":"ACCEPTED"}');
     });
     servers.push(server);
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+    const origin = await listenOnUnregisteredOrigin(server);
 
     const harness = await makeHarness({ repeat: 2, concurrency: 2, origin });
     const processor = buildProcessor();
@@ -171,8 +176,7 @@ describe('Phase 17 §9: monotone step-knowledge aggregation (real StepProcessor 
       response.end('{"status":"ERROR"}');
     });
     servers.push(server);
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+    const origin = await listenOnUnregisteredOrigin(server);
 
     const harness = await makeHarness({ repeat: 1, concurrency: 1, origin });
     const processor = buildProcessor();

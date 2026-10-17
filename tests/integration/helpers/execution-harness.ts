@@ -7,7 +7,6 @@
 
 import { createControlDb } from '@rupturegrid/control-db';
 import type { PrismaClient } from '@rupturegrid/control-db';
-import { registerTarget, TargetRegistrationError } from '@rupturegrid/engine';
 import type { TargetOriginCredentialPolicy } from '@rupturegrid/engine';
 import { EXECUTOR_SIGNING_CREDENTIAL_REFS } from '@rupturegrid/config';
 import { loadTestEnv } from './env.js';
@@ -77,14 +76,9 @@ export function uniqueName(prefix: string): string {
  * The security property is untouched: the origin remains a plain
  * loopback http origin the registration contract can fully validate.
  *
- * NOTE (Phase 17 B1 session): this allocator only ever hands out UNBOUND
- * origins. A suite that BINDS a fixture server must verify the resulting
- * origin is unregistered BEFORE it registers a target on it — otherwise
- * it silently inherits whatever a previous run left there (measured on the
- * shared dev database: 294 of 466 origins in the 33000–38999 band
- * belonged to manifest-less targets, which is exactly how a Commerce/Phase-15
- * fixture ended up validating a target with no manifest). That check lives
- * in the binding suites themselves, not here.
+ * This allocator returns only UNBOUND origins; it never returns a target
+ * ID. Live reusable fixtures use createOwnedControlFixture instead. A
+ * registration clash must fail rather than adopting another target ID.
  */
 export async function uniqueTestOrigin(prisma: PrismaClient): Promise<string> {
   for (let attempt = 0; attempt < 16; attempt += 1) {
@@ -118,39 +112,4 @@ export function testTargetOriginCredentialPolicy(
       Object.entries(originRefs).map(([origin, refs]) => [origin, [...refs]]),
     ),
   };
-}
-
-/**
- * Registers a LOCAL fixture target for tests that bind their HTTP
- * fixture server to an OS-EPHEMERAL port (`listen(0)`). Ephemeral ports
- * recycle across suite runs, and a registration from an earlier run
- * survives on the persistent shared dev DB — so plain registration is
- * itself a collision-flake (origin authority is global by design).
- * On TargetRegistrationError the suite's EXISTING registration for
- * that exact origin is reused; any other error propagates. Global
- * uniqueness is never bypassed or weakened: two different targets can
- * still never hold one origin.
- */
-export async function registerLocalFixtureTarget(
-  prisma: PrismaClient,
-  displayName: string,
-  fixtureOrigin: string,
-): Promise<string> {
-  try {
-    const registered = await registerTarget(prisma, {
-      displayName,
-      environment: 'LOCAL_DEVELOPMENT',
-      origins: [fixtureOrigin],
-      contractKind: 'GENERIC_HTTP',
-    });
-    return registered.targetId;
-  } catch (error) {
-    if (error instanceof TargetRegistrationError) {
-      const existing = await prisma.targetRegistration.findFirstOrThrow({
-        where: { origins: { some: { origin: fixtureOrigin } } },
-      });
-      return existing.id;
-    }
-    throw error;
-  }
 }

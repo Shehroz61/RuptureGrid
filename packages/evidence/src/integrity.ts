@@ -52,6 +52,7 @@ export interface IntegrityReport {
 export async function verifyRunEvidenceChain(
   prisma: PrismaClient,
   runId: string,
+  options: { readonly recordResult?: boolean } = {},
 ): Promise<IntegrityReport> {
   const observations = await prisma.rawObservation.findMany({
     where: { runId },
@@ -134,8 +135,10 @@ export async function verifyRunEvidenceChain(
   const verifiedAt = new Date();
 
   // Record the verification OUTCOME on the head row (coordination
-  // metadata only — observation rows are never touched).
-  if (head !== null) {
+  // metadata only — observation rows are never touched). Read-only
+  // comparison explicitly opts out so inspecting a historical run does
+  // not change even its verifier coordination metadata.
+  if (head !== null && options.recordResult !== false) {
     await prisma.evidenceIntegrityHead.update({
       where: { runId },
       data: {

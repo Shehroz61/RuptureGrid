@@ -102,7 +102,10 @@ export {
 export { ExperimentValidationError } from './types.js';
 export { buildSnapshotDocument, freezeSnapshot, SnapshotError } from './snapshot.js';
 export { createRun, markRunDispatching, loadRunSnapshot, RunCreationError } from './run-create.js';
+export { frozenInvariantKeys } from './replay.js';
 export type { CreatedRun } from './run-create.js';
+export { validateReplayBinding, createRunFromSnapshot, ReplayValidationError } from './replay.js';
+export type { ReplayBinding } from './replay.js';
 export type { TargetRegistrationResult, RegisterTargetInput } from './target.js';
 export { claimStep, heartbeatStep, LeaseLostError } from './claim.js';
 export {

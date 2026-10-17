@@ -37,14 +37,18 @@ import { createExecutionQueue } from '@rupturegrid/queue';
 import {
   createExperiment,
   createRun,
+  createRunFromSnapshot,
   loadRunSnapshot,
   markRunDispatching,
   getTarget,
+  validateReplayBinding,
   TargetRegistrationError,
   ExperimentValidationError,
   RunCreationError,
+  ReplayValidationError,
+  frozenInvariantKeys,
 } from '@rupturegrid/engine';
-import type { TargetOriginCredentialPolicy } from '@rupturegrid/engine';
+import type { RunSnapshotDocument, TargetOriginCredentialPolicy } from '@rupturegrid/engine';
 import {
   RUN_ANALYSIS_MAX_CYCLES,
   authorizeReportFinalization,
@@ -203,6 +207,356 @@ export interface RunFlowOptions {
 }
 
 /**
+ * Dispatches a durably created run through the real queue (IDs only;
+ * ADR-0003): marks DISPATCHING durably, then enqueues the first step.
+ * Shared by the `run` and `replay` flows — dispatch is identical
+ * because a replay run's step rows come from the same frozen steps.
+ */
+export async function dispatchRun(
+  prisma: PrismaClient,
+  runId: string,
+  options: Pick<RunFlowOptions, 'redisUrl' | 'queuePrefix'>,
+): Promise<void> {
+  await markRunDispatching(prisma, runId);
+  const firstStep = await prisma.experimentStepRun.findFirstOrThrow({
+    where: { runId },
+    orderBy: { sequence: 'asc' },
+    select: { id: true, sequence: true },
+  });
+  const queue = createExecutionQueue({ redisUrl: options.redisUrl, prefix: options.queuePrefix });
+  try {
+    await queue.enqueueStep({
+      runId,
+      stepRunId: firstStep.id,
+      sequence: firstStep.sequence,
+    });
+  } finally {
+    await queue.close();
+  }
+}
+
+/** A replay request that is refused before anything durable happens. */
+export class ReplayRequestError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = 'ReplayRequestError';
+  }
+}
+
+/**
+ * Drives an already-dispatched run to its exit classification plus the
+ * assembled report input — the shared Phase 17 pipeline (bounded-poll
+ * wait → generic capture → idempotent analysis → forensic derivation →
+ * integrity verification → Boundary B authorization → classification),
+ * used VERBATIM by both `run` and `replay`. Nothing here invents
+ * truth: evaluations/findings/integrity are read from durable rows
+ * after the accepted pipelines ran. Expectations never enter: the
+ * classifier reads durable truth only.
+ */
+export async function driveRunToReport(
+  prisma: PrismaClient,
+  runId: string,
+  targetId: string,
+  snapshotId: string,
+  snapshotContentHash: string,
+  options: RunFlowOptions,
+): Promise<RunOutcome> {
+  // ---- 9. Bounded poll of durable run state. ----
+  const waited = await waitForRunTerminal(prisma, runId, {
+    runTimeoutMs: options.runTimeoutMs,
+    pollIntervalMs: options.pollIntervalMs,
+  });
+
+  // ---- 10. Generic evidence capture (audited flow step 10). The v1
+  // worker performs NO timed automatic capture; the headless CLI owns
+  // the invocation point for the runs it drives: post-terminal, once
+  // per run, GENERAL (driven by the FROZEN manifestEvidencePolicy — no
+  // Commerce branch). These are read-only observation requests against
+  // the target's declared inspection endpoints (R-05: no business
+  // state is ever written). Capture failure is honest evidence
+  // incompleteness — it never rewrites execution truth; the generic
+  // evaluators turn missing captures into NOT_EVALUABLE, and the exit
+  // contract says so (never a silent pass).
+
+  // ---- 11. Idempotent analysis (existing pipeline; worker sweeps also
+  // converge here — repeat passes never duplicate rows). ----
+  const boundKeys = await boundInvariantKeysOf(prisma, runId);
+
+  // Timeout: execution truth is NOT mutated (§30). Honest EXECUTION_FAILURE.
+  if ('timedOut' in waited) {
+    const classification = classifyExit({
+      runTerminalState: undefined,
+      executionFailureReason: `bounded wait timeout after ${String(options.runTimeoutMs)}ms: the run did not reach a terminal state (run truth was not mutated)`,
+      subjectVerdicts: [],
+      boundKeyDomains: [],
+      anomalies: [],
+    });
+    return {
+      runId,
+      snapshotId,
+      snapshotContentHash,
+      integrity: null,
+      classification,
+      reportInput: null,
+    };
+  }
+
+  // A FAILED/CANCELLED run is honest EXECUTION_FAILURE: no evaluation
+  // surface exists to report (a step failed mid-flight; the report's
+  // truth fields would be empty decoration). Preserve run truth, emit
+  // the machine error surface, exit 3 (§78).
+  if (waited.terminal !== 'COMPLETED') {
+    await runRunAnalysis(prisma, runId).catch(() => undefined);
+    const integrity = await verifyRunEvidenceChain(prisma, runId).catch(() => null);
+    const classification = classifyExit({
+      runTerminalState: waited.terminal,
+      executionFailureReason: `run ended in terminal state ${waited.terminal}`,
+      subjectVerdicts: [],
+      boundKeyDomains: [],
+      anomalies: [],
+    });
+    return {
+      runId,
+      snapshotId,
+      snapshotContentHash,
+      integrity,
+      classification,
+      reportInput: null,
+    };
+  }
+
+  // ---- COMPLETED run: capture → analyze → classify → report. ----
+  // ---- 10. Generic evidence capture (post-terminal, once per run,
+  // GENERAL over the frozen manifestEvidencePolicy — see step 10
+  // above). ----
+  await captureRunGenericInspections(prisma, runId, 'rupturegrid-cli').catch(() => undefined);
+
+  // ---- 11. analysis: run + wait for stable completed batches per
+  // bound key. ----
+  await runRunAnalysis(prisma, runId);
+  await waitForAnalysisComplete(
+    prisma,
+    runId,
+    boundKeys,
+    options.analysisTimeoutMs,
+    options.pollIntervalMs,
+  );
+
+  // ---- 11b. Forensic derivation: findings + timeline + the durable
+  // reproduction definition (existing idempotent engines; PASS/
+  // NOT_EVALUABLE never produce findings). ----
+  await deriveRunForensics(prisma, runId);
+
+  // ---- 12. Evidence integrity verification (O(N), OUTSIDE the lock).
+  // The identity this verification covers is the ONLY identity the
+  // authorization may certify (verified-prefix binding, ADR-0026 §13).
+  let integrity = await verifyRunEvidenceChain(prisma, runId);
+  let verifiedChain = chainIdentityOf(integrity);
+
+  // ---- 13./14. Boundary B: authorize ONE report decision under the
+  // shared per-run lock, over the FROZEN publication state. Stale
+  // proof/pointers trigger bounded re-analysis (Boundary A republishes
+  // at the now-current composite W); the SAME frozen bound constant
+  // governs both boundaries. The classification is a pure set
+  // reduction over the authorized values (never a per-key collapse).
+  let authorization: ReportAuthorizationResult<FrozenReportInputs> | null = null;
+  let authorizationError: string | null = null;
+  try {
+    for (let cycle = 1; cycle <= RUN_ANALYSIS_MAX_CYCLES; cycle += 1) {
+      authorization = await authorizeReportFinalization(prisma, runId, {
+        boundInvariantKeys: boundKeys,
+        verifiedChain,
+        integrityVerified: integrity.chainValid && integrity.contentHashesValid,
+        loadFrozenInputs: (db: ReportReadDb) =>
+          loadFrozenReportInputs(db, runId, targetId, boundKeys),
+      });
+      if (authorization.disposition !== 'RETRY') {
+        break;
+      }
+      // Boundary A: re-analysis over the now-current truth input, then
+      // re-verify the (possibly advanced) chain and retry.
+      await runRunAnalysis(prisma, runId);
+      integrity = await verifyRunEvidenceChain(prisma, runId);
+      verifiedChain = chainIdentityOf(integrity);
+    }
+  } catch (error) {
+    // A lock/statement timeout or database failure means verification
+    // could not be performed (exit 3) — never a stale PASS and never a
+    // decision against an unverified head.
+    authorizationError = error instanceof Error ? error.message : String(error);
+  }
+
+  if (authorizationError !== null || authorization === null) {
+    const classification = classifyExit({
+      runTerminalState: 'COMPLETED',
+      evidenceIntegrityVerified: undefined,
+      executionFailureReason: `the report authorization could not be performed: ${authorizationError ?? 'no authorization result'}`,
+      subjectVerdicts: [],
+      boundKeyDomains: [],
+      anomalies: [],
+    });
+    return {
+      runId,
+      snapshotId,
+      snapshotContentHash,
+      integrity,
+      classification,
+      reportInput: null,
+    };
+  }
+
+  if (authorization.disposition === 'EXECUTION_FAILURE') {
+    const classification = classifyExit({
+      runTerminalState: 'COMPLETED',
+      evidenceIntegrityVerified: undefined,
+      executionFailureReason: authorization.reason,
+      subjectVerdicts: [],
+      boundKeyDomains: boundKeyDomains(authorization.state, boundKeys),
+      anomalies: authorization.anomalies,
+    });
+    return {
+      runId,
+      snapshotId,
+      snapshotContentHash,
+      integrity,
+      classification,
+      reportInput: null,
+    };
+  }
+
+  const classification = classifyExit({
+    runTerminalState: 'COMPLETED',
+    evidenceIntegrityVerified: integrity.chainValid && integrity.contentHashesValid,
+    subjectVerdicts: boundSubjectVerdicts(authorization.state, boundKeys),
+    boundKeyDomains: boundKeyDomains(authorization.state, boundKeys),
+    anomalies: authorization.anomalies,
+    ...(authorization.authorized
+      ? {}
+      : {
+          authorizationFailure:
+            authorization.disposition === 'RETRY'
+              ? `bounded re-analysis exhausted after ${String(RUN_ANALYSIS_MAX_CYCLES)} cycle(s): ${authorization.reason}`
+              : authorization.reason,
+        }),
+  });
+  const reportInput =
+    authorization.state !== null && authorization.external !== null
+      ? assembleReportInput(authorization.state, authorization.external, boundKeys)
+      : null;
+  return {
+    runId,
+    snapshotId,
+    snapshotContentHash,
+    integrity,
+    classification,
+    reportInput,
+  };
+}
+
+/**
+ * Executes the Phase 18 replay flow for one durable reproduction
+ * definition (ADR-0019 Decision 4; incident-replay §3):
+ *   1. load the reproduction row (missing id → ReplayRequestError,
+ *      exit 4 — nothing executed);
+ *   2. refuse history tamper (the row's `snapshotContentHash` must
+ *      equal the stored snapshot's hash);
+ *   3. fail-closed binding validation (target binding, credential
+ *      REFERENCE authorization under the CURRENT server-owned policy,
+ *      invariant-version availability — ReplayValidationError, exit 4,
+ *      nothing durable);
+ *   4. create a NEW run from the SAME stored snapshot (no new
+ *      snapshot row — the same `snapshotContentHash`; the original
+ *      run's observations, evaluations, and findings are structurally
+ *      unreachable — every write is keyed by the new run id);
+ *   5. dispatch + drive the shared pipeline (five-way exits, ADR-0026
+ *      eligibility, C/P/D watermarking, evidence integrity, and
+ *      conservative INDETERMINATE handling identical to `run`).
+ * Never automatically retries ambiguous mutations: the frozen
+ * retryPolicy (NONE on the canonical scenarios) executes unchanged,
+ * and INDETERMINATE outcomes follow the accepted classifier rules.
+ */
+export async function executeReplay(
+  prisma: PrismaClient,
+  reproductionId: string,
+  options: RunFlowOptions,
+): Promise<RunOutcome> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(reproductionId)) {
+    throw new ReplayRequestError('reproduction definition id must be a UUID');
+  }
+  const reproduction = await prisma.reproductionDefinition.findUnique({
+    where: { id: reproductionId },
+    select: {
+      id: true,
+      runId: true,
+      snapshotId: true,
+      snapshotContentHash: true,
+      invariantBindings: true,
+    },
+  });
+  if (reproduction === null) {
+    throw new ReplayRequestError(
+      `reproduction definition ${reproductionId} does not exist — nothing was executed`,
+    );
+  }
+  const sourceRun = await prisma.experimentRun.findUnique({
+    where: { id: reproduction.runId },
+    select: { snapshotId: true, snapshot: { select: { content: true } } },
+  });
+  if (sourceRun?.snapshotId !== reproduction.snapshotId) {
+    throw new ReplayRequestError('reproduction snapshot does not match its original run binding');
+  }
+  // Fail-closed binding validation BEFORE anything durable happens.
+  const binding = await validateReplayBinding(
+    prisma,
+    reproduction.snapshotId,
+    options.credentialPolicy,
+  );
+  if (
+    reproduction.snapshotContentHash !== binding.snapshotContentHash ||
+    reproduction.snapshotId !== binding.snapshotId
+  ) {
+    throw new ReplayRequestError(
+      `reproduction definition ${reproductionId} is bound to snapshot hash ${reproduction.snapshotContentHash} but the stored snapshot carries ${binding.snapshotContentHash} — history may have been tampered with; replay is refused`,
+    );
+  }
+  const document = sourceRun.snapshot.content as unknown as RunSnapshotDocument;
+  if (
+    document.target.contractKind === 'DEMO_FINTECH_WEBHOOK' &&
+    document.target.manifestEvidencePolicy === undefined
+  ) {
+    const raw = reproduction.invariantBindings as { invariants?: unknown };
+    const invariants = Array.isArray(raw?.invariants)
+      ? (raw.invariants as Array<{ invariantKey?: unknown; evaluatorVersion?: unknown }>)
+      : [];
+    // The known legacy engine's built-ins are v1; reproduction metadata
+    // must corroborate that contract, never override or widen it.
+    if (
+      invariants.length !== binding.invariantKeys.length ||
+      binding.invariantKeys.some(
+        (key) =>
+          invariants.filter(
+            (entry) => entry?.invariantKey === key && entry.evaluatorVersion === 'v1',
+          ).length !== 1,
+      )
+    ) {
+      throw new ReplayRequestError(
+        'legacy reproduction has missing or unsupported frozen invariant bindings — replay refuses evaluator substitution',
+      );
+    }
+  }
+  const created = await createRunFromSnapshot(prisma, binding.snapshotId, options.credentialPolicy);
+  await dispatchRun(prisma, created.runId, options);
+  return driveRunToReport(
+    prisma,
+    created.runId,
+    binding.targetId,
+    created.snapshotId,
+    created.contentHash,
+    options,
+  );
+}
+
+/**
  * Executes the full audited flow for one validated scenario and
  * returns the exit classification plus the assembled report input.
  * The caller (cli.ts) serializes the report and maps errors to exit
@@ -253,213 +607,12 @@ export async function executeScenario(
   const snapshotContentHash: string = runRow.snapshot.contentHash;
 
   // ---- 8. Dispatch through the real queue (IDs only; ADR-0003). ----
-  await markRunDispatching(prisma, run.runId);
-  const firstStep = await prisma.experimentStepRun.findFirstOrThrow({
-    where: { runId: run.runId },
-    orderBy: { sequence: 'asc' },
-    select: { id: true, sequence: true },
-  });
-  const queue = createExecutionQueue({ redisUrl: options.redisUrl, prefix: options.queuePrefix });
-  try {
-    await queue.enqueueStep({
-      runId: run.runId,
-      stepRunId: firstStep.id,
-      sequence: firstStep.sequence,
-    });
-  } finally {
-    await queue.close();
-  }
+  await dispatchRun(prisma, run.runId, options);
 
-  // ---- 9. Bounded poll of durable run state. ----
-  const waited = await waitForRunTerminal(prisma, run.runId, {
-    runTimeoutMs: options.runTimeoutMs,
-    pollIntervalMs: options.pollIntervalMs,
-  });
-
-  // ---- 10. Generic evidence capture (audited flow step 10). The v1
-  // worker performs NO timed automatic capture; the headless CLI owns
-  // the invocation point for the runs it drives: post-terminal, once
-  // per run, GENERAL (driven by the FROZEN manifestEvidencePolicy — no
-  // Commerce branch). These are read-only observation requests against
-  // the target's declared inspection endpoints (R-05: no business
-  // state is ever written). Capture failure is honest evidence
-  // incompleteness — it never rewrites execution truth; the generic
-  // evaluators turn missing captures into NOT_EVALUABLE, and the exit
-  // contract says so (never a silent pass).
-
-  // ---- 11. Idempotent analysis (existing pipeline; worker sweeps also
-  // converge here — repeat passes never duplicate rows). ----
-  const boundKeys = await boundInvariantKeysOf(prisma, run.runId);
-
-  // Timeout: execution truth is NOT mutated (§30). Honest EXECUTION_FAILURE.
-  if ('timedOut' in waited) {
-    const classification = classifyExit({
-      runTerminalState: undefined,
-      executionFailureReason: `bounded wait timeout after ${String(options.runTimeoutMs)}ms: the run did not reach a terminal state (run truth was not mutated)`,
-      subjectVerdicts: [],
-      boundKeyDomains: [],
-      anomalies: [],
-    });
-    return {
-      runId: run.runId,
-      snapshotId,
-      snapshotContentHash,
-      integrity: null,
-      classification,
-      reportInput: null,
-    };
-  }
-
-  // A FAILED/CANCELLED run is honest EXECUTION_FAILURE: no evaluation
-  // surface exists to report (a step failed mid-flight; the report's
-  // truth fields would be empty decoration). Preserve run truth, emit
-  // the machine error surface, exit 3 (§78).
-  if (waited.terminal !== 'COMPLETED') {
-    await runRunAnalysis(prisma, run.runId).catch(() => undefined);
-    const integrity = await verifyRunEvidenceChain(prisma, run.runId).catch(() => null);
-    const classification = classifyExit({
-      runTerminalState: waited.terminal,
-      executionFailureReason: `run ended in terminal state ${waited.terminal}`,
-      subjectVerdicts: [],
-      boundKeyDomains: [],
-      anomalies: [],
-    });
-    return {
-      runId: run.runId,
-      snapshotId,
-      snapshotContentHash,
-      integrity,
-      classification,
-      reportInput: null,
-    };
-  }
-
-  // ---- COMPLETED run: capture → analyze → classify → report. ----
-  // ---- 10. Generic evidence capture (post-terminal, once per run,
-  // GENERAL over the frozen manifestEvidencePolicy — see step 10
-  // above). ----
-  await captureRunGenericInspections(prisma, run.runId, 'rupturegrid-cli').catch(() => undefined);
-
-  // ---- 11. analysis: run + wait for stable completed batches per
-  // bound key. ----
-  await runRunAnalysis(prisma, run.runId);
-  await waitForAnalysisComplete(
-    prisma,
-    run.runId,
-    boundKeys,
-    options.analysisTimeoutMs,
-    options.pollIntervalMs,
-  );
-
-  // ---- 11b. Forensic derivation: findings + timeline + the durable
-  // reproduction definition (existing idempotent engines; PASS/
-  // NOT_EVALUABLE never produce findings). ----
-  await deriveRunForensics(prisma, run.runId);
-
-  // ---- 12. Evidence integrity verification (O(N), OUTSIDE the lock).
-  // The identity this verification covers is the ONLY identity the
-  // authorization may certify (verified-prefix binding, ADR-0026 §13).
-  let integrity = await verifyRunEvidenceChain(prisma, run.runId);
-  let verifiedChain = chainIdentityOf(integrity);
-
-  // ---- 13./14. Boundary B: authorize ONE report decision under the
-  // shared per-run lock, over the FROZEN publication state. Stale
-  // proof/pointers trigger bounded re-analysis (Boundary A republishes
-  // at the now-current composite W); the SAME frozen bound constant
-  // governs both boundaries. The classification is a pure set
-  // reduction over the authorized values (never a per-key collapse).
-  let authorization: ReportAuthorizationResult<FrozenReportInputs> | null = null;
-  let authorizationError: string | null = null;
-  try {
-    for (let cycle = 1; cycle <= RUN_ANALYSIS_MAX_CYCLES; cycle += 1) {
-      authorization = await authorizeReportFinalization(prisma, run.runId, {
-        boundInvariantKeys: boundKeys,
-        verifiedChain,
-        integrityVerified: integrity.chainValid && integrity.contentHashesValid,
-        loadFrozenInputs: (db: ReportReadDb) =>
-          loadFrozenReportInputs(db, run.runId, target.id, boundKeys),
-      });
-      if (authorization.disposition !== 'RETRY') {
-        break;
-      }
-      // Boundary A: re-analysis over the now-current truth input, then
-      // re-verify the (possibly advanced) chain and retry.
-      await runRunAnalysis(prisma, run.runId);
-      integrity = await verifyRunEvidenceChain(prisma, run.runId);
-      verifiedChain = chainIdentityOf(integrity);
-    }
-  } catch (error) {
-    // A lock/statement timeout or database failure means verification
-    // could not be performed (exit 3) — never a stale PASS and never a
-    // decision against an unverified head.
-    authorizationError = error instanceof Error ? error.message : String(error);
-  }
-
-  if (authorizationError !== null || authorization === null) {
-    const classification = classifyExit({
-      runTerminalState: 'COMPLETED',
-      evidenceIntegrityVerified: undefined,
-      executionFailureReason: `the report authorization could not be performed: ${authorizationError ?? 'no authorization result'}`,
-      subjectVerdicts: [],
-      boundKeyDomains: [],
-      anomalies: [],
-    });
-    return {
-      runId: run.runId,
-      snapshotId,
-      snapshotContentHash,
-      integrity,
-      classification,
-      reportInput: null,
-    };
-  }
-
-  if (authorization.disposition === 'EXECUTION_FAILURE') {
-    const classification = classifyExit({
-      runTerminalState: 'COMPLETED',
-      evidenceIntegrityVerified: undefined,
-      executionFailureReason: authorization.reason,
-      subjectVerdicts: [],
-      boundKeyDomains: boundKeyDomains(authorization.state, boundKeys),
-      anomalies: authorization.anomalies,
-    });
-    return {
-      runId: run.runId,
-      snapshotId,
-      snapshotContentHash,
-      integrity,
-      classification,
-      reportInput: null,
-    };
-  }
-
-  const classification = classifyExit({
-    runTerminalState: 'COMPLETED',
-    evidenceIntegrityVerified: integrity.chainValid && integrity.contentHashesValid,
-    subjectVerdicts: boundSubjectVerdicts(authorization.state, boundKeys),
-    boundKeyDomains: boundKeyDomains(authorization.state, boundKeys),
-    anomalies: authorization.anomalies,
-    ...(authorization.authorized
-      ? {}
-      : {
-          authorizationFailure:
-            authorization.disposition === 'RETRY'
-              ? `bounded re-analysis exhausted after ${String(RUN_ANALYSIS_MAX_CYCLES)} cycle(s): ${authorization.reason}`
-              : authorization.reason,
-        }),
-  });
-  const reportInput =
-    authorization.state !== null && authorization.external !== null
-      ? assembleReportInput(authorization.state, authorization.external, boundKeys)
-      : null;
-  return {
-    runId: run.runId,
-    snapshotId,
-    snapshotContentHash,
-    integrity,
-    classification,
-    reportInput,
-  };
+  // ---- 9.–14. The shared drive-to-report pipeline (verbatim for `run`
+  // and `replay` — five-way exits, eligibility, watermarking, integrity,
+  // and INDETERMINATE handling identical in both flows). ----
+  return driveRunToReport(prisma, run.runId, target.id, snapshotId, snapshotContentHash, options);
 }
 
 /** The frozen identity an out-of-lock chain verification covered. */
@@ -704,22 +857,7 @@ export async function boundInvariantKeysOf(prisma: PrismaClient, runId: string):
   if (row === null) {
     return [];
   }
-  const content = row.snapshot.content as { target?: { invariantBindings?: unknown } };
-  const bindings = content.target?.invariantBindings;
-  if (!Array.isArray(bindings)) {
-    return [];
-  }
-  const keys: string[] = [];
-  for (const binding of bindings) {
-    if (
-      typeof binding === 'object' &&
-      binding !== null &&
-      typeof (binding as Record<string, unknown>)['key'] === 'string'
-    ) {
-      keys.push((binding as Record<string, unknown>)['key'] as string);
-    }
-  }
-  return [...new Set(keys)].sort();
+  return frozenInvariantKeys(row.snapshot.content as unknown as RunSnapshotDocument);
 }
 
 /**
@@ -762,4 +900,10 @@ export async function captureRunGenericInspections(
 
 // Re-exported for the CLI's error mapping (single source of truth for
 // usage-error classification of engine validation failures).
-export { TargetRegistrationError, RunCreationError, ReportInputError, EXIT_CLASSES };
+export {
+  TargetRegistrationError,
+  RunCreationError,
+  ReportInputError,
+  ReplayValidationError,
+  EXIT_CLASSES,
+};

@@ -50,7 +50,8 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 
-import { createControlDb } from '@rupturegrid/control-db';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
 import type { ControlDb, PrismaClient } from '@rupturegrid/control-db';
 import {
   StepProcessor,
@@ -62,7 +63,6 @@ import {
   markRunDispatching,
   readTruthInputHead,
   recordInvocation,
-  registerTarget,
   settleRuns,
   writeTerminalState,
 } from '@rupturegrid/engine';
@@ -75,6 +75,7 @@ import { uniqueName } from './helpers/execution-harness.js';
 const prisma = (): PrismaClient => controlDb!.prisma;
 
 let controlDb: ControlDb | null = null;
+let ownedFixture: OwnedControlFixture | null = null;
 let fixture: Server;
 let baseUrl = '';
 let manifestTargetId: string | null = null;
@@ -332,7 +333,8 @@ let anchorScope = SCOPE;
 let anchorGeneration = 7;
 
 beforeAll(async () => {
-  controlDb = createControlDb(loadTestEnv().controlDatabaseUrl);
+  ownedFixture = await createOwnedControlFixture(loadTestEnv());
+  controlDb = ownedFixture.controlDb;
   fixture = createServer((req, res) => {
     const path = new URL(req.url ?? '/', 'http://fixture').pathname;
     if (req.method === 'GET' && path === ANCHOR_PATH) {
@@ -343,27 +345,8 @@ beforeAll(async () => {
     res.writeHead(404);
     res.end('not found');
   });
-  for (let attempt = 0; ; attempt += 1) {
-    await new Promise<void>((resolve) => {
-      fixture.listen(0, '127.0.0.1', () => resolve());
-    });
-    const address = fixture.address() as AddressInfo;
-    const candidate = `http://127.0.0.1:${String(address.port)}`;
-    const taken = await prisma().targetOrigin.findUnique({
-      where: { origin: candidate },
-      select: { id: true },
-    });
-    if (taken === null) {
-      baseUrl = candidate;
-      return;
-    }
-    await new Promise<void>((resolve) => {
-      fixture.close(() => resolve());
-    });
-    if (attempt >= 15) {
-      throw new Error('no unregistered loopback origin for the Checkpoint E1 fixture');
-    }
-  }
+  await new Promise<void>((resolve) => fixture.listen(0, '127.0.0.1', resolve));
+  baseUrl = `http://127.0.0.1:${String((fixture.address() as AddressInfo).port)}`;
 });
 
 afterAll(async () => {
@@ -376,23 +359,13 @@ afterAll(async () => {
       fixture.close(() => resolve());
     });
   }
-  await controlDb?.disconnect();
+  await ownedFixture?.close();
 });
 
 async function ensureManifestTarget(): Promise<string> {
-  if (manifestTargetId !== null) {
-    return manifestTargetId;
-  }
-  const existing = await prisma().targetOrigin.findUnique({
-    where: { origin: baseUrl },
-    select: { targetId: true },
-  });
-  if (existing !== null) {
-    manifestTargetId = existing.targetId;
-    return manifestTargetId;
-  }
-  const displayName = uniqueName('phase17e1-fixture-target');
-  const registered = await registerTarget(prisma(), {
+  if (manifestTargetId !== null) return manifestTargetId;
+  const displayName = 'phase17e1-fixture-target';
+  const registered = await ownedFixture!.acquireTarget('manifest', {
     displayName,
     environment: 'LOCAL_DEVELOPMENT',
     origins: [baseUrl],

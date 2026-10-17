@@ -31,9 +31,11 @@ type ExpressUrlencodedMiddleware = (options?: {
   limit?: string;
   [key: string]: unknown;
 }) => (request: unknown, response: unknown, next: () => void) => void;
-import { createControlDb } from '@rupturegrid/control-db';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
+import { registerDemoTarget } from './helpers/phase4-harness.js';
 import type { ControlDb } from '@rupturegrid/control-db';
-import { runGoldenScenario, ensureGoldenTargetRegistration } from '@rupturegrid/incident-zero';
+import { runGoldenScenario } from '@rupturegrid/incident-zero';
 import { chromium } from 'playwright';
 import { loadTestEnv } from './helpers/env.js';
 import { startDemoProcess, startPhase4Worker } from './helpers/golden-harness.js';
@@ -46,13 +48,11 @@ import {
   SHOWCASE_VIEWPORT,
 } from '../../packages/showcase/dist/capture-plan.js';
 
-const env = loadTestEnv();
-// The golden experiment definitions (incident-zero-golden-*) are
-// uniquely named and bound to the registered target that holds the
-// verifier's demo origin. To reuse the SAME frozen definitions the
-// verifier freezes (same snapshot content hash), this suite's demo
-// MUST listen on the verifier's vulnerable-mode port (3127) so
-// ensureGoldenTargetRegistration converges on that same target.
+let env = loadTestEnv();
+let ownedFixture: OwnedControlFixture;
+// Run the canonical golden steps in an owned Control namespace. The
+// capture is bound to this actual run and snapshot, with no dependency
+// on a prior verifier's registration or experiment definitions.
 const DEMO_P8_PORT = Number(process.env.DEMO_P7_TEST_PORT ?? '3127');
 const API_P8_PORT = Number(process.env.API_P8_TEST_PORT ?? '3143');
 const WEB_P8_PORT = Number(process.env.WEB_P8_TEST_PORT ?? '3142');
@@ -63,7 +63,9 @@ let controlDb: ControlDb;
 let outputDir = '';
 
 beforeAll(async () => {
-  controlDb = createControlDb(env.controlDatabaseUrl);
+  ownedFixture = await createOwnedControlFixture(env);
+  env = ownedFixture.env;
+  controlDb = ownedFixture.controlDb;
   demo = await startDemoProcess(env, DEMO_P8_PORT);
   outputDir = await mkdtemp(join(tmpdir(), 'rg8-it-'));
 }, 60_000);
@@ -72,7 +74,7 @@ afterAll(async () => {
   if (worker !== null) {
     await worker.close();
   }
-  await controlDb.disconnect();
+  await ownedFixture.close();
   await demo.close();
   await rm(outputDir, { recursive: true, force: true });
 });
@@ -88,9 +90,9 @@ describe('Phase 8 — real browser capture over a real golden run', () => {
     async () => {
       // --- 1. REAL golden execution (the same accepted pipeline) ----
       await ensureWorker();
-      const registration = await ensureGoldenTargetRegistration(
-        controlDb.prisma,
-        demo.baseUrl,
+      const registration = await registerDemoTarget(
+        ownedFixture,
+        demo,
         uniqueName('incident-zero-verify-vulnerable'),
       );
       const golden = await runGoldenScenario({

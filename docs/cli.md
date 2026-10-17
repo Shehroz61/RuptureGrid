@@ -1,4 +1,4 @@
-# rupturegrid CLI (Phase 17)
+# rupturegrid CLI (Phases 17–18)
 
 The headless CLI runs a `rupturegrid-scenario/v1` document against the real
 stack (Control Plane, queue, worker, target) and exits with one of five
@@ -18,8 +18,9 @@ not derive from evidence (R-02, R-03, R-07).
 ```
 rupturegrid scenarios validate <scenario.json>
 rupturegrid run <scenario.json> --wait --timeout <duration> [--report <file>] [--json]
+rupturegrid replay --reproduction <id> --report <file> [--json] [--timeout <duration>]
+rupturegrid compare <runId> <otherRunId> [--json] [--report <file>]
 rupturegrid schemas emit
-rupturegrid replay            # NOT implemented in Phase 17 (Phase 18)
 ```
 
 ### `scenarios validate`
@@ -48,13 +49,59 @@ report → exit.
 ### `schemas emit`
 
 Rewrites the published JSON Schemas under `packages/cli/schemas/`
-(`scenario-v1.json`, `report-v1.json`). Emitted documents are unit-tested
+(`rupturegrid-scenario-v1.schema.json`, `rupturegrid-report-v1.schema.json`). Emitted documents are unit-tested
 to agree with the compiled validators.
 
-### `replay`
+### `replay` (Phase 18)
 
-Prints a usage error naming Phase 18. The CLI never pretends replay
-exists (R-02).
+A NEW run from the SAME hash-pinned snapshot bound by a durable
+reproduction definition (ADR-0019 Decision 4; incident-replay §3):
+
+```
+rupturegrid replay --reproduction <id> --report <file> [--json] [--timeout <duration>]
+```
+
+- `--reproduction <id>` selects the durable reproduction definition;
+  `--timeout` bounds the wait (default 120s, same 1ms..1h bounds as
+  `run`); `--report`/`--json` behave exactly like `run`.
+- Flow: validate binding (snapshot, target binding, invariant
+  versions, credential REFERENCE authorization under the CURRENT
+  server-owned policy, execution authorization) → create a new run on
+  the STORED snapshot (no new snapshot row — the same
+  `snapshotContentHash`) → dispatch → bounded poll → idempotent
+  analysis + forensics → integrity → report → exit.
+- Binding failures (missing reproduction, missing/rotated credential
+  authorization, mismatched bindings, unavailable versions,
+  unauthorized destinations) fail closed with exit 4 BEFORE anything
+  durable happens. Never automatically retries ambiguous mutations.
+- The original run's observations, evaluations, and findings are never
+  modified: every replay write is keyed by the new run id.
+- Golden-scenario limit: for mode-parameterized scenarios
+  whose setup step pins the processing mode, same-hash replay
+  re-establishes the declared mode — it proves determinism, not a fix.
+  Post-fix PASS comes from the fixed-mode scenario (different hash,
+  stated in both reports).
+- Approved ADR-0027 companion lifecycle: `checkout-zero-post-fix` uses
+  mode-preserving setup, so its own original failure and post-fix replay
+  share one stored snapshot row/hash. It never overrides a historical
+  golden scenario's required mode. Target processing facts are observed;
+  independent business effects establish the verdict.
+- Credential checks cover registered references/current grants, not
+  secret-value rotation behind an unchanged authorized reference. Missing
+  runtime values fail pre-send. Section L.5 fingerprint architecture is
+  explicitly deferred; legacy reproductions remain replayable under the
+  existing checks. Malformed reproduction/run UUIDs are usage errors (4).
+
+### `compare` (Phase 18)
+
+Computed-on-read comparison of two runs of the SAME frozen intent
+(incident-replay §6), from durable truth: snapshot hash,
+target/experiment identity, invariant keys + versions, per-subject
+verdicts, effect counts, findings, evidence references, execution
+uncertainty, and provenance. Cross-intent pairs (different snapshot
+hashes) are refused with exit 4. Read-only: nothing executes, nothing
+durable is written. Scheduling variance is expected and asserted no
+causal link (incident-replay §4–§5).
 
 ## Five-way exit contract
 
@@ -89,7 +136,7 @@ because an invocation is `INDETERMINATE`.
 
 ## Report: `rupturegrid-report/v1`
 
-The report (schema published at `packages/cli/schemas/report-v1.json`)
+The report (schema published at `packages/cli/schemas/rupturegrid-report-v1.schema.json`)
 carries, among others: the exit class + precedence rule; run/snapshot
 identities; durable verdicts per bound invariant with their
 completeness proofs; evidence-integrity verification results; normalizer
@@ -113,8 +160,20 @@ secrets never persist in reports, logs, or evidence (R-13).
 ## Testing
 
 - Unit: scenario loader/validator, exit classifier decision table,
-  report emitter, schema round-trips (`packages/cli/src/cli.test.ts`).
+  report emitter, schema round-trips (`packages/cli/src/cli.test.ts`);
+  replay/compare parsing plus expectation assertions
+  (`packages/cli/src/replay-command.test.ts`).
 - E2E over the real stack: `tests/integration/phase17-cli.test.ts`
   exercises all five exits as child processes, expectations-vs-truth,
   evidence-tamper precedence, response-loss `INDETERMINATE`, and
-  pipeline idempotence.
+  pipeline idempotence; `tests/integration/phase18-replay-commerce.test.ts`
+  and `tests/integration/phase18-replay-fintech.test.ts` exercise the
+  replay/regression lifecycle on both domains (same-hash determinism,
+  history preservation, comparison, cross-intent refusal, credential
+  fail-fast, fix verification, unsafe-retry prevention).
+
+## External CI
+
+See [external-ci-recipe.md](external-ci-recipe.md): how another
+repository invokes RuptureGrid from a source checkout and uses exit
+codes plus `rupturegrid-report/v1` as CI gates (source-only policy).

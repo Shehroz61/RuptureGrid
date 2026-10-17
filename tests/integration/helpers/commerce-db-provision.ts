@@ -44,6 +44,14 @@ const COMMERCE_MIGRATIONS = [
     '20261003_phase16_scoped_logical_identity',
     'migration.sql',
   ),
+  join(
+    'packages',
+    'commerce-db',
+    'prisma',
+    'migrations',
+    '20261016_phase18_processing_provenance',
+    'migration.sql',
+  ),
 ];
 
 export async function provisionThrowawayCommerceDb(input: {

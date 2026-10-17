@@ -23,22 +23,20 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ChildProcess } from 'node:child_process';
-import { createControlDb } from '@rupturegrid/control-db';
-import type { ControlDb } from '@rupturegrid/control-db';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
+import { registerDemoTarget } from './helpers/phase4-harness.js';
+import type { PrismaClient } from '@rupturegrid/control-db';
 import { createExecutionQueue } from '@rupturegrid/queue';
-import {
-  createExperiment,
-  createRun,
-  markRunDispatching,
-  registerTarget,
-} from '@rupturegrid/engine';
+import { createExperiment, createRun, markRunDispatching } from '@rupturegrid/engine';
 import { loadTestEnv } from './helpers/env.js';
 import { startDemoProcess, createDemoClient } from './helpers/demo-harness.js';
 import type { DemoClient, RunningDemo } from './helpers/demo-harness.js';
-import { getControlPrisma, requireId, uniqueName, waitFor } from './helpers/execution-harness.js';
+import { requireId, uniqueName, waitFor } from './helpers/execution-harness.js';
 
-const env = loadTestEnv();
-const prisma = getControlPrisma();
+let env = loadTestEnv();
+let prisma: PrismaClient;
+let ownedFixture: OwnedControlFixture;
 
 // The Phase 2 suite owns 3112; this suite uses an isolated port so the
 // two can run in any order or parallel session.
@@ -46,42 +44,36 @@ const DEMO_EXEC_PORT = Number(process.env.DEMO_EXEC_TEST_PORT ?? '3118');
 
 let demo: RunningDemo;
 let client: DemoClient;
-let controlDb: ControlDb;
 let queue: ReturnType<typeof createExecutionQueue>;
 let targetId = '';
 let workerChild: ChildProcess | null = null;
 
 beforeAll(async () => {
-  controlDb = createControlDb(env.controlDatabaseUrl);
+  ownedFixture = await createOwnedControlFixture(env);
+  env = ownedFixture.env;
+  prisma = ownedFixture.prisma;
   queue = createExecutionQueue({ redisUrl: env.redisUrl, prefix: env.queuePrefix });
   demo = await startDemoProcess(env, DEMO_EXEC_PORT);
   client = createDemoClient(demo);
 
   // Register the REAL Demo target through the Control Plane (§11) with
   // credential REFERENCES only — the values live in the worker env.
-  const registered = await registerTarget(prisma, {
-    displayName: uniqueName('demo-target'),
-    environment: 'LOCAL_DEVELOPMENT',
-    origins: [demo.baseUrl],
-    contractKind: 'DEMO_FINTECH_WEBHOOK',
-    credentialRefs: ['DEMO_ADMIN_TOKEN', 'DEMO_INSPECTION_TOKEN', 'DEMO_PROVIDER_SIGNING_SECRET'],
-  }).catch(async () => {
-    // Origin already registered by a previous run of this suite.
-    const existing = await prisma.targetRegistration.findFirstOrThrow({
-      where: { origins: { some: { origin: demo.baseUrl } } },
-    });
-    return { targetId: existing.id };
-  });
+  const registered = await registerDemoTarget(ownedFixture, demo);
   targetId = registered.targetId;
 }, 60_000);
 
 afterAll(async () => {
-  if (workerChild !== null && workerChild.exitCode === null && workerChild.signalCode === null) {
-    workerChild.kill('SIGKILL');
+  const child = workerChild;
+  if (child !== null && child.exitCode === null && child.signalCode === null) {
+    await new Promise<void>((resolve, reject) => {
+      child.once('exit', () => resolve());
+      child.once('error', reject);
+      child.kill('SIGKILL');
+    });
   }
   await queue.close();
-  await controlDb.disconnect();
   await demo.close();
+  await ownedFixture.close();
 });
 
 /**

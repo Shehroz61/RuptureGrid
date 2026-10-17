@@ -33,7 +33,9 @@ type ExpressUrlencodedMiddleware = (options?: {
   limit?: string;
   [key: string]: unknown;
 }) => (request: unknown, response: unknown, next: () => void) => void;
-import { createControlDb } from '@rupturegrid/control-db';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
+import { registerDemoTarget } from './helpers/phase4-harness.js';
 import type { ControlDb } from '@rupturegrid/control-db';
 import { createExecutionQueue } from '@rupturegrid/queue';
 import {
@@ -46,14 +48,14 @@ import {
   VULNERABLE_EXPECTED_EQUIVALENT_EFFECTS,
   VULNERABLE_EXPECTED_WALLET_BALANCE_MINOR,
 } from '@rupturegrid/incident-zero';
-import { runGoldenScenario, ensureGoldenTargetRegistration } from '@rupturegrid/incident-zero';
+import { runGoldenScenario } from '@rupturegrid/incident-zero';
 import { loadTestEnv } from './helpers/env.js';
 import { startDemoProcess, startPhase4Worker } from './helpers/golden-harness.js';
 import type { RunningDemo } from './helpers/demo-harness.js';
 import type { RunningWorker } from './helpers/phase4-harness.js';
-import { uniqueName } from './helpers/execution-harness.js';
 
-const env = loadTestEnv();
+let env = loadTestEnv();
+let ownedFixture: OwnedControlFixture;
 const DEMO_P7_PORT = Number(process.env.DEMO_P7_TEST_PORT ?? '3127');
 const DEMO_P7S_PORT = Number(process.env.DEMO_P7S_TEST_PORT ?? '3131');
 const WEB_P7_PORT = Number(process.env.WEB_P7_TEST_PORT ?? '3128');
@@ -70,7 +72,9 @@ let vulnerableResult: Awaited<ReturnType<typeof goldenRun>> | null = null;
 const registrations = new Map<'VULNERABLE' | 'SECURE', string>();
 
 beforeAll(async () => {
-  controlDb = createControlDb(env.controlDatabaseUrl);
+  ownedFixture = await createOwnedControlFixture(env);
+  env = ownedFixture.env;
+  controlDb = ownedFixture.controlDb;
   demo = await startDemoProcess(env, DEMO_P7_PORT);
   demoSecure = await startDemoProcess(env, DEMO_P7S_PORT);
 }, 60_000);
@@ -85,29 +89,10 @@ afterAll(async () => {
   if (webTempDir !== null) {
     rmSync(webTempDir, { recursive: true, force: true });
   }
-  await controlDb.disconnect();
+  await ownedFixture.close();
   await demo.close();
   await demoSecure.close();
 });
-
-/**
- * Releases the suite's target-origin registrations so the REAL engine
- * (which enforces global origin authority) can re-register them on the
- * next run. This is test-harness teardown of harness-created rows only
- * — no target business data is touched.
- */
-async function releaseGoldenRegistrations(): Promise<void> {
-  await controlDb.prisma.$executeRawUnsafe(
-    `DELETE FROM control.target_origin WHERE "targetId" IN (
-       SELECT id FROM control.target_registration WHERE "displayName" LIKE 'golden-%'
-     ) AND "targetId" NOT IN (SELECT "targetId" FROM control.experiment_revision)`,
-  );
-  await controlDb.prisma.$executeRawUnsafe(
-    `DELETE FROM control.target_registration
-      WHERE "displayName" LIKE 'golden-%'
-        AND id NOT IN (SELECT "targetId" FROM control.experiment_revision)`,
-  );
-}
 
 async function ensureWorker(): Promise<void> {
   worker ??= await startPhase4Worker(env);
@@ -116,16 +101,14 @@ async function ensureWorker(): Promise<void> {
 /** One REAL golden execution for a mode (target registration → result). */
 async function goldenRun(mode: 'VULNERABLE' | 'SECURE') {
   await ensureWorker();
-  // One registration PER MODE (idempotent by ORIGIN): the engine
-  // enforces unambiguous origin authority, so each mode gets its own
-  // Demo process port; ensureGoldenTargetRegistration reuses the
-  // registration that already holds that origin.
+  // Each mode retains the ID acquired by this fixture owner. No other
+  // suite's registration or cleanup participates in this namespace.
   let targetId = registrations.get(mode);
   if (targetId === undefined) {
-    const registration = await ensureGoldenTargetRegistration(
-      controlDb.prisma,
-      mode === 'SECURE' ? demoSecure.baseUrl : demo.baseUrl,
-      uniqueName(mode === 'SECURE' ? 'golden-secure' : 'golden-vulnerable'),
+    const registration = await registerDemoTarget(
+      ownedFixture,
+      mode === 'SECURE' ? demoSecure : demo,
+      mode === 'SECURE' ? 'golden-secure' : 'golden-vulnerable',
     );
     targetId = registration.targetId;
     registrations.set(mode, targetId);
@@ -309,7 +292,6 @@ describe('Phase 7 — repeatability (incident-replay §5 determinism)', () => {
     'two executions of the same scenario agree on semantics, differ in generated IDs',
     { timeout: 300_000 },
     async () => {
-      await releaseGoldenRegistrations();
       const first = await goldenRun('VULNERABLE');
       const second = await goldenRun('VULNERABLE');
 

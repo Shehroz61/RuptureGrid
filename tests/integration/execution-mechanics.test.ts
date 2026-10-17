@@ -14,7 +14,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createControlDb } from '@rupturegrid/control-db';
 import type { ControlDb } from '@rupturegrid/control-db';
 import { createExecutionQueue, startExecutionWorker } from '@rupturegrid/queue';
 import type { ExecutionWorkerHandle } from '@rupturegrid/queue';
@@ -28,16 +27,13 @@ import {
   settleCancelledRun,
 } from '@rupturegrid/engine';
 import { loadTestEnv } from './helpers/env.js';
-import {
-  getControlPrisma,
-  registerLocalFixtureTarget,
-  uniqueName,
-  uniqueTestOrigin,
-  waitFor,
-} from './helpers/execution-harness.js';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
+import { uniqueName, uniqueTestOrigin, waitFor } from './helpers/execution-harness.js';
 
-const env = loadTestEnv();
-const prisma = getControlPrisma();
+let env = loadTestEnv();
+let queuePrefix = '';
+let ownedFixture: OwnedControlFixture | null = null;
 
 // ---------------------------------------------------------------------
 // Fixture HTTP target: observable behavior for every scenario.
@@ -64,6 +60,12 @@ let baseUrl = '';
 let fixtureTargetId = '';
 
 beforeAll(async () => {
+  // This fixture owns the registration namespace; an available TCP port
+  // can still belong to a historical target in the developer database.
+  ownedFixture = await createOwnedControlFixture(env);
+  env = ownedFixture.env;
+  queuePrefix = env.queuePrefix;
+  controlDb = ownedFixture.controlDb;
   fixture.notFoundPaths.add('/missing-endpoint-404');
   server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://fixture');
@@ -102,12 +104,13 @@ beforeAll(async () => {
   const address = server?.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${address.port}`;
   // The fixture origin is registered ONCE (origin authority is global).
-  const fixtureTarget = await registerLocalFixtureTarget(
-    prisma,
-    uniqueName('mech-fixture-target'),
-    baseUrl,
-  );
-  fixtureTargetId = fixtureTarget;
+  const fixtureTarget = await ownedFixture.acquireTarget('workload', {
+    displayName: uniqueName('mech-fixture-target'),
+    environment: 'LOCAL_DEVELOPMENT',
+    origins: [baseUrl],
+    contractKind: 'GENERIC_HTTP',
+  });
+  fixtureTargetId = fixtureTarget.targetId;
 });
 
 afterAll(async () => {
@@ -128,7 +131,7 @@ let queue: ReturnType<typeof createExecutionQueue>;
 async function startConsumer(): Promise<void> {
   consumer = startExecutionWorker({
     redisUrl: env.redisUrl,
-    prefix: env.queuePrefix,
+    prefix: queuePrefix,
     concurrency: 8,
     processJob: async (payload) => {
       await processor.processStep(payload.stepRunId);
@@ -137,8 +140,7 @@ async function startConsumer(): Promise<void> {
 }
 
 beforeAll(async () => {
-  controlDb = createControlDb(env.controlDatabaseUrl);
-  queue = createExecutionQueue({ redisUrl: env.redisUrl, prefix: env.queuePrefix });
+  queue = createExecutionQueue({ redisUrl: env.redisUrl, prefix: queuePrefix });
   processor = new StepProcessor({
     prisma: controlDb.prisma,
     config: { WORKER_LEASE_DURATION_MS: 30_000, WORKER_HEARTBEAT_INTERVAL_MS: 5_000 },
@@ -154,9 +156,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await consumer?.close();
-  await queue.close();
-  await controlDb.disconnect();
+  try {
+    await consumer?.close();
+    await queue?.close();
+  } finally {
+    await ownedFixture?.close();
+  }
 });
 
 // ---------------------------------------------------------------------

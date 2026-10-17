@@ -79,35 +79,32 @@ export class AnalysisError extends Error {
   }
 }
 
-/** Creates every invariant definition row if absent (idempotent). */
+/** Creates absent definitions atomically; concurrent first-use callers converge. */
 export async function ensureInvariantDefinitions(prisma: PrismaClient): Promise<void> {
-  for (const definition of [
-    {
-      invariantKey: INV_IZ_1_KEY,
-      title: INV_IZ_1_TITLE,
-      description: INV_IZ_1_DESCRIPTION,
-    },
-    {
-      invariantKey: INV_DF_1_KEY,
-      title: INV_DF_1_TITLE,
-      description: INV_DF_1_DESCRIPTION,
-    },
-    {
-      invariantKey: INV_DF_2_KEY,
-      title: INV_DF_2_TITLE,
-      description: INV_DF_2_DESCRIPTION,
-    },
-  ] as const) {
-    await prisma.invariantDefinition.upsert({
-      where: { invariantKey: definition.invariantKey },
-      create: {
-        invariantKey: definition.invariantKey,
-        title: definition.title,
-        description: definition.description,
+  // PostgreSQL INSERT ... ON CONFLICT DO NOTHING arbitrates uniqueness in
+  // the database. A client-side upsert with an empty update can race between
+  // its absent-row read and insert when worker and foreground analysis start.
+  // Existing definitions retain their exact identity and content.
+  await prisma.invariantDefinition.createMany({
+    skipDuplicates: true,
+    data: [
+      {
+        invariantKey: INV_IZ_1_KEY,
+        title: INV_IZ_1_TITLE,
+        description: INV_IZ_1_DESCRIPTION,
       },
-      update: {},
-    });
-  }
+      {
+        invariantKey: INV_DF_1_KEY,
+        title: INV_DF_1_TITLE,
+        description: INV_DF_1_DESCRIPTION,
+      },
+      {
+        invariantKey: INV_DF_2_KEY,
+        title: INV_DF_2_TITLE,
+        description: INV_DF_2_DESCRIPTION,
+      },
+    ],
+  });
 }
 
 export interface PersistedEvaluation {

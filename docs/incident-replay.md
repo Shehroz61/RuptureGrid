@@ -12,7 +12,7 @@ Related: [architecture.md](architecture.md) §11, [evidence-model.md](evidence-m
 The complete, self-describing description of "how to intentionally execute the same experiment intent again". Contents:
 
 1. **Run snapshot reference** — the hash-pinned, append-only snapshot created at the original run ([architecture.md](architecture.md) §11).
-2. **Target binding** — registered target identity, environment class, and the target processing mode the experiment requires (e.g., Demo Target `vulnerable` | `secure`).
+2. **Target binding** — registered target identity, environment class, and any processing mode explicitly required by the frozen experiment (e.g., Demo Target `vulnerable` | `secure`). Under ADR-0027's approved Phase 18 amendment, a separate mode-preserving scenario declares no required mode (`targetModeRequirement: null`); effective target processing configuration is observed per execution, never inferred from expectations.
 3. **Credential requirements** — references + fingerprints of required credentials (never values); replay fails fast with an explicit mismatch if a referenced secret has rotated or is missing.
 4. **Environment requirements** — infrastructure prerequisites the run depends on (e.g., containerized PostgreSQL/Redis for the Demo Target deployment).
 5. **Invariant bindings** — which invariant definitions (versioned) the replay must evaluate.
@@ -40,7 +40,7 @@ A replay is a **new run** with its own evidence — it never merges into or rewr
 | Dimension | Reproduced? | Notes |
 |---|---|---|
 | Execution intent (steps, payloads, fault plan, repeat/concurrency/timeouts) | **Yes** | This is the contract |
-| Target-side processing mode | **Yes, by binding** | Replay requires the declared mode to be set via the target's own admin API, verified by the setup step |
+| Target-side processing mode | **When explicitly declared** | Golden mode-pinned scenarios re-establish their declared mode. The separate ADR-0027 mode-preserving lifecycle resets business context while observing the target-owned configuration, allowing remediation between runs without changing snapshot intent. |
 | Credential values | **Never persisted; resolved at execution** | Rotation causes explicit fail-fast, not silent drift |
 | Wall-clock timing / network latency profile | **No** | Timing is real per execution, never simulated |
 | Concurrency scheduling (exact interleavings) | **No — and must not be** | Scheduling variance is expected; findings must not depend on it (§5) |
@@ -64,6 +64,18 @@ Honest statement: snapshots are **logically append-only** (append-only storage, 
 ## 8. Failure semantics on replay
 
 - Missing/rotated credential ⇒ replay refuses to start (explicit mismatch error).
-- Target unreachable or wrong processing mode ⇒ setup step fails the replay before any experiment delivery occurs.
+- Target unreachable or wrong explicitly required processing mode ⇒ setup step fails the replay before any experiment delivery occurs. A mode-preserving scenario does not manufacture a mode requirement from the original run's observations.
 - Snapshot's engine versions no longer available ⇒ replay records the version mismatch and either uses explicitly declared successors or fails — never silently substitutes engines.
 - Replay infrastructure outage ⇒ same durability rules as any run ([architecture.md](architecture.md) §9): the replay run survives in PostgreSQL and resumes via reconciliation.
+
+### Phase 18 implementation limitation — credential values
+
+The reference/registration/current-grant checks reject missing or revoked
+authorization. Missing runtime secret values fail pre-send. The current
+implementation has no stored credential-value fingerprint baseline, so it
+does **not** detect rotation behind an unchanged authorized reference. The
+fingerprint fail-fast clauses above remain a documented capability gap,
+not verified behavior. ADR-0027 records the owner's explicit deferral of
+Section L.5: this amendment adds no fingerprint key/metadata, changes no
+ADR-0012 resolution rule, and invalidates no legacy reproduction for a
+missing baseline.

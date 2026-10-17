@@ -19,8 +19,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createControlDb } from '@rupturegrid/control-db';
-import type { ControlDb } from '@rupturegrid/control-db';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { PrismaClient } from '@rupturegrid/control-db';
 import {
   createExperiment,
   createRun,
@@ -31,16 +32,15 @@ import {
 } from '@rupturegrid/engine';
 import { loadTestEnv } from './helpers/env.js';
 import {
-  getControlPrisma,
   uniqueName,
   waitFor,
   testTargetOriginCredentialPolicy,
 } from './helpers/execution-harness.js';
 
-const prisma = getControlPrisma();
+let prisma: PrismaClient;
+let ownedFixture: OwnedControlFixture;
 
 let baseUrl = '';
-let controlDb: ControlDb | null = null;
 
 /**
  * Phase 16 (ADR-0024 §54): the SERVER-OWNED test grant policy for this
@@ -147,17 +147,16 @@ beforeAll(async () => {
   });
   const address = fixture.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${address.port}`;
-  controlDb = createControlDb(loadTestEnv().controlDatabaseUrl);
+  ownedFixture = await createOwnedControlFixture(loadTestEnv());
+  prisma = ownedFixture.prisma;
 });
 
 afterAll(async () => {
   await new Promise<void>((resolve) => {
     fixture.close(() => resolve());
   });
-  await controlDb?.disconnect();
+  await ownedFixture?.close();
 });
-
-let manifestTargetId: string | null = null;
 
 /**
  * Registers the manifest fixture target ONCE and reuses that exact
@@ -165,55 +164,20 @@ let manifestTargetId: string | null = null;
  * second registration for the same origin is refused, never bypassed.
  */
 async function ensureManifestTarget(): Promise<{ targetId: string; displayName: string }> {
-  if (manifestTargetId !== null) {
-    const existing = await prisma.targetRegistration.findUniqueOrThrow({
-      where: { id: manifestTargetId },
-      select: { id: true, displayName: true },
-    });
-    return { targetId: existing.id, displayName: existing.displayName };
-  }
-  // Collision-safe ephemeral binding (§16): the OS may hand this run a
-  // port an EARLIER run already registered as an origin authority in the
-  // shared development database (registrations are global and persist).
-  // The refusal is honoured — the fixture rebinds to a fresh ephemeral
-  // port and retries; the origin rule is never bypassed and the assertion
-  // set is unchanged.
-  for (let attempt = 0; ; attempt += 1) {
-    const displayName = uniqueName('manifest-target');
-    try {
-      const registered = await registerTarget(
-        prisma,
-        {
-          displayName,
-          environment: 'LOCAL_DEVELOPMENT',
-          origins: [baseUrl],
-          contractKind: 'GENERIC_HTTP',
-          credentialRefs: ['DEMO_PROVIDER_SIGNING_SECRET'],
-          manifest: { ...MANIFEST, displayName, origins: [baseUrl] },
-        },
-        fixtureCredentialPolicy(),
-      );
-      manifestTargetId = registered.targetId;
-      return { targetId: registered.targetId, displayName };
-    } catch (error) {
-      if (!(error instanceof TargetRegistrationError) || attempt >= 4) {
-        throw error;
-      }
-      await rebindFixture();
-    }
-  }
-}
-
-/** Binds the HTTP fixture to a NEW free ephemeral port (bounded retries). */
-async function rebindFixture(): Promise<void> {
-  await new Promise<void>((resolve) => {
-    fixture.close(() => resolve());
-  });
-  await new Promise<void>((resolve) => {
-    fixture.listen(0, '127.0.0.1', () => resolve());
-  });
-  const address = fixture.address() as AddressInfo;
-  baseUrl = `http://127.0.0.1:${address.port}`;
+  const displayName = 'manifest-fixture';
+  const registered = await ownedFixture.acquireTarget(
+    'manifest',
+    {
+      displayName,
+      environment: 'LOCAL_DEVELOPMENT',
+      origins: [baseUrl],
+      contractKind: 'GENERIC_HTTP',
+      credentialRefs: ['DEMO_PROVIDER_SIGNING_SECRET'],
+      manifest: { ...MANIFEST, displayName, origins: [baseUrl] },
+    },
+    fixtureCredentialPolicy(),
+  );
+  return { targetId: registered.targetId, displayName };
 }
 
 describe('Phase 13: manifest registration and storage', () => {

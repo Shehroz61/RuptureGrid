@@ -8,14 +8,29 @@
 // checkout-zero.md §2). RuptureGrid holds no Commerce DB credentials
 // and can never mutate this state directly.
 
-import type { CommerceDb, CommerceMode, ScenarioContext } from '@rupturegrid/commerce-db';
+import type {
+  CommerceDb,
+  CommerceMode,
+  ProcessingConfiguration,
+  ScenarioContext,
+} from '@rupturegrid/commerce-db';
 import {
   getProcessingMode,
   initializeScenarioContext,
   setProcessingMode,
+  getProcessingConfiguration,
+  setProcessingConfiguration,
+  initializeScenarioContextPreservingMode,
 } from '@rupturegrid/commerce-db';
 
 export interface CommerceAdminService {
+  getConfiguration(): Promise<ProcessingConfiguration>;
+  setConfiguration(mode: CommerceMode): Promise<ProcessingConfiguration>;
+  resetContext(input: {
+    scopeToken: string;
+    sku: string;
+    initialAvailableUnits: number;
+  }): Promise<ScenarioContext>;
   getProcessingMode(): Promise<CommerceMode>;
   setProcessingMode(mode: CommerceMode): Promise<CommerceMode>;
   /**
@@ -33,6 +48,9 @@ export interface CommerceAdminService {
 
 export function createCommerceAdminService(db: CommerceDb): CommerceAdminService {
   return {
+    getConfiguration: () => getProcessingConfiguration(db),
+    setConfiguration: (mode) => setProcessingConfiguration(db, mode),
+    resetContext: (input) => initializeScenarioContextPreservingMode(db, input),
     async getProcessingMode(): Promise<CommerceMode> {
       return getProcessingMode(db);
     },

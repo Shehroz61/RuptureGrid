@@ -16,7 +16,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createControlDb } from '@rupturegrid/control-db';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
 import type { ControlDb } from '@rupturegrid/control-db';
 import {
   StepProcessor,
@@ -34,11 +35,12 @@ import {
 } from '@rupturegrid/evidence';
 import { deriveRunForensics } from '@rupturegrid/forensics';
 import { loadTestEnv } from './helpers/env.js';
-import { uniqueName } from './helpers/execution-harness.js';
+import { uniqueName, uniqueTestOrigin } from './helpers/execution-harness.js';
 
 const prisma = () => controlDb!.prisma;
 
 let controlDb: ControlDb | null = null;
+let ownedFixture: OwnedControlFixture | null = null;
 let baseUrl = '';
 let manifestTargetId: string | null = null;
 
@@ -573,81 +575,27 @@ const fixture = createServer((req, res) => {
 });
 
 beforeAll(async () => {
-  controlDb = createControlDb(loadTestEnv().controlDatabaseUrl);
-  // BIND-THEN-VERIFY (Phase 17 B1 fixture repair). The port is chosen by
-  // the OS, and every previous suite run leaves its registrations in the
-  // persistent dev database. Binding first and checking the origin
-  // second — with a bounded rebind on a hit — is the only collision-safe
-  // order here, and it is what keeps this suite from silently inheriting
-  // another run's registration: the origin authority is global, so a
-  // reused port would resolve to a target that declares NO manifest and
-  // every `invariantBindings` document below would be rejected (observed:
-  // “invariantBindings requires a manifest-declaring target”).
-  for (let attempt = 0; ; attempt += 1) {
-    await new Promise<void>((resolve) => {
-      fixture.listen(0, '127.0.0.1', () => resolve());
-    });
-    const address = fixture.address() as AddressInfo;
-    const candidate = `http://127.0.0.1:${String(address.port)}`;
-    const taken = await prisma().targetOrigin.findUnique({
-      where: { origin: candidate },
-      select: { id: true },
-    });
-    if (taken === null) {
-      baseUrl = candidate;
-      return;
-    }
-    await new Promise<void>((resolve) => {
-      fixture.close(() => resolve());
-    });
-    if (attempt >= 15) {
-      throw new Error(
-        `no unregistered loopback origin found for the Phase 15 fixture in 16 binds (last tried ${candidate})`,
-      );
-    }
-  }
+  ownedFixture = await createOwnedControlFixture(loadTestEnv());
+  controlDb = ownedFixture.controlDb;
+  await new Promise<void>((resolve) => fixture.listen(0, '127.0.0.1', resolve));
+  baseUrl = `http://127.0.0.1:${String((fixture.address() as AddressInfo).port)}`;
 });
 
 afterAll(async () => {
   await new Promise<void>((resolve) => {
     fixture.close(() => resolve());
   });
-  await controlDb?.disconnect();
+  await ownedFixture?.close();
 });
 
 /**
- * Registers the manifest target once (origin authority is global).
- * The beforeAll above has already verified this origin was UNREGISTERED,
- * so the defensive branch below can never silently adopt a foreign target:
- * if a registration exists it MUST declare a manifest, and a target that
- * does not is a loud failure rather than a phantom manifest-less target
- * (Phase 17 B1 fixture repair — never inherit silently).
+ * Reuses only the target created by this fixture's owned runtime.
+ * Its migrated database isolates origin authority from other suites.
  */
 async function ensureManifestTarget(): Promise<string> {
-  if (manifestTargetId !== null) {
-    return manifestTargetId;
-  }
-  const existingOrigin = await prisma().targetOrigin.findUnique({
-    where: { origin: baseUrl },
-    select: { targetId: true },
-  });
-  if (existingOrigin !== null) {
-    const existing = await prisma().targetRegistration.findUniqueOrThrow({
-      where: { id: existingOrigin.targetId },
-      select: { manifestJson: true },
-    });
-    if (existing.manifestJson === null) {
-      throw new Error(
-        `Phase 15 fixture origin ${baseUrl} is registered to a target that declares NO manifest; ` +
-          'the bind-then-verify step must hand this suite an unregistered origin (refusing to ' +
-          'silently inherit a foreign target)',
-      );
-    }
-    manifestTargetId = existingOrigin.targetId;
-    return manifestTargetId;
-  }
-  const displayName = uniqueName('phase15-manifest-target');
-  const registered = await registerTarget(prisma(), {
+  if (manifestTargetId !== null) return manifestTargetId;
+  const displayName = 'phase15-manifest-target';
+  const registered = await ownedFixture!.acquireTarget('manifest', {
     displayName,
     environment: 'LOCAL_DEVELOPMENT',
     origins: [baseUrl],
@@ -810,11 +758,11 @@ describe('Phase 15: frozen binding round-trip (real PostgreSQL)', () => {
 
   it('rejects invariantBindings on a manifest-less target (no policy to validate against)', async () => {
     const displayName = uniqueName('phase15-legacy-target');
-    const port = 20000 + (Date.now() % 20000);
+    const origin = await uniqueTestOrigin(prisma());
     const registered = await registerTarget(prisma(), {
       displayName,
       environment: 'LOCAL_DEVELOPMENT',
-      origins: [`http://127.0.0.1:${port}`],
+      origins: [origin],
       contractKind: 'GENERIC_HTTP',
       credentialRefs: [],
     });
@@ -851,6 +799,9 @@ describe('Phase 15: generic evaluation over real evidence', () => {
     const created = await createRunWithBindings();
     runId = created.runId;
     await captureAndDerive(runId);
+    // Every case reads an analyzed baseline; no case may rely on a prior
+    // test to materialize its evaluations or idempotency starting count.
+    await runRunAnalysis(prisma(), runId);
   });
 
   it('atMostOne: PASS with one attributed effect + proven completeness', async () => {

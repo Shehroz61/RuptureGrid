@@ -126,6 +126,7 @@ export type ReportAuthorizationAnomalyKind =
   | 'COVERAGE_ANOMALY'
   | 'FOREIGN_ROW_ANOMALY'
   | 'EVALUATION_NOT_RESOLVED'
+  | 'EVALUATION_AUTHORITY_INVALID'
   | 'INTEGRITY_UNVERIFIED'
   | 'RUN_NOT_TERMINAL';
 
@@ -322,7 +323,10 @@ export async function authorizeReportFinalization<TFrozen>(
     const evaluationRows =
       evaluationIds.length === 0
         ? []
-        : await tx.invariantEvaluation.findMany({ where: { id: { in: evaluationIds } } });
+        : await tx.invariantEvaluation.findMany({
+            where: { id: { in: evaluationIds } },
+            include: { batch: true },
+          });
     const evaluationById = new Map(evaluationRows.map((row) => [row.id, row]));
 
     /** Assembles the frozen state from the authoritative read. */
@@ -541,6 +545,34 @@ export async function authorizeReportFinalization<TFrozen>(
     }
 
     const anomalies: ReportAuthorizationAnomaly[] = [];
+
+    // Boundary B checklist 7: independent foreign keys do not establish
+    // authority. Resolve the complete pointer -> evaluation -> batch chain
+    // under the SAME run lock, for every row (including mixed valid/invalid
+    // selections). Never substitute a historical row or certify a partial set.
+    for (const pointer of publication.pointers) {
+      const row = evaluationById.get(pointer.currentEvaluationId);
+      if (
+        row !== undefined &&
+        (row.runId !== runId ||
+          row.invariantKey !== pointer.invariantKey ||
+          row.subjectKey !== pointer.subjectKey ||
+          row.evaluatorVersion !== pointer.evaluatorVersion ||
+          row.evidenceSetHash !== pointer.evidenceHeadHash ||
+          row.batch.runId !== runId ||
+          row.batch.invariantKey !== pointer.invariantKey ||
+          row.batch.evaluatorVersion !== pointer.evaluatorVersion ||
+          row.batch.completedAt === null)
+      ) {
+        anomalies.push({
+          kind: 'EVALUATION_AUTHORITY_INVALID',
+          invariantKey: pointer.invariantKey,
+          subjectKey: pointer.subjectKey,
+          detail:
+            'a current pointer must resolve to its own run/key/subject/version/evidence identity in a completed batch of the same run/key/version',
+        });
+      }
+    }
 
     // ---- 5. verified-prefix binding (the locked chain identity). -------
     if (!chainIdentitiesEqual(lockedChain, options.verifiedChain)) {

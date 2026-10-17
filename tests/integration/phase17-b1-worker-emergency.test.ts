@@ -24,7 +24,7 @@
 // The critical D/K cases (a KNOWN_ABSENT-looking persisted set while the
 // send boundary was crossed) must NEVER become KNOWN_ABSENT.
 
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -42,9 +42,25 @@ import {
   executeHttp,
 } from '@rupturegrid/engine';
 import type { EmergencyMutationClassification, FencingContext } from '@rupturegrid/engine';
-import { getControlPrisma, uniqueName, uniqueTestOrigin } from './helpers/execution-harness.js';
+import type { PrismaClient } from '@rupturegrid/control-db';
+import { uniqueName, uniqueTestOrigin } from './helpers/execution-harness.js';
+import { loadTestEnv } from './helpers/env.js';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
 
-const prisma = getControlPrisma();
+let prisma: PrismaClient;
+let ownedFixture: OwnedControlFixture;
+
+// Each case owns its namespace. Metadata-only test origins in other
+// cases must not collide with the OS-assigned real receiver's port.
+beforeEach(async () => {
+  ownedFixture = await createOwnedControlFixture(loadTestEnv());
+  prisma = ownedFixture.prisma;
+});
+
+afterEach(async () => {
+  await ownedFixture?.close();
+});
 
 const LEASE_MS = 30_000;
 
@@ -151,11 +167,6 @@ const READ_ONLY_ACTION: Record<string, unknown> = {
   mutation: 'READ_ONLY',
   contract: 'GENERIC_HTTP',
 };
-
-afterAll(async () => {
-  // Rows persist: integration tests share the real DB and rows are
-  // honest execution state (unique names prevent collisions).
-});
 
 // ---------------------------------------------------------------------
 // 1. The derivation truth table (the ONE truth model — pinned)

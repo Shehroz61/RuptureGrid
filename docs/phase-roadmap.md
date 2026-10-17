@@ -253,13 +253,22 @@ an adoption-readiness test, not evidence that any third party adopted RuptureGri
 
 - **Goal:** close the failure → reproduction → fix → replay → regression-proof loop (ADR-0019 Decision 4).
 - **Scope:** `packages/cli` replay command (new run from the same hash-pinned snapshot); acceptance-expectation assertions; run-comparison surfacing; committed regression suites for BOTH domains; the external-CI recipe documentation (checkout-invoked, per the distribution-honesty rule).
+- **Approved Phase 18 amendment (2026-10-16, ADR-0027):** additive Commerce mode-preserving context setup, observed effective processing configuration, and a separately named mode-neutral lifecycle. Existing golden mode-pinned scenarios remain unchanged. Section L.5 fingerprint architecture is explicitly deferred; existing credential checks remain and value-rotation detection must not be claimed.
 - **Non-scope:** detecting scheduling variance beyond the incident-replay §4–§5 honesty table; automatic fix verification services.
 - **Prerequisites:** Phase 17.
-- **Acceptance:** the full lifecycle demonstrated on demo-commerce: discovered failure → reproduction definition → target fix through its own interfaces → same-snapshot replay → PASS; cross-intent comparison refused; credential-rotation fail-fast re-proven; both regression suites committed and green (vulnerable ⇒ deterministic FAIL + Finding; secure ⇒ PASS + 0 Findings).
+- **Acceptance:** the full lifecycle demonstrated on demo-commerce: discovered failure → reproduction definition → target fix through its own interfaces → same-snapshot replay → PASS; cross-intent comparison refused; existing credential-reference/registration/current-grant authorization checks fail closed and missing runtime values fail pre-send. Under the approved ADR-0027 deferral, secret-value changes behind an unchanged, still-authorized reference are not fingerprint-verified; Section L.5 remains PROPOSED, DEFERRED, and UNIMPLEMENTED. Both regression suites must be committed and green (vulnerable ⇒ deterministic FAIL + Finding; secure ⇒ PASS + 0 Findings).
 - **Testing:** E2E replay + determinism checks.
 - **Security:** replay authorization unchanged; credential references only, never values.
 - **Deliverables:** replay command, regression suites, CI recipe.
 - **Exit criteria:** independent audit performs the lifecycle end-to-end.
+
+**Current status — 17 October 2026:** the approved architectural amendment
+is implemented and the final independent Phase 18 acceptance audit PASSED.
+The controlled Phase 18 commit has not been created; CI for that new commit
+has not run; the acceptance tag has not been created. Phase 18 is not yet
+declared accepted or published, and Phase 19 has not started. See the
+[final independent acceptance reference](reports/phase-18-final-independent-acceptance-reference.md)
+for the exact audit identity, preserved evidence and pending Git/CI/tag gates.
 
 ## Phase 19 — Independent v1.1 Audit + Release
 

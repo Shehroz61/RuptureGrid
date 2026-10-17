@@ -10,7 +10,8 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { PrismaClient } from '@rupturegrid/control-db';
-import { createControlDb } from '@rupturegrid/control-db';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
 import { createExecutionQueue } from '@rupturegrid/queue';
 import type { ExecutionQueue } from '@rupturegrid/queue';
 import { CONTROLLED_FAULT_PLAN_VERSION } from '@rupturegrid/shared';
@@ -32,7 +33,7 @@ const SCENARIO_TIMEOUT = 240_000;
 
 let env: TestEnv;
 let prisma: PrismaClient;
-let disconnect: () => Promise<void>;
+let ownedFixture: OwnedControlFixture;
 let demo: RunningDemo;
 let worker: RunningWorker;
 let queue: ExecutionQueue;
@@ -40,13 +41,13 @@ let targetId: string;
 
 beforeAll(async () => {
   env = loadTestEnv();
-  const control = createControlDb(env.controlDatabaseUrl);
-  prisma = control.prisma;
-  disconnect = control.disconnect;
+  ownedFixture = await createOwnedControlFixture(env);
+  env = ownedFixture.env;
+  prisma = ownedFixture.prisma;
   demo = await startDemoProcess(env, 45901);
   worker = await startPhase4Worker(env);
   queue = createExecutionQueue({ redisUrl: env.redisUrl, prefix: env.queuePrefix });
-  const registered = await registerDemoTarget(prisma, demo, 'phase9-faults-target');
+  const registered = await registerDemoTarget(ownedFixture, demo, 'phase9-faults-target');
   targetId = registered.targetId;
 }, 60_000);
 
@@ -54,7 +55,7 @@ afterAll(async () => {
   await queue.close().catch(() => undefined);
   await worker.close().catch(() => undefined);
   await demo.close().catch(() => undefined);
-  await disconnect().catch(() => undefined);
+  await ownedFixture.close();
 });
 
 async function runToTerminal(runId: string): Promise<string> {

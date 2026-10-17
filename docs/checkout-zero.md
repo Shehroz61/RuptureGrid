@@ -72,6 +72,20 @@ Single experiment, parameterized:
 
 All steps recorded as observations; the entire run snapshotted at creation ([incident-replay.md](incident-replay.md)).
 
+### Phase 18 companion lifecycle (approved ADR-0027 amendment)
+
+The existing golden scenarios and mode-setting setup above retain their
+behavior. A separately named `checkout-zero-post-fix` scenario uses the
+authenticated `/demo/admin/scenario-context` operation to reset only
+business scope/generation/SKU baseline, preserving the target's processing
+configuration. Before discovery the operator configures VULNERABLE; after
+the real FAIL the operator applies SECURE through the existing mode API.
+Replay of that original reproduction executes the identical snapshot;
+effective configuration is observed, while the unchanged business
+invariants independently evaluate new target-persisted effects. Original
+FAIL evidence is retained. This does not retroactively share the golden
+vulnerable snapshot's hash or change its required mode.
+
 ## 5. The invariants
 
 Both invariants are instances of the **closed `business-invariant/v1` registry** (ADR-0018) — pure data bound to the target's declared event types and fields (ADR-0017); no user code, no SQL, no AI anywhere in evaluation.

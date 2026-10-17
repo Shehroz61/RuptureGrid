@@ -15,7 +15,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createControlDb } from '@rupturegrid/control-db';
 import type { ControlDb } from '@rupturegrid/control-db';
 import { createExecutionQueue, startExecutionWorker } from '@rupturegrid/queue';
 import type { ExecutionWorkerHandle } from '@rupturegrid/queue';
@@ -24,29 +23,38 @@ import {
   createExperiment,
   createRun,
   markRunDispatching,
+  registerTarget,
   runReconcileSweep,
+  ManifestValidationError,
+  TargetRegistrationError,
 } from '@rupturegrid/engine';
 import { loadTestEnv } from './helpers/env.js';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
 import { redisOutageControl } from './helpers/redis-outage.js';
-import {
-  getControlPrisma,
-  registerLocalFixtureTarget,
-  uniqueName,
-  waitFor,
-} from './helpers/execution-harness.js';
+import { uniqueName, waitFor } from './helpers/execution-harness.js';
 
-const env = loadTestEnv();
-const prisma = getControlPrisma();
+let env = loadTestEnv();
+const prisma = () => controlDb.prisma;
+let queuePrefix = '';
 
 let server: Server | null = null;
 let baseUrl = '';
 let controlDb: ControlDb;
+let ownedFixture: OwnedControlFixture | null = null;
 let processor: StepProcessor;
 let consumer: ExecutionWorkerHandle | null = null;
 let queue: ReturnType<typeof createExecutionQueue>;
 let outage: ReturnType<typeof redisOutageControl>;
 
 beforeAll(async () => {
+  // TCP ports recycle independently of durable origin registrations. Own
+  // the registration namespace and every client/reconciler using it;
+  // never adopt a registration from the persistent developer database.
+  ownedFixture = await createOwnedControlFixture(env);
+  env = ownedFixture.env;
+  queuePrefix = env.queuePrefix;
+  controlDb = ownedFixture.controlDb;
   outage = redisOutageControl();
   server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -57,8 +65,7 @@ beforeAll(async () => {
   });
   const address = server?.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${address.port}`;
-  controlDb = createControlDb(env.controlDatabaseUrl);
-  queue = createExecutionQueue({ redisUrl: env.redisUrl, prefix: env.queuePrefix });
+  queue = createExecutionQueue({ redisUrl: env.redisUrl, prefix: queuePrefix });
   processor = new StepProcessor({
     prisma: controlDb.prisma,
     config: { WORKER_LEASE_DURATION_MS: 30_000, WORKER_HEARTBEAT_INTERVAL_MS: 5_000 },
@@ -68,12 +75,18 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await consumer?.close();
-  await queue.close();
-  await controlDb.disconnect();
-  await new Promise<void>((resolve) => {
-    server?.close(() => resolve());
-  });
+  try {
+    await consumer?.close();
+    await queue?.close();
+  } finally {
+    try {
+      if (server?.listening) {
+        await new Promise<void>((resolve) => server?.close(() => resolve()));
+      }
+    } finally {
+      await ownedFixture?.close();
+    }
+  }
 });
 
 function redisContainerStop(): void {
@@ -92,10 +105,98 @@ function redisReachable(): boolean {
 }
 
 describe('Redis outage → durable creation → reconciliation recovery (§40)', () => {
+  it('refuses a foreign origin owner and its incompatible stored manifest before durable execution', async () => {
+    const foreignUrl = new URL(baseUrl);
+    foreignUrl.hostname = 'localhost';
+    const origin = foreignUrl.origin;
+    // Historical manifests can predate ADR-0021's required role binding.
+    // Seed this exact invalid shape only in our migrated, owned Control DB.
+    const foreign = await prisma().targetRegistration.create({
+      data: {
+        displayName: uniqueName('foreign-outage-target'),
+        environment: 'LOCAL_DEVELOPMENT',
+        contractKind: 'GENERIC_HTTP',
+        credentialRefs: [],
+        origins: { create: { origin } },
+        manifestJson: {
+          manifestVersion: 'target-manifest/v1',
+          displayName: 'historical-foreign-target',
+          environment: 'LOCAL_DEVELOPMENT',
+          origins: [origin],
+          credentialRefs: [],
+          contract: { kind: 'GENERIC_HTTP' },
+          inspection: [
+            {
+              queryId: 'records',
+              description: 'Historical records without a declared role',
+              path: '/inspection/records',
+              fields: { recordId: 'string' },
+              identityFields: ['recordId'],
+            },
+          ],
+          sensitiveFields: [],
+        },
+      },
+      include: { origins: true },
+    });
+    const definitionsBefore = await prisma().experimentDefinition.count();
+    const runsBefore = await prisma().experimentRun.count();
+    await expect(
+      registerTarget(prisma(), {
+        displayName: uniqueName('outage-target'),
+        environment: 'LOCAL_DEVELOPMENT',
+        origins: [origin],
+        contractKind: 'GENERIC_HTTP',
+      }),
+    ).rejects.toBeInstanceOf(TargetRegistrationError);
+    const attempt = createExperiment(prisma(), {
+      name: uniqueName('foreign-outage-experiment'),
+      targetId: foreign.id,
+      document: {
+        steps: [
+          {
+            name: 'solo',
+            action: {
+              method: 'GET',
+              relativePath: '/recovered',
+              mutation: 'READ_ONLY',
+              contract: 'GENERIC_HTTP',
+            },
+          },
+        ],
+      },
+    });
+    await expect(attempt).rejects.toBeInstanceOf(ManifestValidationError);
+    await expect(attempt).rejects.toThrow(/inspection\[0\]\.roleId/);
+    expect(await prisma().experimentDefinition.count()).toBe(definitionsBefore);
+    expect(await prisma().experimentRun.count()).toBe(runsBefore);
+    expect(
+      await prisma().targetRegistration.findUniqueOrThrow({
+        where: { id: foreign.id },
+        include: { origins: true },
+      }),
+    ).toEqual(foreign);
+  });
+
   it('survives Redis down at creation, recovers via reconciler, completes without operator repair', async () => {
     // --- 0. Fixture target (registered BEFORE the outage) ---
-    const targetId = await registerLocalFixtureTarget(prisma, uniqueName('outage-target'), baseUrl);
-    const created = await createExperiment(prisma, {
+    const displayName = uniqueName('outage-target');
+    const registered = await ownedFixture!.acquireTarget('outage', {
+      displayName,
+      environment: 'LOCAL_DEVELOPMENT',
+      origins: [baseUrl],
+      contractKind: 'GENERIC_HTTP',
+    });
+    const targetId = registered.targetId;
+    const owned = await prisma().targetRegistration.findUniqueOrThrow({
+      where: { id: targetId },
+      include: { origins: true },
+    });
+    expect(owned.displayName).toBe(displayName);
+    expect(owned.origins.map((entry) => entry.origin)).toEqual([new URL(baseUrl).origin]);
+    expect(owned.credentialRefs).toEqual([]);
+    expect(owned.manifestJson).toBeNull();
+    const created = await createExperiment(prisma(), {
       name: uniqueName('outage-experiment'),
       targetId,
       document: {
@@ -117,11 +218,13 @@ describe('Redis outage → durable creation → reconciliation recovery (§40)',
     redisContainerStop();
     expect(redisReachable()).toBe(false);
 
+    let ourRunId = '';
     try {
       // --- 2. Durable creation + failed enqueue (like the API pair) ---
-      const run = await createRun(prisma, created.revisionId);
+      const run = await createRun(prisma(), created.revisionId);
+      ourRunId = run.runId;
       expect(run.stepRunIds).toHaveLength(1);
-      await markRunDispatching(prisma, run.runId);
+      await markRunDispatching(prisma(), run.runId);
       let enqueueFailed = false;
       try {
         await queue.enqueueStep({
@@ -135,7 +238,7 @@ describe('Redis outage → durable creation → reconciliation recovery (§40)',
       expect(enqueueFailed).toBe(true);
 
       // --- 3. The durable run REMAINS (PostgreSQL authority, ADR-0003) ---
-      const persisted = await prisma.experimentRun.findUniqueOrThrow({
+      const persisted = await prisma().experimentRun.findUniqueOrThrow({
         where: { id: run.runId },
         include: { steps: true },
       });
@@ -152,7 +255,7 @@ describe('Redis outage → durable creation → reconciliation recovery (§40)',
       await waitFor(
         async () => {
           try {
-            const probe = createExecutionQueue({ redisUrl: env.redisUrl, prefix: env.queuePrefix });
+            const probe = createExecutionQueue({ redisUrl: env.redisUrl, prefix: queuePrefix });
             try {
               await probe.enqueueStep({
                 runId: '00000000-0000-0000-0000-000000000000',
@@ -192,7 +295,7 @@ describe('Redis outage → durable creation → reconciliation recovery (§40)',
     // --- 6. Worker executes over real HTTP ---
     consumer = startExecutionWorker({
       redisUrl: env.redisUrl,
-      prefix: env.queuePrefix,
+      prefix: queuePrefix,
       concurrency: 2,
       processJob: async (payload) => {
         await processor.processStep(payload.stepRunId);
@@ -200,14 +303,6 @@ describe('Redis outage → durable creation → reconciliation recovery (§40)',
     });
 
     // --- 7. Run completes without operator repair ---
-    const ourRunId = (
-      await prisma.experimentRun.findFirstOrThrow({
-        where: {
-          snapshot: { revision: { definition: { name: { startsWith: 'outage-experiment-' } } } },
-        },
-        orderBy: { createdAt: 'desc' },
-      })
-    ).id;
     // Settle via a sweep once the worker finished the step (loop until
     // the sweep reports our run settled).
     await waitFor(
@@ -221,7 +316,7 @@ describe('Redis outage → durable creation → reconciliation recovery (§40)',
             await queue.enqueueStep({ runId: rId, stepRunId, sequence });
           },
         });
-        const row = await prisma.experimentRun.findUniqueOrThrow({ where: { id: ourRunId } });
+        const row = await prisma().experimentRun.findUniqueOrThrow({ where: { id: ourRunId } });
         return row.state === 'COMPLETED' || row.state === 'FAILED' ? row.state : null;
       },
       30_000,
@@ -235,11 +330,8 @@ describe('Redis outage → durable creation → reconciliation recovery (§40)',
       leaseRecoveryBatch: 50,
       enqueue: async () => {},
     });
-    const finalRun = await prisma.experimentRun.findFirstOrThrow({
-      where: {
-        snapshot: { revision: { definition: { name: { startsWith: 'outage-experiment-' } } } },
-      },
-      orderBy: { createdAt: 'desc' },
+    const finalRun = await prisma().experimentRun.findUniqueOrThrow({
+      where: { id: ourRunId },
     });
     expect(finalRun.state).toBe('COMPLETED');
 

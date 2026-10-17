@@ -41,7 +41,12 @@
 // persisted timestamps, never asserted from Promise.all).
 
 import { Prisma } from './generated/client/client.js';
-import type { CheckoutEvent, CheckoutIntent, PrismaClient } from './generated/client/client.js';
+import type {
+  CheckoutEvent,
+  CheckoutIntent,
+  CommerceSettings,
+  PrismaClient,
+} from './generated/client/client.js';
 import { randomId } from './signature.js';
 
 export type CommerceMode = 'VULNERABLE' | 'SECURE';
@@ -63,13 +68,26 @@ export class CheckoutDomainError extends Error {
 // target interfaces only; RuptureGrid never touches this state)
 // ---------------------------------------------------------------------
 
-export interface ScenarioContext {
+export interface ProcessingConfiguration {
+  readonly mode: CommerceMode;
+  readonly processingRevision: string;
+  readonly targetInstanceId: string;
+}
+
+function configurationOf(settings: CommerceSettings): ProcessingConfiguration {
+  return {
+    mode: settings.processingMode,
+    processingRevision: settings.processingRevision.toString(),
+    targetInstanceId: settings.targetInstanceId,
+  };
+}
+
+export interface ScenarioContext extends ProcessingConfiguration {
   readonly scopeId: string;
   readonly scopeToken: string;
   readonly generationId: number;
   readonly sku: string;
   readonly initialAvailableUnits: number;
-  readonly mode: CommerceMode;
 }
 
 /**
@@ -100,6 +118,34 @@ export async function initializeScenarioContext(
     readonly mode: CommerceMode;
   },
 ): Promise<ScenarioContext> {
+  return resetScenarioContext(db, input);
+}
+
+/** New Phase 18 setup: reset business context without selecting a mode. */
+export async function initializeScenarioContextPreservingMode(
+  db: { client: PrismaClient },
+  input: {
+    readonly scopeToken: string;
+    readonly sku: string;
+    readonly initialAvailableUnits: number;
+  },
+): Promise<ScenarioContext> {
+  return resetScenarioContext(db, {
+    scopeToken: input.scopeToken,
+    sku: input.sku,
+    initialAvailableUnits: input.initialAvailableUnits,
+  });
+}
+
+async function resetScenarioContext(
+  db: { client: PrismaClient },
+  input: {
+    readonly scopeToken: string;
+    readonly sku: string;
+    readonly initialAvailableUnits: number;
+    readonly mode?: CommerceMode;
+  },
+): Promise<ScenarioContext> {
   if (
     !Number.isInteger(input.initialAvailableUnits) ||
     input.initialAvailableUnits < 0 ||
@@ -112,6 +158,43 @@ export async function initializeScenarioContext(
     );
   }
   const result = await db.client.$transaction(async (tx) => {
+    // Serialize setup for this SKU, including concurrent first creation.
+    // This is target-owned setup coordination, never a business-effect write.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'commerce-scenario-sku:' + input.sku}))`;
+    // All setup writers acquire settings before scope/SKU, so mode
+    // setters cannot race this context's observed configuration.
+    let settings: CommerceSettings;
+    if (input.mode === undefined) {
+      const rows = await tx.$queryRaw<CommerceSettings[]>`
+        SELECT * FROM commerce_settings WHERE id = 'default' FOR SHARE
+      `;
+      const existing = rows[0];
+      if (existing === undefined) {
+        throw new CheckoutDomainError(
+          'processing configuration must be initialized first',
+          409,
+          'PROCESSING_NOT_INITIALIZED',
+        );
+      }
+      settings = existing;
+      const skuOwner = await tx.sku.findUnique({
+        where: { sku: input.sku },
+        include: { scope: true },
+      });
+      if (skuOwner !== null && skuOwner.scope.scopeId !== input.scopeToken) {
+        throw new CheckoutDomainError(
+          'SKU belongs to a different scenario scope',
+          409,
+          'SKU_SCOPE_CONFLICT',
+        );
+      }
+    } else {
+      settings = await tx.commerceSettings.upsert({
+        where: { id: 'default' },
+        update: { processingMode: input.mode, processingRevision: { increment: 1 } },
+        create: { processingMode: input.mode, processingRevision: 1 },
+      });
+    }
     // One scope row per token; every legitimate reset ADVANCES the
     // integer generation (monotonic, target-owned — never a clock).
     const scope = await tx.verificationScope.upsert({
@@ -148,14 +231,7 @@ export async function initializeScenarioContext(
         remainingAvailableUnits: input.initialAvailableUnits,
       },
     });
-    // Mode is applied in the SAME transaction: a reset either fully
-    // establishes the declared context or changes nothing.
-    await tx.commerceSettings.upsert({
-      where: { id: 'default' },
-      update: { processingMode: input.mode },
-      create: { processingMode: input.mode },
-    });
-    return { scope, sku };
+    return { scope, sku, settings };
   });
   return {
     scopeId: result.scope.id,
@@ -163,29 +239,42 @@ export async function initializeScenarioContext(
     generationId: result.scope.generationId,
     sku: result.sku.sku,
     initialAvailableUnits: result.sku.initialAvailableUnits,
-    mode: input.mode,
+    ...configurationOf(result.settings),
   };
 }
 
 export async function getProcessingMode(db: { client: PrismaClient }): Promise<CommerceMode> {
+  return (await getProcessingConfiguration(db)).mode;
+}
+
+export async function getProcessingConfiguration(db: {
+  client: PrismaClient;
+}): Promise<ProcessingConfiguration> {
   const settings = await db.client.commerceSettings.upsert({
     where: { id: 'default' },
     update: {},
     create: {},
   });
-  return settings.processingMode;
+  return configurationOf(settings);
 }
 
 export async function setProcessingMode(
   db: { client: PrismaClient },
   mode: CommerceMode,
 ): Promise<CommerceMode> {
+  return (await setProcessingConfiguration(db, mode)).mode;
+}
+
+export async function setProcessingConfiguration(
+  db: { client: PrismaClient },
+  mode: CommerceMode,
+): Promise<ProcessingConfiguration> {
   const settings = await db.client.commerceSettings.upsert({
     where: { id: 'default' },
-    update: { processingMode: mode },
-    create: { processingMode: mode },
+    update: { processingMode: mode, processingRevision: { increment: 1 } },
+    create: { processingMode: mode, processingRevision: 1 },
   });
-  return settings.processingMode;
+  return configurationOf(settings);
 }
 
 // ---------------------------------------------------------------------
@@ -205,7 +294,7 @@ export interface SubmitCheckoutInput {
   };
 }
 
-export interface SubmitCheckoutResult {
+export interface SubmitCheckoutResult extends ProcessingConfiguration {
   readonly requestAttemptId: string;
   readonly checkoutIntentId: string;
   readonly checkoutEventId: string;
@@ -227,7 +316,8 @@ export async function submitCheckout(
   db: { client: PrismaClient },
   input: SubmitCheckoutInput,
 ): Promise<SubmitCheckoutResult> {
-  const mode = await getProcessingMode(db);
+  const configuration = await getProcessingConfiguration(db);
+  const mode = configuration.mode;
   const payload = input.payload;
 
   // ---- Logical identity resolution ----
@@ -332,6 +422,9 @@ export async function submitCheckout(
       processingAttemptId: randomId('pa'),
       requestAttemptId: requestAttemptRowId,
       startSequence,
+      processingModeUsed: mode,
+      processingRevisionUsed: BigInt(configuration.processingRevision),
+      targetInstanceIdUsed: configuration.targetInstanceId,
     },
   });
 
@@ -362,6 +455,7 @@ export async function submitCheckout(
       select: { scopeId: true, generationId: true },
     });
     return {
+      ...configuration,
       requestAttemptId: input.requestAttemptId,
       checkoutIntentId: payload.checkoutIntentId,
       checkoutEventId,

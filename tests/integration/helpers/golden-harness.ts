@@ -17,22 +17,19 @@ export { loadTestEnv } from './env.js';
 export type { TestEnv } from './env.js';
 
 import { registerDemoTarget as phase4RegisterDemoTarget } from './phase4-harness.js';
-import { uniqueName } from './execution-harness.js';
-import type { PrismaClient } from '@rupturegrid/control-db';
+import type { OwnedControlFixture } from './owned-control-fixture.js';
 import type { RunningDemo } from './demo-harness.js';
 
 /**
- * Registers the real Demo target and resolves the targetId for a
- * golden mode by display-name convention:
- *   `golden-secure-…`    → SECURE
- *   anything else        → VULNERABLE
+ * Acquires the real Demo registration from this fixture's owner.
+ * Mode is explicit; the display name is metadata, never authority.
  */
 export async function registerGoldenTarget(
-  prisma: PrismaClient,
+  fixture: OwnedControlFixture,
   demo: RunningDemo,
   mode: 'VULNERABLE' | 'SECURE',
 ): Promise<{ targetId: string; displayName: string }> {
-  const displayName = uniqueName(mode === 'SECURE' ? 'golden-secure' : 'golden-vulnerable');
-  const registered = await phase4RegisterDemoTarget(prisma, demo, displayName);
+  const displayName = mode === 'SECURE' ? 'golden-secure' : 'golden-vulnerable';
+  const registered = await phase4RegisterDemoTarget(fixture, demo, displayName);
   return { targetId: registered.targetId, displayName };
 }

@@ -22,7 +22,6 @@ import {
   DENY_ALL_TARGET_ORIGIN_CREDENTIAL_POLICY,
   ExperimentValidationError,
   StepProcessor,
-  TargetRegistrationError,
   createExperiment,
   createRun,
   registerTarget,
@@ -31,10 +30,12 @@ import {
 } from '@rupturegrid/engine';
 import type { TargetOriginCredentialPolicy } from '@rupturegrid/engine';
 import { createEngineEvidenceSink, validateGenericInspectionCapture } from '@rupturegrid/evidence';
+import { createOwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { OwnedControlFixture } from './helpers/owned-control-fixture.js';
+import type { PrismaClient } from '@rupturegrid/control-db';
 import { loadTestEnv } from './helpers/env.js';
 import type { TestEnv } from './helpers/env.js';
 import {
-  getControlPrisma,
   testTargetOriginCredentialPolicy,
   uniqueName,
   uniqueTestOrigin,
@@ -50,7 +51,8 @@ import {
 } from './helpers/commerce-harness.js';
 import type { CommerceClient, RunningCommerce } from './helpers/commerce-harness.js';
 
-const prisma = getControlPrisma();
+let prisma: PrismaClient;
+let ownedFixture: OwnedControlFixture;
 const SCOPE = 'checkout-zero-phase16';
 const SKU = 'SKU-001';
 const COMMERCE_SIGNING_REF = 'DEMO_COMMERCE_SIGNING_SECRET';
@@ -171,81 +173,30 @@ function commerceCredentialPolicy(origin: string): TargetOriginCredentialPolicy 
 }
 
 async function ensureCommerceTarget(): Promise<string> {
-  if (commerceTargetId !== null) {
-    return commerceTargetId;
-  }
-  const displayName = uniqueName('demo-commerce');
-  try {
-    const registered = await registerTarget(
-      prisma,
-      {
-        displayName,
-        environment: 'LOCAL_DEVELOPMENT',
-        origins: [running.baseUrl],
-        contractKind: 'GENERIC_HTTP',
-        credentialRefs: [...COMMERCE_DECLARED_REFS],
-        manifest: loadCommerceManifest(displayName, running.baseUrl),
-      },
-      commerceCredentialPolicy(running.baseUrl),
-    );
-    commerceTargetId = registered.targetId;
-  } catch (error) {
-    if (error instanceof TargetRegistrationError) {
-      // A previous run on this persistent dev database already owns this
-      // origin (global by design) — reuse that registration, but ONLY if
-      // it declares a Commerce manifest. Silently adopting a manifest-less
-      // target is what produced the observed Phase 16 failures; the
-      // beforeAll check makes this branch a race-only path, and a foreign
-      // registration is now a loud, actionable failure.
-      const existing = await prisma.targetRegistration.findFirstOrThrow({
-        where: { origins: { some: { origin: running.baseUrl } } },
-      });
-      if (existing.manifestJson === null) {
-        throw new Error(
-          `Commerce fixture origin ${running.baseUrl} is registered to a target that declares NO manifest; ` +
-            'refusing to silently inherit a foreign target (the beforeAll check should have picked an unregistered origin)',
-          { cause: error },
-        );
-      }
-      commerceTargetId = existing.id;
-    } else {
-      throw error;
-    }
-  }
-  return commerceTargetId;
+  if (commerceTargetId !== null) return commerceTargetId;
+  const displayName = 'demo-commerce-fixture';
+  const registered = await ownedFixture.acquireTarget(
+    'commerce',
+    {
+      displayName,
+      environment: 'LOCAL_DEVELOPMENT',
+      origins: [running.baseUrl],
+      contractKind: 'GENERIC_HTTP',
+      credentialRefs: [...COMMERCE_DECLARED_REFS],
+      manifest: loadCommerceManifest(displayName, running.baseUrl),
+    },
+    commerceCredentialPolicy(running.baseUrl),
+  );
+  commerceTargetId = registered.targetId;
+  return registered.targetId;
 }
 
 beforeAll(async () => {
-  env = loadTestEnv();
-  // Random high port: the persistent dev database keeps every previous
-  // run's origin registrations, so a fixed port would collide with an
-  // older registration (origin authority is global by design).
-  //
-  // CHECK-THEN-START (Phase 17 B1 fixture repair): a random port is only
-  // safe if its origin is verified UNREGISTERED before the process binds
-  // it — otherwise the registration below hits the clash path and this
-  // suite silently inherits a foreign, manifest-less target, which is
-  // exactly how Phase 16 failures appeared (null `manifestJson`, an
-  // undeclared signature header, “no declared fault hook”). Bounded
-  // repick, never a weakened assertion.
-  const pickFreePort = (): number => 33000 + Math.floor(Math.random() * 6000);
-  let port = pickFreePort();
-  for (let attempt = 0; ; attempt += 1) {
-    const candidate = `http://127.0.0.1:${String(port)}`;
-    const taken = await prisma.targetOrigin.findUnique({
-      where: { origin: candidate },
-      select: { id: true },
-    });
-    if (taken === null) {
-      break;
-    }
-    if (attempt >= 15) {
-      throw new Error(
-        `no unregistered loopback origin found for the Commerce fixture in 16 picks (last tried ${candidate})`,
-      );
-    }
-    port = pickFreePort();
-  }
+  ownedFixture = await createOwnedControlFixture(loadTestEnv());
+  env = ownedFixture.env;
+  prisma = ownedFixture.prisma;
+  // The Control namespace is owned by this fixture; the target uses a separate TCP port.
+  const port = 33000 + Math.floor(Math.random() * 6000);
   running = await startCommerceProcess(env, port);
   client = createCommerceClient(running);
   await client.resetScenario({
@@ -258,6 +209,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await running?.close();
+  await ownedFixture?.close();
 });
 
 // ---------------------------------------------------------------------

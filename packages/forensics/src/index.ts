@@ -72,3 +72,10 @@ export type { DerivedReproductionDefinition, ReproductionDerivationInput } from 
 
 export { compareRuns, latestEvaluationPerInvariant, RunComparisonError } from './comparison.js';
 export type { RunComparisonResult, RunVerdictSummary } from './comparison.js';
+
+export { compareReplayRuns, REPLAY_SCHEDULING_NOTE } from './replay-comparison.js';
+export type {
+  ReplayComparisonResult,
+  ReplaySideSummary,
+  ReplaySubjectComparison,
+} from './replay-comparison.js';

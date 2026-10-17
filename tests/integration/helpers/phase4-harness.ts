@@ -16,15 +16,11 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import type { PrismaClient } from '@rupturegrid/control-db';
 import type { ExecutionQueue } from '@rupturegrid/queue';
-import {
-  createExperiment,
-  createRun,
-  markRunDispatching,
-  registerTarget,
-} from '@rupturegrid/engine';
+import { createExperiment, createRun, markRunDispatching } from '@rupturegrid/engine';
 import type { TestEnv } from './env.js';
 import type { RunningDemo } from './demo-harness.js';
 import { uniqueName } from './execution-harness.js';
+import type { OwnedControlFixture } from './owned-control-fixture.js';
 
 export interface RunningWorker {
   readonly process: ChildProcess;
@@ -100,32 +96,23 @@ export interface RegisteredDemoTarget {
 }
 
 /**
- * Registers the REAL demo target (idempotent by origin) with
- * credential REFERENCES only. A displayName may be supplied (golden
- * suites pass unique names; the golden RUNNER's mode is always an
- * explicit option, never a name convention);
- * a unique default keeps older suites unchanged.
+ * Registers the REAL demo target with credential REFERENCES only.
+ * Reuse is scoped to the explicit fixture owner/key, never an origin
+ * lookup. Different golden modes supply distinct keys/display names.
  */
 export async function registerDemoTarget(
-  prisma: PrismaClient,
+  fixture: OwnedControlFixture,
   demo: RunningDemo,
-  displayName?: string,
+  displayName = 'demo-fixture',
 ): Promise<RegisteredDemoTarget> {
-  try {
-    const registered = await registerTarget(prisma, {
-      displayName: displayName ?? uniqueName('phase4-target'),
-      environment: 'LOCAL_DEVELOPMENT',
-      origins: [demo.baseUrl],
-      contractKind: 'DEMO_FINTECH_WEBHOOK',
-      credentialRefs: ['DEMO_ADMIN_TOKEN', 'DEMO_INSPECTION_TOKEN', 'DEMO_PROVIDER_SIGNING_SECRET'],
-    });
-    return { targetId: registered.targetId };
-  } catch {
-    const existing = await prisma.targetRegistration.findFirstOrThrow({
-      where: { origins: { some: { origin: demo.baseUrl } } },
-    });
-    return { targetId: existing.id };
-  }
+  const registered = await fixture.acquireTarget(displayName, {
+    displayName,
+    environment: 'LOCAL_DEVELOPMENT',
+    origins: [demo.baseUrl],
+    contractKind: 'DEMO_FINTECH_WEBHOOK',
+    credentialRefs: ['DEMO_ADMIN_TOKEN', 'DEMO_INSPECTION_TOKEN', 'DEMO_PROVIDER_SIGNING_SECRET'],
+  });
+  return { targetId: registered.targetId };
 }
 
 export interface FullStackRun {
